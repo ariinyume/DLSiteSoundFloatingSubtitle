@@ -1,0 +1,51 @@
+plugins {
+    id 'com.android.application'
+}
+
+// 版本号：每次打包前把这里改成新版本，APK 文件名会自动带上它。
+//   → app/build/outputs/apk/debug/DLsiteFloat-<版本>-debug.apk
+// 版本规则（1.20.1 起）：第三位递增 —— 1.20.1 → 1.20.2 → 1.20.3 → 1.20.4 …
+def appVersionTag = '1.20.4'
+
+android {
+    namespace 'com.sena.dlsitesoundfloat'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.sena.dlsitesoundfloat"
+        minSdk 24
+        targetSdk 34
+        // versionCode 必须单调递增：1.20.4 → 10204（1*10000 + 20*100 + 4）
+        versionCode 10204
+        versionName "1.20.4"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    tasks.withType(JavaCompile) {
+        options.encoding = 'UTF-8'
+    }
+}
+
+// 让 APK 产物文件名带上版本号，便于区分各次打包。
+androidComponents {
+    onVariants(selector().all()) { variant ->
+        variant.outputs.each { output ->
+            output.outputFileName.set("DLsiteFloat-${appVersionTag}-${variant.name}.apk")
+        }
+    }
+}
+
+dependencies {
+    compileOnly 'de.robv.android.xposed:api:82'
+}

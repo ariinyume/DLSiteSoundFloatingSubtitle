@@ -1,0 +1,18 @@
+# Gradle / Android 构建产物（务必忽略，否则会传上几百 MB 的 .dex/.class）
+.gradle/
+build/
+**/build/
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+
+# IDE
+*.iml
+.idea/
+
+# 系统 / 临时
+.DS_Store
+*.log
+
+# 注意：gradle.properties 是构建必需（android.useAndroidX 等），不要忽略，需纳入版本库

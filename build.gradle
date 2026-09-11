@@ -1,0 +1,4 @@
+// DLsiteSound Floating Subtitle Plugin - root build script
+plugins {
+    id 'com.android.application' version '8.1.0' apply false
+}

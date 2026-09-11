@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/float_root"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/bg_floating_panel"
+    android:padding="12dp">
+
+    <ScrollView
+        android:id="@+id/subtitle_scroll"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:maxHeight="240dp"
+        android:scrollbars="vertical">
+
+        <LinearLayout
+            android:id="@+id/subtitle_container"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center_horizontal">
+
+            <TextView
+                android:id="@+id/title_hint"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Waiting for subtitles..."
+                android:textColor="@color/float_text_dim"
+                android:textSize="12sp"
+                android:visibility="visible" />
+        </LinearLayout>
+    </ScrollView>
+</FrameLayout>
