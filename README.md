@@ -3,6 +3,7 @@
 > DLSiteSound 悬浮字幕窗（纯 AI 项目，无人工代码）
 > 一个 LSPosed / Xposed 模块，在 DLsiteSound（DLsite 音频 App）的**播放页**上挂一个与播放进度同步的**系统级悬浮字幕窗**。
 > 当前版本：**1.20.4**（`DLsiteFloat-1.20.4-debug.apk`）
+> 📦 直接下载 APK：[Releases · v1.20.4](https://github.com/ariinyume/DLSiteSoundFloatingSubtitle/releases/tag/v1.20.4)
 
 ---
 
