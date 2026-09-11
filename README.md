@@ -1,13 +1,12 @@
 # DLsiteFloat —— DLsiteSound 悬浮字幕模块
 
-DLSiteSound 悬浮字幕窗（纯 AI 项目，无人工代码）
-
+> DLSiteSound 悬浮字幕窗（纯 AI 项目，无人工代码）
 > 一个 LSPosed / Xposed 模块，在 DLsiteSound（DLsite 音频 App）的**播放页**上挂一个与播放进度同步的**系统级悬浮字幕窗**。
 > 当前版本：**1.20.4**（`DLsiteFloat-1.20.4-debug.apk`）
 
 ---
 
-## 一、功能特点
+## 功能特点
 
 - **按播放进度对齐字幕**：以播放器（`ExoPlayer` / expo 音频）真实播放进度为主轴对齐字幕行，画面稳定不抖；仅在拿不到进度时回退到"屏上字幕文本"匹配。
 - **进程内悬浮窗**：窗口直接挂在 DLsiteSound 自己的进程里（`WindowManager` + `TYPE_APPLICATION_OVERLAY`），与各个 Hook 共享同一个 `SubtitleRepository` 实例，**无需任何跨进程 IPC、无需独立 Service**。App 退到后台、只要进程还活着，窗口仍停在最上层。
@@ -25,121 +24,7 @@ DLSiteSound 悬浮字幕窗（纯 AI 项目，无人工代码）
 
 ---
 
-## 二、页面判定与响应机制（核心逻辑）
-
-> ⚠️ 这是本项目**最容易改坏**的部分（同一个 bug 复发过多次），改动前请先读完本节与 `SubtitleViewHook` 的类注释。
-
-### 2.1 三态判定：**"扫不到滑条" ≠ "不是播放页"**
-
-扫描器每轮在视图树里找"宽滑条"（宽度 ≥ 45% 屏宽的原生 `SeekBar` 家族），据此给出三种结论：
-
-| 结论 | 触发条件 | 动作 |
-| --- | --- | --- |
-| `PAGE_PLAYER` | 找到**主滑条**（纵向 ≤ 82% 屏高，**且**与时间文本配对成功） | 立即显示按钮 |
-| `PAGE_OTHER` | 只找到**底部 mini-player 滑条**（纵向 > 82%） | 隐藏按钮 |
-| `PAGE_UNKNOWN` | 一条宽滑条都没扫到（首页、转场、被回收） | **不改变现状**，交给「锚点」判断 |
-
-关键点：
-- **首页等页面根本没有 SeekBar** → `UNKNOWN`。若把"没证据"直接当"非播放页"，播放页上滑条被回收的瞬间就会把按钮闪掉。
-- **列表页 / 首页底部的 mini-player 里也有同宽滑条**，与播放页主滑条**只靠纵向位置区分**。
-
-### 2.2 播放页锚点（`anchorRef`）
-
-判定到 `PAGE_PLAYER` 时，顺手记住主滑条所属的**页面级祖先容器**（弱引用）：
-
-- 滑条扫不到、但**锚点容器仍真实可见** → 还在播放页（只是控制条被回收）→ **保持显示**；
-- 锚点**消失 / 不可见 / 被卸载** → 确实离开了 → 隐藏。
-
-锚点存活要求"仍挂在窗口 + VISIBLE + 有尺寸 + 祖先链累计 alpha ≥ 0.05 + 可见面积 ≥ 50%"。
-
-> RN 切页动画期间页面容器会**瞬时不可见**（实测播放页锚点假死 **807ms**），所以锚点失效要**连续 4 次**（≈800ms）才隐藏，避免误闪。
-
-### 2.3 三道证据门（v26 新增，专治过渡期误判）
-
-**问题**：播放页**入场**时页面从屏幕底部滑入，它的主滑条会一路扫过整个下半屏，途中必然穿过 82% 那条绝对位置判据线，被误判成"mini-player 滑条"→ 按钮被误隐藏；**退场**时更极端，`bottom=y=2759(99%)` 的滑条**依然完整在屏内**，纯纵坐标根本拦不住。
-
-**修法**（判据不再依赖"绝对纵坐标"）：
-
-1. **页面容器可见面积门** `PAGE_CONTAINER_MIN_VISIBLE_RATIO = 0.6`：滑条所属页面容器必须在屏上占比 ≥60%（静止态实测 ≈92%~100%，过渡态掉到 ~20%~35%）。**与滑条位置无关**，故比 82% 稳健得多。
-2. **主滑条必须与时间文本配对** `MAIN_SLIDER_TIME_LABEL_DY_DP = 80`：播放页主滑条**下沿同排**恒有 `04:48` / `-13:34` 两个时间文本，mini-player 进度条旁一个都没有。配不上就不敢判 `PLAYER`（返回 `UNKNOWN` 交给锚点），**绝不因为"配不上"就判成 OTHER**。
-3. **OTHER 去抖** `HIDE_ON_OTHER_STREAK = 2` + `HIDE_ON_OTHER_PROOF_MS = 250`：单帧假阳性不再能把按钮打掉。
-
-### 2.4 响应节奏（自适应）
-
-| 参数 | 值 | 说明 |
-| --- | --- | --- |
-| 检测节流 | 150ms | `DETECT_MIN_INTERVAL_MS` |
-| 跟踪态心跳 | 200ms | 过渡态 / 结论与按钮现状不一致 / 结论刚变（< 4 次） |
-| 稳定态心跳 | 600ms | 连续 4 次同结论后省电 |
-| 无证据宽限 | 900ms | `NO_ANCHOR_GRACE_MS`（无锚点可参考时的兜底） |
-| 锚点硬超时 | 3000ms | `ANCHOR_HARD_TIMEOUT_MS` |
-
-> 心跳是**自带重排的独立 Runnable**（`finally` 里重新 arm），不会因节流 `return` 而断链。
-
----
-
-## 三、换轨判定与「假换轨」保护（核心逻辑）
-
-> ⚠️ 与第二节并列的"易改坏"区域。核心命题：**「调了方法」≠「真的换轨」**。
-
-### 3.1 要解决的问题
-
-App 的音频是**播放列表**形态（expo `AudioPlaylist`）。在**第一轨**按「上一首」时，App 本身是 no-op（音频继续播、不跳转），但 `AudioPlaylist.previous()` **依然会被调用**。
-
-旧逻辑把这类调用**无条件当成换轨** → 挂起字幕、等 3 秒新字幕 JSON → 期间当然等不到（压根没换轨）→ 判定「本音轨无字幕」→ **清空 cues + 自动关掉悬浮窗**。日志铁证：
-
-```
-15:40:36.072 | playerPage=true | seekBar=1153x54 y=1799 seekWidthRatio=90%   ← 播放页正常
-15:40:40.092 | track changed via AudioPlaylist.previous | lastJson=15375ms ago | cues=88 -> SUSPEND
-15:40:43.092 | track decision: NO subtitles for this track (cues were 88) -> auto-closed floating window
-```
-
-### 3.2 第一层：曲目序号二次确认（`PlayerSourceHook`）
-
-把 `AudioPlaylist` 上的方法分成两类：
-
-| 类别 | 方法 | 处理 |
-| --- | --- | --- |
-| **需序号确认** | `emitTrackChanged` / `next` / `previous` / `skipTo` / `onManualNavigation` | 调用后**再比一次** `getCurrentTrackIndex()`：序号确实变了才当换轨；没变 → 打 `ignored ... (track index unchanged=N, no-op navigation)` 直接忽略 |
-| **无条件** | `AudioPlaylist.setMediaSource`；`ExoPlayer` 的 `setMediaItems` / `setMediaItem` / `setMediaSource` / `setMediaSources` | 真的换掉了媒体源 → **无条件**当换轨（并顺便种序号基线） |
-
-序号读不到（方法缺失 / 抛异常）时退化为旧行为（**宁可误报也不漏报**），交给第二层兜底。
-
-### 3.3 序号基线为什么要单独「种」
-
-实测日志显示 **JS 从不调用 `getCurrentTrackIndex()`**（全量日志里一次序号变化都没触发过）。所以只靠"变化才通知"的那个 hook，基线会永远停在「未观测到」→ 上面那道序号门**退化成旧行为、等于没加**。
-
-因此额外在 `AudioPlaylist.setMediaSource` 时**只读取、不通知**地把基线种进去（日志 `seeded track index=N`）。基线永远滞后一个信号，正好就是我们要的"变更前状态"。
-
-> ⚠️ 实现细节：取基线必须**先存 `last`、再调 `readTrackIndex`**。因为 `readTrackIndex` 内部会触发 `getCurrentTrackIndex` 的 after-hook 顺带刷新基线，顺序颠倒会把真实变更误判成"没变"。
-
-### 3.4 第二层：播放位置回退兜底（`SubtitleRepository`）
-
-与 App 内部结构**无关**的一道兜底：真换轨时新音轨总是从 0 附近开始播，**播放位置必然大幅回退**。
-
-待确认的 3 秒窗口内：
-
-| 观察 | 结论 | 动作 |
-| --- | --- | --- |
-| 位置**回退** ≥ `POSITION_RESET_TOLERANCE_MS`(1000ms) | 确实重开了一轨 | 照旧走无字幕判定 |
-| 收到 ≥ `PENDING_MIN_POS_SAMPLES`(2) 次位置回调、且**从未回退** | **假换轨**（`SPURIOUS track change`） | **保留 cues、按当前进度重算当前行、不关窗** |
-| 位置不可知（暂停 / 没回调） | 不下结论 | 保持旧行为，避免误留上一轨字幕 |
-
-> 拖动进度条走的是 `seekTo`，**不会**触发以上任何换轨方法，因此不会误清字幕。
-
-### 3.5 相关参数
-
-| 参数 | 值 | 说明 |
-| --- | --- | --- |
-| `PRELOAD_TOLERANCE_MS` | 3500 | 距上次成功加载字幕 JSON 在此以内 → 视为新音轨预加载，直接保留 |
-| `NO_SUBTITLE_GRACE_MS` | 3000 | 换轨后的「待确认」窗口长度 |
-| `POSITION_RESET_TOLERANCE_MS` | 1000 | 位置回退多少毫秒以上算"重开一轨" |
-| `PENDING_MIN_POS_SAMPLES` | 2 | 至少收到几次位置回调，才敢用"没回退"否定换轨 |
-| `DEDUP_MS` | 500 | 同一次切换会命中多个 hook 点，去重窗口 |
-
----
-
-## 四、适配范围
+## 适配范围
 
 | 项目 | 说明 |
 | --- | --- |
@@ -155,7 +40,7 @@ App 的音频是**播放列表**形态（expo `AudioPlaylist`）。在**第一�
 
 ---
 
-## 五、环境要求
+## 环境要求
 
 ### 运行环境（设备端）
 - 已 **root** 的 Android 设备，并安装 **LSPosed（或兼容 Xposed 框架）**。
@@ -191,7 +76,7 @@ gradlew.bat compileDebugJavaWithJavac --offline      # Windows
 
 ---
 
-## 六、使用方式
+## 使用方式
 
 1. **获取模块**：自行构建上面的 APK，或从发布页下载 `DLsiteFloat-<版本>-debug.apk`。
 2. **安装并启用**：把 APK 装到已 root 设备 → 打开 **LSPosed Manager** → 启用本模块 → 作用域勾选 **`jp.co.eisys.dlsitesound`** → **强制停止** DLsiteSound 后重新打开。
@@ -237,7 +122,7 @@ gradlew.bat compileDebugJavaWithJavac --offline      # Windows
 
 ---
 
-## 七、意见反馈方式
+## 意见反馈
 
 - **GitHub Issues**（首选）：请在项目仓库的 Issues 区提交，并尽量附上：
   1. 你的设备型号 / Android 版本 / ROM（尤其是否 ColorOS / MIUI 等）
@@ -250,7 +135,7 @@ gradlew.bat compileDebugJavaWithJavac --offline      # Windows
 
 ---
 
-## 八、免责声明
+## 免责声明
 
 1. 本项目**仅用于个人技术研究 / 学习目的**，不得用于任何商业用途或盈利性分发。
 2. 本项目只研究**客户端字幕显示行为**，不绕过任何 DRM，不修改、不提取受版权保护的音频/文本内容本体。字幕文件由 DLsiteSound 官方服务器下发，请尊重内容版权方权益。
