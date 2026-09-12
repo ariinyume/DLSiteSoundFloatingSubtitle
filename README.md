@@ -1,9 +1,6 @@
 # DLsiteFloat —— DLsiteSound 悬浮字幕模块
 
-> DLSiteSound 悬浮字幕窗（纯 AI 项目，无人工代码）
 > 一个 LSPosed / Xposed 模块，在 DLsiteSound（DLsite 音频 App）的**播放页**上挂一个与播放进度同步的**系统级悬浮字幕窗**。
-> 当前版本：**1.20.4**（`DLsiteFloat-1.20.4-debug.apk`）
-> 📦 直接下载 APK：[Releases · v1.20.4](https://github.com/ariinyume/DLSiteSoundFloatingSubtitle/releases/tag/v1.20.4)
 
 ---
 
@@ -16,12 +13,10 @@
   - `悬浮关`：悬浮窗已关闭
   - `悬浮开`：悬浮窗已打开
   - `无字幕`：当前音轨没有可用字幕
-- **离开播放页自动隐藏**：用"三态判定 + 播放页锚点 + 三道证据门"识别页面，非播放页（首页 / 列表页 / mini-player 页）自动隐藏，播放页上不再闪断。详见 [第二节](#二页面判定与响应机制核心逻辑)。
-- **换轨智能处理**：切到无字幕音轨时先挂起并显示"无字幕"，3 秒内若字幕 JSON 到达则自动恢复；否则判定无字幕、清空并自动关窗。同时用**「曲目序号二次确认 + 播放位置回退兜底」**识别**假换轨**（如第一轨按「上一首」时 App 是空操作），此时**保留字幕、不关窗**。详见 [第三节](#三换轨判定与假换轨保护核心逻辑)。手动关掉的窗口不会被字幕晚到重新打开。
 - **可拖动 / 可缩放**：面板任意处按住拖动移动；右下角手柄拖动缩放（默认 85% 屏宽 × 200dp，最小 140×72dp，**纵向最长不超过半屏**）。
 - **阅读体验优化**：窗口上下留白最多半屏；**首行 / 末行强制居中**（即使播到第一条或最后一条字幕，当前行也停在窗口正中）；文字四周最小留白 **15dp**；换行切换时做 **360ms 平滑上滚**动画。
-- **玻璃磨砂质感**：自绘 `GlassPanelDrawable` 实现半透明磨砂底，**不启用系统级 `FLAG_BLUR_BEHIND`**（ColorOS 上那玩意会糊掉整个屏幕）。当前行加粗高亮、字号更大，其余行为半透明上下文，无滚动条。
-- **权限引导与降级**：未授予悬浮窗权限时，首次点击会跳到"在其他应用上层显示"设置页，且**只提示一次**；OPPO/ColorOS 下绕过 `canDrawOverlays()` 误报，直接尝试挂载用真实结果判断。
+- **玻璃磨砂质感**：自绘 `GlassPanelDrawable` 实现半透明磨砂底。当前行加粗高亮、字号更大，其余行为半透明上下文。
+- **权限引导与降级**：未授予悬浮窗权限时，首次点击会跳到"在其他应用上层显示"设置页，且**只提示一次**；ONEPLUS/ColorOS 下绕过 `canDrawOverlays()` 误报，直接尝试挂载用真实结果判断。
 
 ---
 
@@ -29,51 +24,15 @@
 
 | 项目 | 说明 |
 | --- | --- |
-| **目标 App** | DLsiteSound（`jp.co.eisys.dlsitesound`，React Native + expo-audio + ExoPlayer 套壳） |
+| **目标 App** | DLsiteSound（`jp.co.eisys.dlsitesound`） |
 | **框架** | LSPosed / Xposed 兼容框架；模块作用域**仅** `jp.co.eisys.dlsitesound` |
 | **Xposed 最低版本** | `xposedminversion` 要求 **93**（模块编译用 Xposed API 82） |
 | **Android 版本** | `minSdk 24`（Android 7.0）起；`targetSdk / compileSdk 34`。Android 8.0+ 用 `TYPE_APPLICATION_OVERLAY`，更低版本回退 `TYPE_PHONE` |
-| **机型 / ROM** | 针对 **OPPO / ColorOS** 做了适配（权限检测绕过、整屏模糊规避）；其它厂商 ROM 若悬浮窗/权限逻辑正常也应可用 |
-| **字幕生效条件** | 仅当该音轨由官方服务端提供字幕（optimized 字幕 JSON）时生效；无字幕音轨显示"无字幕"，不创建窗口 |
+| **机型 / ROM** | 针对 **ONEPLUS / ColorOS** 做了适配（权限检测绕过、整屏模糊规避）；其它厂商 ROM 若悬浮窗/权限逻辑正常也应可用 |
+| **字幕生效条件** | 仅当该音轨由官方服务端提供字幕（optimized 字幕 JSON）时生效；无字幕音轨显示"无字幕" |
 | **不适用** | 非 DLsiteSound 的 App；未 root 或未安装 Xposed 框架的设备；DRM 受限内容本身无字幕的情况 |
 
 > ⚠️ 适配依赖目标 App 的内部实现（视图结构、播放器类名、网络栈），**App 大版本更新可能导致模块失效**，需随版本重新适配。
-
----
-
-## 环境要求
-
-### 运行环境（设备端）
-- 已 **root** 的 Android 设备，并安装 **LSPosed（或兼容 Xposed 框架）**。
-- Android **7.0（API 24）及以上**。
-- 必须给 **DLsiteSound 本身**授予「显示在其他应用上层 / 悬浮窗」权限（窗口挂在它的进程里，不是模块 App 的权限）。
-
-### 构建环境（开发端）
-- **JDK 17**
-- **Android SDK**：`platform-34` + `build-tools 34.0.0`
-- **Gradle 8.4** —— 仓库已内置 Gradle Wrapper（`gradlew`），无需手动安装；首次执行会自动下载 8.4 发行包（本机已有 toolchain 时建议加 `--offline`）
-- 依赖 `de.robv.android.xposed:api:82`（`compileOnly`，由 `https://api.xposed.info/` 自动拉取）
-
-```bash
-# 设置环境变量（指向 toolchain 里的 JDK / SDK）
-export JAVA_HOME=/path/to/jdk-17
-export ANDROID_HOME=/path/to/android-sdk
-
-# 用内置的 Gradle Wrapper 构建（无需预先安装 Gradle）
-./gradlew   assembleDebug --offline --no-daemon      # Linux / macOS
-gradlew.bat assembleDebug --offline --no-daemon      # Windows
-# 产物：app/build/outputs/apk/debug/DLsiteFloat-1.20.4-debug.apk
-
-# 只验语法（更快）
-./gradlew   compileDebugJavaWithJavac --offline      # Linux / macOS
-gradlew.bat compileDebugJavaWithJavac --offline      # Windows
-```
-
-> 仓库已内置 **Gradle Wrapper 8.4**（`gradlew` / `gradlew.bat` / `gradle/wrapper/`），
-> 首次执行会自动从官方下载 Gradle 8.4 发行包；本机若已装 Gradle 8.4 也可直接用 `gradle` 命令。
-
-> 版本号规则：`1.20.x` 第三位递增；`versionCode = 1*10000 + 20*100 + x`（如 `1.20.4` → `10204`）。
-> ⚠️ **同版本号可能对应多个包**（保留版本号只改 BUILD 描述时）。装机前务必用日志里的 `==== BUILD … ====` 一行确认拿到的是哪一版。
 
 ---
 
