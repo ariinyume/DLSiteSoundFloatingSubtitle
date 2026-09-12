@@ -16,6 +16,8 @@
   - `悬浮关`：悬浮窗已关闭
   - `悬浮开`：悬浮窗已打开
   - `无字幕`：当前音轨没有可用字幕
+- **离开播放页自动隐藏**：用"三态判定 + 播放页锚点 + 三道证据门"识别页面，非播放页（首页 / 列表页 / mini-player 页）自动隐藏，播放页上不再闪断。详见 [docs/page-detection.md](docs/page-detection.md)。
+- **换轨智能处理**：切到无字幕音轨时先挂起并显示"无字幕"，3 秒内字幕 JSON 到达则自动恢复；否则清空并自动关窗。同时用**「曲目序号二次确认 + 列表重置识别 + 位置回退兜底」**识别**假换轨**（如第一轨按「上一首」时 App 是空操作、或播放列表被重置回第 0 首），此时**保留字幕、不关窗**。详见 [docs/track-change.md](docs/track-change.md)。手动关掉的窗口不会被字幕晚到重新打开。
 - **可拖动 / 可缩放**：面板任意处按住拖动移动；右下角手柄拖动缩放（默认 85% 屏宽 × 200dp，最小 140×72dp，**纵向最长不超过半屏**）。
 - **阅读体验优化**：窗口上下留白最多半屏；**首行 / 末行强制居中**（即使播到第一条或最后一条字幕，当前行也停在窗口正中）；文字四周最小留白 **15dp**；换行切换时做 **360ms 平滑上滚**动画。
 - **玻璃磨砂质感**：自绘 `GlassPanelDrawable` 实现半透明磨砂底。当前行加粗高亮、字号更大，其余行为半透明上下文。
@@ -39,9 +41,22 @@
 
 ---
 
+## 文档
+
+详细的机制说明与排查手册已拆到 `docs/`，首页只保留概览：
+
+| 文档 | 内容 |
+| --- | --- |
+| [docs/page-detection.md](docs/page-detection.md) | 页面判定：三态判定、播放页锚点、三道证据门、响应节奏 |
+| [docs/track-change.md](docs/track-change.md) | 换轨判定：序号二次确认、基线种入、列表重置识别、v28 判据修正 |
+| [docs/build.md](docs/build.md) | 环境要求与构建：运行环境、构建环境、构建命令、版本规则 |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | 日志与排查：完整日志对照表、排障顺序、版本确认 |
+
+---
+
 ## 使用方式
 
-1. **获取模块**：自行构建上面的 APK，或从发布页下载 `DLsiteFloat-<版本>-debug.apk`。
+1. **获取模块**：自行构建（见 [docs/build.md](docs/build.md)），或从发布页下载 `DLsiteFloat-<版本>-debug.apk`。
 2. **安装并启用**：把 APK 装到已 root 设备 → 打开 **LSPosed Manager** → 启用本模块 → 作用域勾选 **`jp.co.eisys.dlsitesound`** → **强制停止** DLsiteSound 后重新打开。
 3. **授予悬浮窗权限**：
    - 通用：系统设置 → 应用 → DLsiteSound → 权限 → 显示在其他应用上层。
@@ -123,7 +138,7 @@ DLsiteSound_FloatSubtitle/
 │       │   └── SubtitleCue.java             # 单条字幕（起止时间 + 文本）
 │       ├── hook/
 │       │   ├── NetworkHook.java             # 拦截 okhttp3 响应，抓字幕 JSON
-│       │   ├── PlayerSourceHook.java        # 音轨切换监听（序号二次确认 + 基线种入）
+│       │   ├── PlayerSourceHook.java        # 音轨切换监听（序号二次确认 + 基线种入 + 列表重置识别）
 │       │   ├── PlayerPositionHook.java      # 播放进度（getCurrentPosition）监听
 │       │   ├── SubtitleViewHook.java        # 视图树扫描器 + 页面三态判定（三道门）
 │       │   └── ActivityButtonHook.java      # 播放页按钮生命周期 + 自适应心跳
@@ -136,6 +151,12 @@ DLsiteSound_FloatSubtitle/
 │       └── util/
 │           ├── Utils.java                   # dp/sp 换算等
 │           └── NetLogFile.java              # 网络诊断日志落盘
+├── docs/                            # 详细机制文档（从 README 拆出）
+│   ├── page-detection.md            # 页面判定与响应机制
+│   ├── track-change.md              # 换轨判定与假换轨保护
+│   ├── build.md                     # 环境要求与构建
+│   └── troubleshooting.md           # 日志与排查
+├── gradle/wrapper/                  # Gradle Wrapper 8.4
 ├── build.gradle / settings.gradle
 └── README.md
 ```
