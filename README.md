@@ -5,7 +5,9 @@
 - 当前版本：**1.20.5**（`DLsiteFloat-1.20.5-debug.apk`，包名 `com.sena.dlsitesoundfloat`）
 - 📦 下载 APK：[Releases · v1.20.5](https://github.com/ariinyume/DLSiteSoundFloatingSubtitle/releases/tag/v1.20.5)
 
+
 ---
+
 
 ## 功能特点
 
@@ -16,14 +18,16 @@
   - `悬浮关`：悬浮窗已关闭
   - `悬浮开`：悬浮窗已打开
   - `无字幕`：当前音轨没有可用字幕
-- **离开播放页自动隐藏**：用"三态判定 + 播放页锚点 + 三道证据门"识别页面，非播放页（首页 / 列表页 / mini-player 页）自动隐藏，播放页上不再闪断。详见 [docs/page-detection.md](docs/page-detection.md)。
+- **离开播放页自动隐藏**：用"三态判定 + 播放页锚点 + 三道证据门"识别页面，非播放页（首页 / 列表页 / mini-player 页）自动隐藏。详见 [docs/page-detection.md](docs/page-detection.md)。
 - **换轨智能处理**：切到无字幕音轨时先挂起并显示"无字幕"，3 秒内字幕 JSON 到达则自动恢复；否则清空并自动关窗。同时用**「曲目序号二次确认 + 列表重置识别 + 位置回退兜底」**识别**假换轨**（如第一轨按「上一首」时 App 是空操作、或播放列表被重置回第 0 首），此时**保留字幕、不关窗**。详见 [docs/track-change.md](docs/track-change.md)。手动关掉的窗口不会被字幕晚到重新打开。
 - **可拖动 / 可缩放**：面板任意处按住拖动移动；右下角手柄拖动缩放（默认 85% 屏宽 × 200dp，最小 140×72dp，**纵向最长不超过半屏**）。
 - **阅读体验优化**：窗口上下留白最多半屏；**首行 / 末行强制居中**（即使播到第一条或最后一条字幕，当前行也停在窗口正中）；文字四周最小留白 **15dp**；换行切换时做 **360ms 平滑上滚**动画。
 - **玻璃磨砂质感**：自绘 `GlassPanelDrawable` 实现半透明磨砂底。当前行加粗高亮、字号更大，其余行为半透明上下文。
 - **权限引导与降级**：未授予悬浮窗权限时，首次点击会跳到"在其他应用上层显示"设置页，且**只提示一次**；ONEPLUS/ColorOS 下绕过 `canDrawOverlays()` 误报，直接尝试挂载用真实结果判断。
 
+
 ---
+
 
 ## 适配范围
 
@@ -39,7 +43,24 @@
 
 > ⚠️ 适配依赖目标 App 的内部实现（视图结构、播放器类名、网络栈），**App 大版本更新可能导致模块失效**，需随版本重新适配。
 
+
 ---
+
+
+
+## 测试环境
+
+软件版本：DLsiteSound 2.18.1(570)
+
+设备：
+一加 15 ColorOS 16.0.10.500(CN01)
+一加 12 ColorOS 16.0.10.500(CN01)
+
+
+
+---
+
+
 
 ## 文档
 
@@ -52,53 +73,26 @@
 | [docs/build.md](docs/build.md) | 环境要求与构建：运行环境、构建环境、构建命令、版本规则 |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | 日志与排查：完整日志对照表、排障顺序、版本确认 |
 
+
 ---
+
 
 ## 使用方式
 
 1. **获取模块**：自行构建（见 [docs/build.md](docs/build.md)），或从发布页下载 `DLsiteFloat-<版本>-debug.apk`。
-2. **安装并启用**：把 APK 装到已 root 设备 → 打开 **LSPosed Manager** → 启用本模块 → 作用域勾选 **`jp.co.eisys.dlsitesound`** → **强制停止** DLsiteSound 后重新打开。
+2. **安装并启用**：把 APK 装到已 root 设备 → 打开 **LSPosed Manager** 或 同类→ 启用本模块 → 作用域勾选 **`jp.co.eisys.dlsitesound`** → **强制停止** DLsiteSound 后重新打开。
 3. **授予悬浮窗权限**：
-   - 通用：系统设置 → 应用 → DLsiteSound → 权限 → 显示在其他应用上层。
-   - OPPO/ColorOS：设置 → 应用 → 应用管理 → DLsiteSound → 权限 → 悬浮窗（**给 DLsiteSound 授权，给模块授权无效**）。
-4. **打开有字幕的播放页**：右下角（播放控制条上方）出现本模块按钮。
+   - 第一步：系统设置 → 应用 → DLsiteSound → 权限管理 → 特殊应用权限 → 悬浮窗。
+   - 第二步：设置 → 应用 → 应用管理 → DLsiteSound Floating Subtitle → 权限管理 → 特殊应用权限 → 悬浮窗。
+   - 如有需要，可以允许`后台弹出界面`
+4. **打开有字幕的播放页**：右下角（播放控制条下方）出现本模块按钮。
    - 点一下在 `悬浮关 / 悬浮开` 间切换；无字幕时按钮显示`无字幕`且不可开。
    - 离开播放页（回到首页 / 列表页等）按钮与悬浮窗自动隐藏。
 5. **操作悬浮窗**：面板任意处按住拖动可移动；右下角手柄拖动可缩放。点面板（非手柄）可切换右上角关闭按钮（✕，30dp 显示 / 点击区）的显隐；点 ✕ 关闭窗口。
 
-### 日志与排查
-- **LSPosed 日志**过滤关键字 `DLsiteSoundFloat`：
-  - `[DLsiteSoundFloat:Network]` 网络拦截 / 字幕 JSON 解析
-  - `[DLsiteSoundFloat:Source]` 音轨切换（含序号确认与假换轨忽略）
-  - `[DLsiteSoundFloat:View]` 字幕视图识别与页面判定（含 `verdict=` 证据）
-  - `[DLsiteSoundFloat:Button]` 按钮生命周期与"是否播放页"判定
-  - `[DLsiteSoundFloat:Window]` 悬浮窗显隐 / 拖拽 / 权限失败
-
-- **页面判定 `verdict=` 证据行的关键字段**：
-
-  | 字段 | 含义 | 期望 |
-  | --- | --- | --- |
-  | `paired=true(N)` | 主滑条是否配上 N 个时间文本 | 播放页**恒为 true**；若为 false 会看到 `anchor adopted` 兜底 |
-  | `rejected=N` | 被"页面容器可见面积 <60%"否掉的滑条数 | 只在**切页瞬间** >0；常年 >0 说明门太严（调 `PAGE_CONTAINER_MIN_VISIBLE_RATIO`） |
-  | `anchor=<cls hNNNN visNN% kidsN>` | 锚点容器及其可见面积 | `vis` 常年接近 100% 说明锚点选得过高（提高 `ANCHOR_MIN_H_RATIO`） |
-  | `anchor=dead #N` | 锚点连续失效次数 | 播放页上出现 `#4 -> hide` 才算真正离开；`#1~#3` 是转场假死 |
-
-  > OTHER 必须**连出 2 次且持续 ≥250ms** 才跟 `button hidden` —— 这就是"闪一下"被吃掉的判据。
-
-- **换轨判定关键日志**：
-
-  | 日志 | 含义 | 说明 |
-  | --- | --- | --- |
-  | `ignored … (track index unchanged=N, no-op navigation)` | 方法被调、但序号没变 | **这是"假换轨"被挡住的标志**，不该出现 `SUSPEND` |
-  | `track changed via … \| pos=Nms` | 真的判定为换轨 | `pos` 是当时的播放位置，便于判断是否真回退 |
-  | `seeded track index=N` | 序号基线种入 | 出现在 `AudioPlaylist.setMediaSource` 时 |
-  | `track decision: SPURIOUS track change` | 兜底确认是假换轨 | **保留字幕、不关窗**（第二层救回来了） |
-  | `track decision: NO subtitles for this track` | 真换轨 + 该音轨无字幕 | 清空 cues + 自动关窗 |
-  | `track decision: subtitle json arrived` | 真换轨 + 新字幕已到达 | 保留新字幕 |
-
-- **网络诊断日志**：`/sdcard/Download/dlsitefloat_net.log`（前 150 个响应的 URL / body 长度 / 是否含字幕 JSON），用于定位真实字幕接口。
 
 ---
+
 
 ## 意见反馈
 
@@ -107,20 +101,26 @@
   2. DLsiteSound 的版本号
   3. 复现步骤 + LSPosed 日志（`DLsiteSoundFloat` 过滤）+ 必要时 `dlsitefloat_net.log`
 - **提交前请先确认**：装的是不是最新 APK——看 LSPosed 日志里的
-  `==== BUILD 1.20.4 (track-change index verification + spurious-change guard) ====` 一行，版本不对的话功能不生效多半只是装了旧包。
+  `==== BUILD 1.20.4 (track-change index verification + spurious-change guard) ====` 一行。
 - 仓库地址：<https://github.com/ariinyume/DLSiteSoundFloatingSubtitle>
 - 提交 Issue：<https://github.com/ariinyume/DLSiteSoundFloatingSubtitle/issues>
 
+
 ---
+
 
 ## 免责声明
 
 1. 本项目**仅用于个人技术研究 / 学习目的**，不得用于任何商业用途或盈利性分发。
-2. 本项目只研究**客户端字幕显示行为**，不绕过任何 DRM，不修改、不提取受版权保护的音频/文本内容本体。字幕文件由 DLsiteSound 官方服务器下发，请尊重内容版权方权益。
-3. 使用本模块需要 **root 与 Xposed 框架**，可能违反部分设备的保修条款或某些 ROM 的安全策略，**由此带来的任何风险由使用者自行承担**。
+2. 本项目只研究**客户端字幕显示行为**，不绕过任何 DRM，不修改、不提取受版权保护的音频/文本内容本体。字幕文件由 DLsiteSound 官方服务器下发，请尊重内容版权方权益，请通过正规渠道购买与支持作品。
+3. 使用本模块需要 **Root 与 Xposed 框架**，可能违反部分设备的保修条款或某些 ROM 的安全策略，可能带来系统不稳定、失去保修、安全风险等后果，**由此带来的任何风险由使用者自行承担**。
 4. 本模块与 DLsiteSound（eisys 株式会社）及各手机厂商**无任何隶属或合作关系**。因使用本模块导致的任何问题（包括但不限于账号异常、设备不稳定、数据丢失等），作者**不承担任何责任**。
 5. 适配依赖目标 App 的内部实现，App 更新可能导致模块失效；作者**不保证**模块长期可用或对所有版本/机型都适配。
 6. 下载、使用本模块即视为同意上述条款。
+
+愿各位都能享受一段只属于你甜蜜的恋情 ❤
+Ari
+
 
 ---
 
