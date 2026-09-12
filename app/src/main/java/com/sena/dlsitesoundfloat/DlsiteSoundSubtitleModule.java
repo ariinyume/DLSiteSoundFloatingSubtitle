@@ -28,7 +28,9 @@ public class DlsiteSoundSubtitleModule implements IXposedHookLoadPackage {
 
         XposedBridge.log("[DLsiteSoundFloat] Module loaded for " + lpparam.packageName);
         // 版本标识：每次排查「功能怎么没生效」时，先看这行确认装的是不是最新 APK。
-        XposedBridge.log("[DLsiteSoundFloat] ==== BUILD 1.20.4 (track-change index verification + spurious-change guard) ====");
+        XposedBridge.log("[DLsiteSoundFloat] ==== BUILD 1.20.5 (index-stale-guard + playlist-reset-guard + spurious-criterion-fix) ====");
+        XposedBridge.log("[DLsiteSoundFloat] build applicationId=" + BuildConfig.APPLICATION_ID
+                + " versionName=" + BuildConfig.VERSION_NAME);
 
         Context systemCtx = null;
         try {

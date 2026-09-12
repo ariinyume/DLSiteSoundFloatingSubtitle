@@ -6,7 +6,7 @@
 
     <application
         android:label="@string/app_name"
-        android:icon="@android:drawable/ic_menu_preferences"
+        android:icon="@mipmap/ic_launcher"
         android:allowBackup="false">
 
         <meta-data

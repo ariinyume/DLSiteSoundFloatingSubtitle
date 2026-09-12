@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">DLsiteSound Floating Subtitle</string>
+    <!-- LSPosed 插件名带 _debug 后缀，便于与其它模块区分 -->
+    <string name="app_name">DLsiteSound Floating Subtitle_debug</string>
     <string name="channel_name">Floating Subtitle Service</string>
     <string name="channel_desc">Keep the floating subtitle window alive</string>
     <string name="service_notification_title">DLsiteSound Floating Subtitle</string>

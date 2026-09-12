@@ -15,4 +15,8 @@ captures/
 .DS_Store
 *.log
 
+# 构建产物：APK 不入库（发布走 GitHub Releases）
+*.apk
+*.aab
+
 # 注意：gradle.properties 是构建必需（android.useAndroidX 等），不要忽略，需纳入版本库

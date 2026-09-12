@@ -2,10 +2,19 @@ plugins {
     id 'com.android.application'
 }
 
-// 版本号：每次打包前把这里改成新版本，APK 文件名会自动带上它。
-//   → app/build/outputs/apk/debug/DLsiteFloat-<版本>-debug.apk
-// 版本规则（1.20.1 起）：第三位递增 —— 1.20.1 → 1.20.2 → 1.20.3 → 1.20.4 …
-def appVersionTag = '1.20.4'
+// ============================================================================
+//  版本 / 包名 规则（v28）
+//
+//  单包：包名 com.sena.dlsitesoundfloat，版本 1.20.5，应用名带 _debug 后缀
+//        供 LSPosed 里与其它模块区分。
+//
+//  ⚠️ namespace 与 applicationId 同为 com.sena.dlsitesoundfloat：
+//     java 包名与 assets/xposed_init 里的入口类全名都跟 namespace 走。
+// ============================================================================
+
+def appVersionTag = '1.20.5'
+def appVersionCode = 10205
+def appVersionName = '1.20.5'
 
 android {
     namespace 'com.sena.dlsitesoundfloat'
@@ -15,15 +24,13 @@ android {
         applicationId "com.sena.dlsitesoundfloat"
         minSdk 24
         targetSdk 34
-        // versionCode 必须单调递增：1.20.4 → 10204（1*10000 + 20*100 + 4）
-        versionCode 10204
-        versionName "1.20.4"
+        versionCode appVersionCode
+        versionName appVersionName
     }
 
     buildTypes {
-        release {
-            minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        debug {
+            // 沿用默认 debug 签名
         }
     }
 
@@ -32,16 +39,21 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
 
+    buildFeatures {
+        // 需要 BuildConfig.APPLICATION_ID / VERSION_NAME 打进日志
+        buildConfig true
+    }
+
     tasks.withType(JavaCompile) {
         options.encoding = 'UTF-8'
     }
 }
 
-// 让 APK 产物文件名带上版本号，便于区分各次打包。
+// 让 APK 产物文件名带上「版本 + 构建类型」，便于区分各次打包。
 androidComponents {
     onVariants(selector().all()) { variant ->
         variant.outputs.each { output ->
-            output.outputFileName.set("DLsiteFloat-${appVersionTag}-${variant.name}.apk")
+            output.outputFileName.set("DLsiteFloat-${appVersionTag}-${variant.buildType}.apk")
         }
     }
 }

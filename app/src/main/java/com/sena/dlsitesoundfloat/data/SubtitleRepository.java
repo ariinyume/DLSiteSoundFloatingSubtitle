@@ -357,7 +357,6 @@ public class SubtitleRepository {
             cueCount = cues.size();
             pendingToken++;                 // 作废上一次排队的判定
             token = pendingToken;
-            currentCueIndex = -1;
             lastScannedSecond = Integer.MIN_VALUE;
             if (ago <= PRELOAD_TOLERANCE_MS) {
                 // 刚加载过字幕 JSON：大概率就是新音轨的 → 保留
@@ -400,6 +399,8 @@ public class SubtitleRepository {
         int subCount = 0;
         int samples = 0;
         long startPos = -1L;
+        long curPos = -1L;
+        boolean sawReset = false;
         synchronized (lock) {
             if (token != pendingToken || !pendingTrackDecision) {
                 return; // 期间又换轨、或新字幕已到达（都已作废本次判定）
@@ -408,6 +409,8 @@ public class SubtitleRepository {
             cueCount = cues.size();
             samples = pendingPosSamples;
             startPos = pendingStartPosMs;
+            curPos = playbackPositionMs;
+            sawReset = pendingSawPositionReset;
             pendingStartPosMs = -1L;
             pendingSawPositionReset = false;
             pendingPosSamples = 0;
@@ -416,15 +419,25 @@ public class SubtitleRepository {
                 // 这 3 秒里播放位置若一直在往前走、从未回退，说明音频根本没重开新轨
                 // （典型场景：在**第一轨**按「上一首」，App 是 no-op，继续播第一轨）。
                 // 此时若照旧判定「无字幕」，就会清空 cues 并关掉悬浮窗 —— 这正是 v27 要修的 bug。
-                if (!pendingSawPositionReset && samples >= PENDING_MIN_POS_SAMPLES
-                        && playbackPositionMs >= 0) {
+                // ⚠️ v28 修正：v27 这里用「位置从未回退」当假换轨的判据，前提**不成立** ——
+                // 实测 54 次换轨里 52 次 pos=0ms（切轨瞬间位置就被清零），窗口内位置从 0
+                // 一路往上涨，永远满足「没回退」→ **所有真换轨都被误判成假换轨**，
+                // 于是切到无字幕音轨时字幕不切、继续播旧字幕（问题 2）。
+                // 现在改成**严格要求观察到"位置确实大幅回退"**才算假换轨；
+                // 否则按真换轨处理（照旧判「无字幕」），把默认行为改回正确的一侧。
+                if (pendingSawPositionReset) {
                     spurious = true;
-                    // 撤销挂起：按当前播放位置重算字幕行，画面立刻接回原音轨
+                    // 撤销挂起。**不**用 playbackPositionMs 重算字幕行 ——
+                    // 那个值在换轨瞬间会被清零/残留旧值，据其重算会跳回已播过的字幕（问题 1）。
+                    // 保留原有 currentCueIndex，交给后续正常的位置回调推进。
                     lastScannedSecond = Integer.MIN_VALUE;
-                    int sec = (int) Math.floor(playbackPositionMs / 1000.0);
-                    lastScannedSecond = sec;
-                    int idx = computeIndexAtSecondLocked(sec);
-                    currentCueIndex = idx >= 0 ? idx : -1;
+                } else if (samples > 0 && pendingStartPosMs > POSITION_RESET_TOLERANCE_MS
+                        && playbackPositionMs >= 0
+                        && playbackPositionMs > pendingStartPosMs) {
+                    // 位置基准明显大于 0（说明基线取到的是"旧轨还在播"的位置），
+                    // 而当前位置比它还大 → 音频一直在往前走、从未重开 → 确实没换轨。
+                    spurious = true;
+                    lastScannedSecond = Integer.MIN_VALUE;
                 } else {
                     // 等待期内没有任何新的字幕 JSON → 该音轨没有字幕
                     noSubtitles = true;
@@ -447,7 +460,8 @@ public class SubtitleRepository {
         }
         if (spurious) {
             XposedBridge.log("[DLsiteSoundFloat] track decision: SPURIOUS track change"
-                    + " (position never reset, samples=" + samples + ", startPos=" + startPos
+                    + " (sawPositionReset=" + sawReset + ", samples=" + samples
+                    + ", startPos=" + startPos + ", curPos=" + curPos
                     + ") -> keep cues=" + cueCount);
         } else if (noSubtitles) {
             XposedBridge.log("[DLsiteSoundFloat] track decision: NO subtitles for this track"
