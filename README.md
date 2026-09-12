@@ -80,8 +80,8 @@
 1. **获取模块**：自行构建（见 [docs/build.md](docs/build.md)），或从发布页下载 `DLsiteFloat-<版本>-debug.apk`。
 2. **安装并启用**：把 APK 装到已 root 设备 → 打开 **LSPosed Manager** 或 同类→ 启用本模块 → 作用域勾选 **`jp.co.eisys.dlsitesound`** → **强制停止** DLsiteSound 后重新打开。
 3. **授予悬浮窗权限**：
-   - 第一步：系统设置 → 应用 → DLsiteSound → 权限管理 → 特殊应用权限 → 悬浮窗。
-   - 第二步：设置 → 应用 → 应用管理 → DLsiteSound Floating Subtitle → 权限管理 → 特殊应用权限 → 悬浮窗。
+   - 第一步：系统设置 → 应用 → DLsiteSound → 权限管理 → 特殊应用权限 → `悬浮窗`。
+   - 第二步：设置 → 应用 → 应用管理 → DLsiteSound Floating Subtitle → 权限管理 → 特殊应用权限 → `悬浮窗`。
    - 如有需要，可以允许`后台弹出界面`
 4. **打开有字幕的播放页**：右下角（播放控制条下方）出现本模块按钮。
    - 点一下在 `悬浮关 / 悬浮开` 间切换；无字幕时按钮显示`无字幕`且不可开。
