@@ -52,10 +52,12 @@
 
 ## 5. 排障顺序（血泪经验）
 
-1. **先确认版本**：看日志里的 `==== BUILD … ====` 一行（1.20.5 起还有 `build applicationId=… versionName=…`）。
+1. **先确认悬浮窗权限**：**DLsiteSound 与模块 App 各授一次**「悬浮窗」权限（路径见 [build.md](build.md)）。
+   窗口 / 按钮完全出不来时优先查这里——权限缺失会在 `[DLsiteSoundFloat:Window]` 下记权限失败。
+2. **再确认版本**：看日志里的 `==== BUILD … ====` 一行（1.20.5 起还有 `build applicationId=… versionName=…`）。
    绝大多数"功能没生效"其实只是**装了旧包**。
-2. **再看功能链路日志**：按上面第 2、3 节的对照表逐条核对。
-3. **最后才怀疑逻辑**：改判定代码前，务必先读 [page-detection.md](page-detection.md) 和
+3. **然后看功能链路日志**：按上面第 2、3 节的对照表逐条核对。
+4. **最后才怀疑逻辑**：改判定代码前，务必先读 [page-detection.md](page-detection.md) 和
    [track-change.md](track-change.md)——这两块的坑都复发过 7 次以上。
 
 ## 6. 版本确认
