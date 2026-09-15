@@ -2,8 +2,9 @@
 
 > 一个 LSPosed / Xposed 模块，在 DLsiteSound（DLsite 音频 App）的**播放页**上挂一个与播放进度同步的**系统级悬浮字幕窗**。
 
-- 当前版本：**1.20.5**（`DLsiteFloat-1.20.5-debug.apk`，包名 `com.sena.dlsitesoundfloat`）
-- 📦 下载 APK：[Releases · v1.20.5](https://github.com/ariinyume/DLSiteSoundFloatingSubtitle/releases/tag/v1.20.5)
+- 当前版本：**1.21.0**（`DLsiteFloat-1.21.0-debug.apk`，包名 `com.sena.dlsitesoundfloat`）
+- 📦 下载 APK：[Releases · v1.21.0](https://github.com/ariinyume/DLSiteSoundFloatingSubtitle/releases/tag/v1.21.0)
+- 📦 历史版本：[Releases · v1.20.5](https://github.com/ariinyume/DLSiteSoundFloatingSubtitle/releases/tag/v1.20.5)
 
 
 ---
@@ -99,7 +100,7 @@
   2. DLsiteSound 的版本号
   3. 复现步骤 + LSPosed 日志（`DLsiteSoundFloat` 过滤）+ 必要时 `dlsitefloat_net.log`
 - **提交前请先确认**：装的是不是最新 APK——看 LSPosed 日志里的
-  `==== BUILD 1.20.4 (track-change index verification + spurious-change guard) ====` 一行。
+  `==== BUILD 1.21.0 (launcher icon refined: r=300 rounded corners, smooth edges (no grey rim), outer shadow offset down+right so it sits clearly BELOW the icon [card-on-table drop shadow]; regenerated at mdpi/hdpi/xhdpi/xxhdpi/xxxhdpi with proportional scaling; version stays 1.21.0 / code 12100) ====` 一行。
 - 仓库地址：<https://github.com/ariinyume/DLSiteSoundFloatingSubtitle>
 - 提交 Issue：<https://github.com/ariinyume/DLSiteSoundFloatingSubtitle/issues>
 
