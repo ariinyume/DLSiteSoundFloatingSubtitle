@@ -14,7 +14,7 @@
             android:value="true" />
         <meta-data
             android:name="xposeddescription"
-            android:value="DLsiteSound 悬浮字幕窗（进程内 WindowManager 实现）" />
+            android:value="DLSite Sound 字幕悬浮窗插件" />
         <meta-data
             android:name="xposedminversion"
             android:value="93" />

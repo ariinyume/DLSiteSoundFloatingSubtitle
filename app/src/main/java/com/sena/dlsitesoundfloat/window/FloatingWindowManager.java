@@ -25,8 +25,10 @@ import de.robv.android.xposed.XposedBridge;
  * 因此与各个 Hook 共享同一个 SubtitleRepository 实例，字幕数据天然互通。
  *
  * 悬浮窗的权限归属（重要）：窗口是在 DLsiteSound 的进程里、用它的 Context 挂的，
- * 所以类型 2038 (TYPE_APPLICATION_OVERLAY) 需要的是【DLsiteSound 自己】的
- * SYSTEM_ALERT_WINDOW（显示在其他应用上层 / 悬浮窗）权限，而不是本模块 App 的。
+ * 所以类型 2038 (TYPE_APPLICATION_OVERLAY) 首先需要【DLsiteSound 自己】的
+ * SYSTEM_ALERT_WINDOW（显示在其他应用上层 / 悬浮窗）权限 —— 这是必需项。
+ * ⚠️ 实测（ColorOS）**模块 App 侧也建议一并授予**该权限：系统会在模块侧再拦一道，
+ * 两者都开最稳妥。详见 docs/build.md 的「运行环境」。
  *
  * 交互（v5）：
  *   - 面板任意处按住拖动 → 移动窗口
@@ -66,6 +68,20 @@ public class FloatingWindowManager {
     private static final boolean ENABLE_SYSTEM_BLUR_BEHIND = false;
 
     private static FloatingWindowManager sInstance;
+
+    // ---- v29：窗口几何记忆（同一进程内生效）----
+    /**
+     * 最近一次的窗口尺寸 / 位置。0 或 {@link Integer#MIN_VALUE} 表示「还没设定过」。
+     *
+     * 背景：换轨时会「自动关窗（判无字幕后）→ 字幕到达再开窗」，窗口被整个重建；
+     * 旧实现每次重建都套用默认尺寸（85% 屏宽 × 200dp）与默认位置，
+     * 于是 Ari 拖好的大小/位置会被重置回默认 —— 这就是「短时间换轨后悬浮窗变回默认尺寸」。
+     * 这里把几何记在静态字段里，重建时优先恢复（并按当前屏幕重新夹取，防旋转/分辨率变化后跑出屏外）。
+     */
+    private static int sLastW = 0;
+    private static int sLastH = 0;
+    private static int sLastX = Integer.MIN_VALUE;
+    private static int sLastY = Integer.MIN_VALUE;
 
     private Context appContext;
     private WindowManager wm;
@@ -133,10 +149,24 @@ public class FloatingWindowManager {
 
             int screenW = ctx.getResources().getDisplayMetrics().widthPixels;
             int screenH = ctx.getResources().getDisplayMetrics().heightPixels;
+            int minW = dp(ctx, MIN_W_DP);
+            int minH = dp(ctx, MIN_H_DP);
+            int maxH = screenH * MAX_H_SCREEN_RATIO / 100;
+
+            // v29：优先恢复上次的尺寸 / 位置；从未设定过才用默认值。
+            // 恢复值一律按当前屏幕重新夹取（旋转、分辨率变化、字体缩放后仍保证窗口可见）。
+            int defW = Math.max(minW, screenW * DEFAULT_W_RATIO / 100);
+            int defH = dp(ctx, DEFAULT_H_DP);
+            int w = clampInt(sLastW > 0 ? sLastW : defW, minW, screenW);
+            int h = clampInt(sLastH > 0 ? sLastH : defH, minH, maxH);
+            int x = clampInt(sLastX != Integer.MIN_VALUE ? sLastX : (int) (screenW * 0.075),
+                    0, Math.max(0, screenW - w));
+            int y = clampInt(sLastY != Integer.MIN_VALUE ? sLastY : (int) (screenH * 0.32),
+                    0, Math.max(0, screenH - h));
+            boolean restored = sLastW > 0 || sLastX != Integer.MIN_VALUE;
 
             params = new WindowManager.LayoutParams(
-                    Math.max(dp(ctx, MIN_W_DP), screenW * DEFAULT_W_RATIO / 100),
-                    dp(ctx, DEFAULT_H_DP),
+                    w, h,
                     Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                             ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
                             : WindowManager.LayoutParams.TYPE_PHONE,
@@ -144,8 +174,8 @@ public class FloatingWindowManager {
                             | WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
                     PixelFormat.TRANSLUCENT);
             params.gravity = Gravity.TOP | Gravity.START;
-            params.x = (int) (screenW * 0.075);
-            params.y = (int) (screenH * 0.32);
+            params.x = x;
+            params.y = y;
 
             boolean blurOn = applyBlurBehind(ctx);
             wm.addView(view, params);
@@ -154,7 +184,9 @@ public class FloatingWindowManager {
             view.setBlurBehindActive(blurOn); // 玻璃底按模糊是否生效自适应通透度
             view.updateFromRepository();
             XposedBridge.log(TAG + " floating window shown (pkg=" + ctx.getPackageName()
-                    + ", " + params.width + "x" + params.height + ")");
+                    + ", " + params.width + "x" + params.height
+                    + " at " + params.x + "," + params.y
+                    + (restored ? " [geometry restored]" : " [default geometry]") + ")");
         } catch (Throwable e) {
             lastFailMs = SystemClock.uptimeMillis(); // 只有失败才参与节流
             boolean canDraw = Build.VERSION.SDK_INT < Build.VERSION_CODES.M
@@ -232,6 +264,7 @@ public class FloatingWindowManager {
     }
 
     private void hide() {
+        saveGeometry(); // v29：关窗前固化几何，下次开窗直接恢复
         try {
             if (wm != null && view != null) {
                 wm.removeView(view);
@@ -250,6 +283,22 @@ public class FloatingWindowManager {
     private static int dp(Context ctx, float v) {
         return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v,
                 ctx.getResources().getDisplayMetrics());
+    }
+
+    private static int clampInt(int v, int lo, int hi) {
+        return Math.max(lo, Math.min(hi, v));
+    }
+
+    /** v29：把当前窗口几何写进静态记忆（尺寸 + 位置）。 */
+    private void saveGeometry() {
+        WindowManager.LayoutParams p = params;
+        if (p == null) {
+            return;
+        }
+        sLastW = p.width;
+        sLastH = p.height;
+        sLastX = p.x;
+        sLastY = p.y;
     }
 
     /**
@@ -325,6 +374,7 @@ public class FloatingWindowManager {
                             wm.updateViewLayout(view, params);
                         } catch (Throwable ignored) {
                         }
+                        saveGeometry(); // v29：随时记住尺寸/位置，供「关窗 → 重开」时恢复
                         return true;
                     }
                     case MotionEvent.ACTION_UP: {
@@ -336,6 +386,7 @@ public class FloatingWindowManager {
                             XposedBridge.log(TAG + " touch UP moved=" + moved
                                     + " resizing=" + resizing + " -> no tap toggle");
                         }
+                        saveGeometry(); // v29：抬手时再固化一次
                         resizing = false;
                         moved = false;
                         return true;

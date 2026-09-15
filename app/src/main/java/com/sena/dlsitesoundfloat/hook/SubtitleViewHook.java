@@ -743,4 +743,81 @@ public class SubtitleViewHook {
                 || (cp >= 0xFF66 && cp <= 0xFF9D)  // 半角カタカナ
                 || (cp >= 0x3000 && cp <= 0x303F); // 句読点（、、。等）
     }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  v33 诊断：一次性把视图树结构打到日志
+    //
+    //  用途（Ari 2026-09-14 需求②）：打算把「悬浮窗开关按钮」**注入到播放器传输控件行**里
+    //  （跟播放键同一排），靠宿主视图树的挂载/销毁天然实现「零延迟显隐」。
+    //  但 RN 的布局是 Yoga 算好后直接 `view.layout(...)`，ViewGroup 并不参与子视图定位，
+    //  盲插一个外来子 View 有把播放器 UI 搞乱的风险 —— 所以先打一份**真实结构**再动手。
+    //
+    //  ⚠️ v34 教训：第一次 dump 只打到深度 **8**，而 RN 真正的内容从深度 **9** 才开始 ——
+    //  日志里最后一行停在第二个 `SafeAreaProvider`，一个播放器控件都没看到。
+    //  深度上限改成 22（RN 的包装层很多，8 根本不够）。
+    //
+    //  另外 v34 已经论证过「注入控件行」**不可行**（ReactViewGroup 无条件拦截触摸，
+    //  外来 View 收不到点击，见 ActivityButtonHook 类头 v34 段），
+    //  这份 dump 现在只作为**结构参考**保留。
+    //
+    //  输出格式（每行一个 View，按深度缩进，坐标是**屏幕绝对坐标**）：
+    //      ClassName @x,y wxh [vis=…] [clickable] [kids=N] [text="…"]
+    // ─────────────────────────────────────────────────────────────────────
+    private static final int DUMP_MAX_DEPTH = 22;
+    private static final int DUMP_MAX_LINES = 260;
+
+    /** 打一份以 {@code root} 为根的视图树结构；「只打一次」由调用方保证。 */
+    public static void dumpViewTree(ViewGroup root) {
+        if (root == null) {
+            return;
+        }
+        StringBuilder sb = new StringBuilder();
+        int[] budget = {DUMP_MAX_LINES};
+        dumpRec(root, 0, 0, 0, sb, budget);
+        XposedBridge.log(TAG + " ===== view tree dump begin (<= " + DUMP_MAX_LINES + " lines) =====");
+        for (String line : sb.toString().split("\n")) {
+            XposedBridge.log(TAG + " DUMP " + line);
+        }
+        XposedBridge.log(TAG + " ===== view tree dump end =====");
+    }
+
+    private static void dumpRec(View v, int depth, int ox, int oy,
+                                StringBuilder sb, int[] budget) {
+        if (v == null || depth > DUMP_MAX_DEPTH || budget[0] <= 0) {
+            return;
+        }
+        budget[0]--;
+        int x = ox + v.getLeft();
+        int y = oy + v.getTop();
+        for (int i = 0; i < depth; i++) {
+            sb.append("  ");
+        }
+        sb.append(v.getClass().getSimpleName())
+                .append(" @").append(x).append(',').append(y)
+                .append(' ').append(v.getWidth()).append('x').append(v.getHeight());
+        if (v.getVisibility() != View.VISIBLE) {
+            sb.append(" vis=").append(v.getVisibility());
+        }
+        if (v.isClickable()) {
+            sb.append(" clickable");
+        }
+        if (v instanceof ViewGroup) {
+            sb.append(" kids=").append(((ViewGroup) v).getChildCount());
+        }
+        CharSequence t = getViewText(v);
+        if (t != null && t.length() > 0) {
+            String s = t.toString().replace('\n', ' ');
+            if (s.length() > 30) {
+                s = s.substring(0, 30) + "…";
+            }
+            sb.append(" text=\"").append(s).append('"');
+        }
+        sb.append('\n');
+        if (v instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                dumpRec(g.getChildAt(i), depth + 1, x, y, sb, budget);
+            }
+        }
+    }
 }

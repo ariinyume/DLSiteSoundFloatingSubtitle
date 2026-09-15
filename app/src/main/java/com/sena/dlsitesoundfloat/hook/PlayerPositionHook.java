@@ -31,11 +31,24 @@ public class PlayerPositionHook {
     private static final int PRIO_PLAYLIST = 1;
     private static final int PRIO_PLAYER = 2;
 
+    private static final String EXO_IMPL = "androidx.media3.exoplayer.ExoPlayerImpl";
+    /**
+     * v29：「播放状态」的轮询间隔。
+     *
+     * 为什么不直接只 hook {@code getPlaybackState()}：JS 侧从来不调用它（和当年
+     * {@code getCurrentTrackIndex()} 一模一样的坑），挂上去会静默 0 命中。
+     * 因此改在**已经确认会被高频调用**的 {@code getCurrentPosition()} 之后顺带反射读一次状态，
+     * 并用本间隔节流（状态是 int，读一次开销极小，节流只为省锁竞争）。
+     */
+    private static final long STATE_POLL_INTERVAL_MS = 300L;
+    private static volatile long sLastStatePollMs = 0L;
+
     /** 当前生效的源优先级；越小越优先。 */
     private static volatile int sActivePriority = Integer.MAX_VALUE;
 
     public static void hook(ClassLoader cl, SubtitleRepository repo) {
         hookExoPosition(cl, repo);
+        hookPlaybackState(cl, repo);
         hookExpoCurrentTime(cl, repo, "expo.modules.audio.AudioPlaylist", PRIO_PLAYLIST);
         hookExpoCurrentTime(cl, repo, "expo.modules.audio.AudioPlayer", PRIO_PLAYER);
     }
@@ -43,19 +56,68 @@ public class PlayerPositionHook {
     /** 采集点 0：Media3 ExoPlayer 的真实播放位置（毫秒）。 */
     private static void hookExoPosition(ClassLoader cl, SubtitleRepository repo) {
         try {
-            Class<?> cls = XposedHelpers.findClass("androidx.media3.exoplayer.ExoPlayerImpl", cl);
+            Class<?> cls = XposedHelpers.findClass(EXO_IMPL, cl);
             XposedHelpers.findAndHookMethod(cls, "getCurrentPosition", new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
                     Object r = param.getResult();
                     if (r instanceof Long) {
                         feed((Long) r, PRIO_EXO);
+                        pollPlaybackState(param.thisObject); // v29：顺带采一次播放状态
                     }
                 }
             });
             XposedBridge.log(TAG + " hooked ExoPlayerImpl.getCurrentPosition() [prio=0]");
         } catch (Throwable e) {
             XposedBridge.log(TAG + " ExoPlayerImpl.getCurrentPosition hook failed: " + e.getMessage());
+        }
+    }
+
+    /**
+     * v29：播放状态采集（双保险）——「播放结束自动关窗」依赖它。
+     *
+     * ① 主动 hook {@code getPlaybackState()}：万一 JS / Media3 内部会读，就能第一时间拿到；
+     * ② 位置回调里顺带轮询（见 {@link #pollPlaybackState}）：这条才是主力，
+     *    因为它挂在**确定会被调用**的方法上。
+     *
+     * 状态取值来自 {@code androidx.media3.common.Player}：
+     * 1=IDLE / 2=BUFFERING / 3=READY / 4=ENDED。
+     * 只有 ENDED 会被仓库当成「播放结束」，IDLE 不处理（加载新内容时也会短暂 IDLE，误判会乱关窗）。
+     */
+    private static void hookPlaybackState(ClassLoader cl, SubtitleRepository repo) {
+        try {
+            Class<?> cls = XposedHelpers.findClass(EXO_IMPL, cl);
+            XposedHelpers.findAndHookMethod(cls, "getPlaybackState", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    Object r = param.getResult();
+                    if (r instanceof Integer) {
+                        SubtitleRepository.getInstance().setPlaybackState((Integer) r);
+                    }
+                }
+            });
+            XposedBridge.log(TAG + " hooked ExoPlayerImpl.getPlaybackState() [playback-ended detection]");
+        } catch (Throwable e) {
+            XposedBridge.log(TAG + " ExoPlayerImpl.getPlaybackState hook failed: " + e.getMessage());
+        }
+    }
+
+    /** 带节流地反射读一次播放状态；任何异常都静默（不能影响 App 自身调用）。 */
+    private static void pollPlaybackState(Object player) {
+        if (player == null) {
+            return;
+        }
+        long now = android.os.SystemClock.uptimeMillis();
+        if (now - sLastStatePollMs < STATE_POLL_INTERVAL_MS) {
+            return;
+        }
+        sLastStatePollMs = now;
+        try {
+            Object st = XposedHelpers.callMethod(player, "getPlaybackState");
+            if (st instanceof Integer) {
+                SubtitleRepository.getInstance().setPlaybackState((Integer) st);
+            }
+        } catch (Throwable ignored) {
         }
     }
 

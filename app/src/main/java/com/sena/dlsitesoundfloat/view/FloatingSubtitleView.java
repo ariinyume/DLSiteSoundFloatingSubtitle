@@ -12,6 +12,7 @@ import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewTreeObserver;
 import android.view.animation.DecelerateInterpolator;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -93,6 +94,16 @@ import de.robv.android.xposed.XposedBridge;
  *   4) 【平滑上滚】换行时不再瞬间跳位，改用 {@link ValueAnimator} 在
  *      {@link #SCROLL_ANIM_MS} 毫秒内减速滚动到新位置（视觉上字幕向上滚动）。
  *      仅在"播放推进导致当前行变化"时动画；窗口缩放 / 首次定位仍为立即跳转。
+ *      ⚠️ v20 的实现有一个致命前提错误，见 v40。
+ *
+ * v40：修「上滚动效有时不生效、下一句直接出现」。
+ *   v20 把动画写成「旧滚动量 → 新滚动量」，但内容是**以当前句为中心重建**的：
+ *   y = 内边距 + 前面若干行高度和 + 当前行高/2，而"前面若干行"永远是从窗口左边
+ *   数到当前句 —— 相邻两句行数相同时 y 一模一样，差值恒为 0 → 动画等于没跑。
+ *   （行数不同时差值是"半个行高"，所以用户才会说"有时候生效"。）
+ *   现在滚动量一次写死、动画只走「上一句块中心 → 这一句块中心」的几何距离
+ *   （写在 container 的 translationY 上），并且这一整套在**绘制前**（pre-draw）
+ *   装好，保证第一帧的起点与上一帧画面严丝合缝。
  */
 public class FloatingSubtitleView extends FrameLayout {
     private static final String TAG = "[DLsiteSoundFloat:View]";
@@ -176,6 +187,19 @@ public class FloatingSubtitleView extends FrameLayout {
     /** v20：平滑滚动动画（同一时刻只允许一个，新的会取消旧的）。 */
     private ValueAnimator scrollAnim;
 
+    /**
+     * v40：{@link #renderCues} 本次渲染时，每个 cue 在 container 里占据的
+     * 子 View 下标区间（首/末）。用于算「上一句 → 这一句」的几何位移距离。
+     */
+    private int cueBlockFrom = -1;
+    private int[] cueBlockStart;
+    private int[] cueBlockEnd;
+
+    /** v40：待在「布局完成后、绘制前」执行的居中滚动；{@code pendingTravelLocal < 0} 表示无。 */
+    private int pendingTravelLocal = -1;
+    /** v40：本次位移动画的起点句（上一句的全局 cue 下标），-1 = 无（退化为原来的瞬时定位）。 */
+    private int pendingTravelFromCue = -1;
+
     // 当前字幕行完整显示所需的最小尺寸（像素）。0 表示尚未测量 / 无当前行。
     private int minWidthPx = 0;
     private int minHeightPx = 0;
@@ -208,7 +232,7 @@ public class FloatingSubtitleView extends FrameLayout {
     /** 重算并把当前字幕行滚动到悬浮窗垂直居中（缩放窗口后调用；v20：不带动画，避免拖拽时抖动）。 */
     public void recenterCurrent() {
         if (currentLocalIndex >= 0) {
-            scrollToCurrent(currentLocalIndex, false);
+            scrollToCurrent(currentLocalIndex, -1);
         }
     }
 
@@ -347,9 +371,11 @@ public class FloatingSubtitleView extends FrameLayout {
             renderCues(cues, currentIdx, from, to);
             lastRenderKey = key;
             // v20：只有「播放推进 → 当前行真的换了」才做平滑上滚；首次定位直接到位。
-            boolean animate = currentIdx >= 0 && lastCenteredCueIndex >= 0
-                    && lastCenteredCueIndex != currentIdx;
-            scrollToCurrent(currentLocalIndex, animate);
+            // v40：滚动目标几乎每句都一样（见 scrollToCurrent 的注释），所以动画不能靠
+            //      「旧滚动量 → 新滚动量」的差值驱动，必须显式走「上一句 → 这一句」的几何距离。
+            int prevCue = lastCenteredCueIndex;
+            boolean animate = currentIdx >= 0 && prevCue >= 0 && prevCue != currentIdx;
+            scrollToCurrent(currentLocalIndex, animate ? prevCue : -1);
             lastCenteredCueIndex = currentIdx >= 0 ? currentIdx : -1;
             return;
         }
@@ -376,6 +402,8 @@ public class FloatingSubtitleView extends FrameLayout {
             minHeightPx = 0;
             currentLocalIndex = -1;
             lastCenteredCueIndex = -1;
+            pendingTravelLocal = -1; // v40：作废还没来得及执行的位移动画
+            pendingTravelFromCue = -1;
             cancelScrollAnim();
             hint.setVisibility(VISIBLE);
             scrollView.setVisibility(GONE);
@@ -388,6 +416,9 @@ public class FloatingSubtitleView extends FrameLayout {
     private void renderMirrored(List<String> lines) {
         container.removeAllViews();
         currentLocalIndex = -1;
+        cueBlockFrom = -1; // v40：镜像内容没有 cue 概念，作废块区间
+        cueBlockStart = null;
+        cueBlockEnd = null;
         minWidthPx = 0;
         minHeightPx = 0;
         for (String line : lines) {
@@ -402,10 +433,17 @@ public class FloatingSubtitleView extends FrameLayout {
     private void renderCues(List<SubtitleCue> cues, int currentIdx, int from, int to) {
         container.removeAllViews();
         currentLocalIndex = -1;
+        // v40：记录每个 cue 的「首/末子 View 下标」——位移动画要靠它算上一句与这一句的距离
+        cueBlockFrom = from;
+        int n = Math.max(0, to - from + 1);
+        cueBlockStart = new int[n];
+        cueBlockEnd = new int[n];
         int childIndex = 0;
         for (int i = from; i <= to; i++) {
             SubtitleCue cue = cues.get(i);
             boolean isCurrent = (i == currentIdx);
+            int k = i - from;
+            cueBlockStart[k] = childIndex;
             if (isCurrent) {
                 // 当前高亮行：合并为单个可自动换行的文本段落（宽度不足时强制换行，≤3 行）。
                 if (currentLocalIndex < 0) {
@@ -430,8 +468,30 @@ public class FloatingSubtitleView extends FrameLayout {
                     childIndex++;
                 }
             }
+            cueBlockEnd[k] = childIndex - 1; // 该 cue 一行都没有时 < 起点，视为无效区间
         }
         measureCurrentCue(cues, currentIdx);
+    }
+
+    /**
+     * v40：取某个全局 cue 下标在 {@link #container} 中的子 View 区间。
+     *
+     * @return {@code [首, 末]}；不在本次渲染窗口内 / 该 cue 无文本行时返回 null
+     */
+    private int[] cueBlockRange(int cueIdx) {
+        if (cueBlockStart == null || cueIdx < cueBlockFrom) {
+            return null;
+        }
+        int k = cueIdx - cueBlockFrom;
+        if (k >= cueBlockStart.length) {
+            return null;
+        }
+        int s = cueBlockStart[k];
+        int e = cueBlockEnd[k];
+        if (s < 0 || e < s) {
+            return null;
+        }
+        return new int[]{s, e};
     }
 
     /** 统一的字幕行样式：居中 + 内边距 + 字号 + 颜色 + 不透明度 + 投影。 */
@@ -580,7 +640,7 @@ public class FloatingSubtitleView extends FrameLayout {
     private void onViewportSizeChanged() {
         applyCenterPadding();
         if (currentLocalIndex >= 0) {
-            post(() -> scrollNow(currentLocalIndex, false));
+            post(() -> scrollNow(currentLocalIndex));
         }
     }
 
@@ -588,23 +648,78 @@ public class FloatingSubtitleView extends FrameLayout {
      * 把「当前高亮行」滚到视口正中。
      *
      * @param localIndex 当前行在 container 中的子 View 下标
-     * @param animate    true = 平滑滚动（播放推进时字幕向上滚）；false = 立即跳转（缩放 / 首次定位）
+     * @param fromCue    ≥0 = 播放从这一句推进到当前句 → 平滑上滚；-1 = 立即跳转（缩放 / 首次定位）
      */
-    private void scrollToCurrent(int localIndex, boolean animate) {
+    private void scrollToCurrent(int localIndex, int fromCue) {
         if (localIndex < 0) {
+            return;
+        }
+        if (fromCue >= 0) {
+            // 必须赶在这一帧「绘制之前」装好位移：新内容一旦先按旧滚动量画出来，
+            // 用户看到的就是「下一句直接出现」→ 再跳回去滚一遍。
+            scheduleTravel(localIndex, fromCue);
             return;
         }
         post(() -> {
             if (applyCenterPadding()) {
                 // 内边距刚变 → 等这次布局把新高度量完，否则滚动目标算不准
-                post(() -> scrollNow(localIndex, animate));
+                post(() -> scrollNow(localIndex));
             } else {
-                scrollNow(localIndex, animate);
+                scrollNow(localIndex);
             }
         });
     }
 
-    private void scrollNow(int localIndex, boolean animate) {
+    /** v40：把居中滚动 + 位移动画排到下一帧的「布局之后、绘制之前」。 */
+    private void scheduleTravel(int localIndex, int fromCue) {
+        pendingTravelLocal = localIndex;
+        pendingTravelFromCue = fromCue;
+        ViewTreeObserver obs = scrollView.getViewTreeObserver();
+        if (obs.isAlive()) {
+            obs.removeOnPreDrawListener(mTravelPreDraw); // 防重复挂
+            obs.addOnPreDrawListener(mTravelPreDraw);
+        }
+        // 兜底：万一这一帧根本没绘制（窗口未挂载 / 刚隐藏），至少保证居中位置是对的
+        post(() -> {
+            if (pendingTravelLocal < 0) {
+                return; // preDraw 已经处理过了
+            }
+            pendingTravelLocal = -1;
+            pendingTravelFromCue = -1;
+            if (applyCenterPadding()) {
+                post(() -> scrollNow(localIndex));
+            } else {
+                scrollNow(localIndex);
+            }
+        });
+    }
+
+    private final ViewTreeObserver.OnPreDrawListener mTravelPreDraw =
+            new ViewTreeObserver.OnPreDrawListener() {
+                @Override
+                public boolean onPreDraw() {
+                    ViewTreeObserver obs = scrollView.getViewTreeObserver();
+                    if (obs.isAlive()) {
+                        obs.removeOnPreDrawListener(this);
+                    }
+                    int localIndex = pendingTravelLocal;
+                    int fromCue = pendingTravelFromCue;
+                    pendingTravelLocal = -1;
+                    pendingTravelFromCue = -1;
+                    if (localIndex < 0) {
+                        return true;
+                    }
+                    if (applyCenterPadding()) {
+                        // 内边距刚变 → 这一帧的高度还是旧的，等下次布局再定位（放弃动画）
+                        post(() -> scrollNow(localIndex));
+                        return true;
+                    }
+                    applyAnimatedCenter(localIndex, fromCue);
+                    return true;
+                }
+            };
+
+    private void scrollNow(int localIndex) {
         int count = container.getChildCount();
         if (count == 0) {
             return;
@@ -620,26 +735,73 @@ public class FloatingSubtitleView extends FrameLayout {
         int maxScroll = Math.max(0, container.getHeight() - viewport);
         int y = target.getTop() - viewport / 2 + target.getHeight() / 2;
         y = Math.max(0, Math.min(y, maxScroll));
-        if (animate) {
-            animateScrollTo(y);
-        } else {
-            cancelScrollAnim();
-            scrollView.scrollTo(0, y);
+        cancelScrollAnim();
+        scrollView.scrollTo(0, y);
+    }
+
+    /**
+     * v40：居中滚动 + 「上一句 → 这一句」的位移动画。
+     *
+     * <p><b>为什么滚动量不能做动画</b>：内容是**以当前句为中心重建**的，前后 cue 行数
+     * 相同时，把新当前行滚到正中所需的 {@code y} 与上一句**一模一样**
+     * （y = 内边距 + 前面若干行的高度和 + 当前行高/2，而"前面若干行"永远是从窗口
+     * 左边数到当前句，行数不变 → 和不变）。于是「旧 y → 新 y」的差值恒为 0，
+     * 动画等于没跑 —— 这就是"上滚动效有时不生效、下一句直接出现"的根因。
+     *
+     * <p>真正该走的距离是「上一句块的中心 → 这一句块的中心」，它和滚动量无关。
+     * 所以这里：滚动量一次性写死（不动画），动画只负责把内容从"上一句还在正中"
+     * 平移到"这一句正中" —— 起点与上一帧画面严丝合缝，不会先跳一下再滚。
+     */
+    private void applyAnimatedCenter(int localIndex, int fromCue) {
+        int count = container.getChildCount();
+        if (count == 0) {
+            return;
+        }
+        View target = container.getChildAt(Math.min(localIndex, count - 1));
+        if (target == null) {
+            return;
+        }
+        int viewport = scrollView.getHeight();
+        if (viewport <= 0) {
+            return;
+        }
+        int maxScroll = Math.max(0, container.getHeight() - viewport);
+        int y = target.getTop() - viewport / 2 + target.getHeight() / 2;
+        y = Math.max(0, Math.min(y, maxScroll));
+
+        // 上一句块中心 → 这一句块中心：这才是「字幕上滚」该走的距离
+        int travel = 0;
+        int[] range = cueBlockRange(fromCue);
+        if (range != null) {
+            View a = container.getChildAt(range[0]);
+            View b = container.getChildAt(range[1]);
+            if (a != null && b != null) {
+                int fromCenter = (a.getTop() + b.getBottom()) / 2;
+                int toCenter = target.getTop() + target.getHeight() / 2;
+                travel = toCenter - fromCenter;
+            }
+        }
+        cancelScrollAnim();
+        int oldY = scrollView.getScrollY();
+        scrollView.scrollTo(0, y);
+        XposedBridge.log(TAG + " subtitle scroll: cue " + fromCue + "->" + lastCenteredCueIndex
+                + " travel=" + travel + "px scrollDelta=" + (y - oldY) + "px");
+        if (travel != 0) {
+            startTravelAnim(travel);
         }
     }
 
-    /** v20：在 {@link #SCROLL_ANIM_MS} 毫秒内减速滚到目标位置（视觉上字幕向上滚动）。 */
-    private void animateScrollTo(int targetY) {
-        int from = scrollView.getScrollY();
-        cancelScrollAnim();
-        if (from == targetY) {
-            scrollView.scrollTo(0, targetY);
-            return;
-        }
-        ValueAnimator anim = ValueAnimator.ofInt(from, targetY);
+    /** v40：让内容从「上一句还在正中」滑到「这一句正中」。 */
+    private void startTravelAnim(int travelPx) {
+        container.setTranslationY(travelPx);
+        ValueAnimator anim = ValueAnimator.ofFloat(travelPx, 0f);
         anim.setDuration(SCROLL_ANIM_MS);
         anim.setInterpolator(new DecelerateInterpolator(1.5f));
-        anim.addUpdateListener(a -> scrollView.scrollTo(0, (int) a.getAnimatedValue()));
+        anim.addUpdateListener(a -> {
+            if (container != null) {
+                container.setTranslationY((Float) a.getAnimatedValue());
+            }
+        });
         scrollAnim = anim;
         anim.start();
     }
@@ -648,6 +810,11 @@ public class FloatingSubtitleView extends FrameLayout {
         if (scrollAnim != null) {
             scrollAnim.cancel();
             scrollAnim = null;
+        }
+        // v40：位移动画写在 container 的 translationY 上，取消时必须归零 ——
+        // 否则内容会永久停在一个偏移上（缩放 / 隐藏 / 换轨都会走到这里）。
+        if (container != null && container.getTranslationY() != 0f) {
+            container.setTranslationY(0f);
         }
     }
 

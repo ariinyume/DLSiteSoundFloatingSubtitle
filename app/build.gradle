@@ -5,16 +5,20 @@ plugins {
 // ============================================================================
 //  版本 / 包名 规则（v28）
 //
-//  单包：包名 com.sena.dlsitesoundfloat，版本 1.20.5，应用名带 _debug 后缀
-//        供 LSPosed 里与其它模块区分。
+//  单包：包名 com.sena.dlsitesoundfloat。
+//
+//  LSPosed 模块列表里显示的三要素：
+//    · 模块名  ← res/values/strings.xml 的 app_name（DLsiteFloat）
+//    · 简介    ← AndroidManifest 的 <meta-data name="xposeddescription">
+//    · 图标    ← @mipmap/ic_launcher（res/mipmap-*/ic_launcher.png，圆角 80px）
 //
 //  ⚠️ namespace 与 applicationId 同为 com.sena.dlsitesoundfloat：
 //     java 包名与 assets/xposed_init 里的入口类全名都跟 namespace 走。
 // ============================================================================
 
-def appVersionTag = '1.20.5'
-def appVersionCode = 10205
-def appVersionName = '1.20.5'
+def appVersionTag = '1.21.0'
+def appVersionCode = 12100
+def appVersionName = '1.21.0'
 
 android {
     namespace 'com.sena.dlsitesoundfloat'

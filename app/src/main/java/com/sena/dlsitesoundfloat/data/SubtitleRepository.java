@@ -77,6 +77,23 @@ public class SubtitleRepository {
     /** 待确认窗口内收到的播放位置回调次数。 */
     private int pendingPosSamples = 0;
 
+    // ---- 播放结束 → 自动关窗（v29）----
+    /** Media3 {@code Player} 的播放状态取值（与 App 内部常量对齐）。 */
+    private static final int PSTATE_IDLE = 1;
+    private static final int PSTATE_BUFFERING = 2;
+    private static final int PSTATE_READY = 3;
+    private static final int PSTATE_ENDED = 4;
+    /** 最近一次收到的播放状态；-1 = 尚未拿到。 */
+    private volatile int lastPlaybackState = -1;
+    /** 悬浮窗是否是被「播放结束」**自动关掉**的（用于重新开播后自动恢复）。 */
+    private boolean autoClosedForPlaybackEnded = false;
+    /**
+     * 「播放结束」的确认延迟。
+     * 自动连播时播放器可能短暂进入 ENDED 后立刻开始下一首，此刻立即关窗会让窗口"闪一下"；
+     * 等这段时间过去再复查一次状态，仍是 ENDED 才算真的结束。
+     */
+    private static final long PLAYBACK_END_CONFIRM_MS = 400L;
+
     // ---- 播放进度（由 PlayerPositionHook 供数）----
     /** 最近一次播放位置（毫秒）。-1 表示尚未拿到。 */
     private volatile long playbackPositionMs = -1L;
@@ -290,9 +307,11 @@ public class SubtitleRepository {
             }
             // 记录加载时刻，供「换轨是否为新音轨预加载」判断
             lastLoadJsonMs = SystemClock.uptimeMillis();
-            // 之前因「疑似无字幕」被自动关掉的窗口，字幕其实到了 → 恢复回来
-            if (autoClosedForNoSubtitle) {
+            // 之前被**自动**关掉的窗口（「疑似无字幕」或 v29 的「播放结束」），
+            // 新音轨的字幕其实到了 → 恢复回来（用户手动关的不在此列）
+            if (autoClosedForNoSubtitle || autoClosedForPlaybackEnded) {
                 autoClosedForNoSubtitle = false;
+                autoClosedForPlaybackEnded = false;
                 floatingWindowOpen = true;
                 reopened = true;
             }
@@ -350,6 +369,7 @@ public class SubtitleRepository {
         long now = SystemClock.uptimeMillis();
         long token;
         boolean suspended;
+        boolean reopenedByTrack = false;
         long ago;
         int cueCount;
         synchronized (lock) {
@@ -358,6 +378,12 @@ public class SubtitleRepository {
             pendingToken++;                 // 作废上一次排队的判定
             token = pendingToken;
             lastScannedSecond = Integer.MIN_VALUE;
+            // v29：窗口若是被「播放结束」自动关掉的，换轨说明又有新内容要播 → 恢复窗口
+            if (autoClosedForPlaybackEnded) {
+                autoClosedForPlaybackEnded = false;
+                floatingWindowOpen = true;
+                reopenedByTrack = true;
+            }
             if (ago <= PRELOAD_TOLERANCE_MS) {
                 // 刚加载过字幕 JSON：大概率就是新音轨的 → 保留
                 pendingTrackDecision = false;
@@ -384,6 +410,9 @@ public class SubtitleRepository {
                 + (suspended
                         ? " -> SUSPEND subtitles, wait " + NO_SUBTITLE_GRACE_MS + "ms"
                         : " -> recent json, keep cues"));
+        if (reopenedByTrack) {
+            XposedBridge.log("[DLsiteSoundFloat] new track after playback end -> reopen floating window");
+        }
         notifyObservers();
         if (suspended) {
             mainHandler.postDelayed(() -> resolvePendingTrack(token), NO_SUBTITLE_GRACE_MS);
@@ -472,6 +501,84 @@ public class SubtitleRepository {
                     + " -> keep cues=" + subCount);
         }
         notifyObservers();
+    }
+
+    // ======================================================================
+    // 播放结束 → 自动关窗（v29）
+    // ======================================================================
+
+    /**
+     * 由 {@link com.sena.dlsitesoundfloat.hook.PlayerPositionHook} 采集到的 ExoPlayer 播放状态。
+     *
+     * 需求：**音频播放结束后，悬浮窗要自动关闭**。
+     *
+     * 旧版完全没有「播放结束」这个概念 —— 窗口打开后只会因三种原因关闭：
+     * 用户点 ✕ / 用户点按钮切换 / 判定「本音轨无字幕」。所以一曲（或一整个播放列表）
+     * 播完停在末尾时，窗口会一直挂着并显示最后一行字幕。
+     *
+     * 现在的行为：
+     *   - 状态进入 {@link #PSTATE_ENDED} → 自动关窗，并记住「是自动关的」；
+     *   - 之后状态回到 {@link #PSTATE_BUFFERING} / {@link #PSTATE_READY}（= 重新开播：
+     *     重播本曲、或自动连播下一曲）→ 自动把窗口恢复回来；
+     *   - 用户显式开关过窗口 → 撤销这份记忆，绝不擅自打开（见 {@link #setFloatingWindowOpen}）。
+     *
+     * 不处理 {@link #PSTATE_IDLE}：加载新内容时也会短暂 IDLE，据此关窗会误伤。
+     */
+    public void setPlaybackState(int state) {
+        if (state == lastPlaybackState) {
+            return;
+        }
+        int prev = lastPlaybackState;
+        lastPlaybackState = state;
+        if (state == PSTATE_ENDED) {
+            onPlaybackEnded(prev);
+        } else if (autoClosedForPlaybackEnded
+                && (state == PSTATE_BUFFERING || state == PSTATE_READY)) {
+            boolean reopened = false;
+            synchronized (lock) {
+                if (autoClosedForPlaybackEnded) {
+                    autoClosedForPlaybackEnded = false;
+                    floatingWindowOpen = true;
+                    reopened = true;
+                }
+            }
+            if (reopened) {
+                XposedBridge.log("[DLsiteSoundFloat] playback resumed (state " + prev + "->" + state
+                        + ") -> reopen floating window (auto-closed on playback end)");
+                notifyObservers();
+            }
+        }
+    }
+
+    private void onPlaybackEnded(int prevState) {
+        final int from = prevState;
+        mainHandler.postDelayed(() -> confirmPlaybackEnded(from), PLAYBACK_END_CONFIRM_MS);
+    }
+
+    /** 「播放结束」的延迟确认：这段时间内若已经又开始播（自动连播 / 重播），本次作废。 */
+    private void confirmPlaybackEnded(int prevState) {
+        if (lastPlaybackState != PSTATE_ENDED) {
+            XposedBridge.log("[DLsiteSoundFloat] playback end not confirmed (state came back to "
+                    + lastPlaybackState + ") -> keep floating window");
+            return;
+        }
+        boolean closed = false;
+        synchronized (lock) {
+            if (pendingTrackDecision) {
+                // 正在判「新音轨到底有没有字幕」，交给那套流程（它自己会决定关不关窗），别抢
+                return;
+            }
+            if (floatingWindowOpen) {
+                floatingWindowOpen = false;
+                autoClosedForPlaybackEnded = true;
+                closed = true;
+            }
+        }
+        XposedBridge.log("[DLsiteSoundFloat] playback ended (state " + prevState + "->" + PSTATE_ENDED + ")"
+                + (closed ? " -> auto-closed floating window" : " (window already closed)"));
+        if (closed) {
+            notifyObservers();
+        }
     }
 
     // ======================================================================
@@ -631,8 +738,10 @@ public class SubtitleRepository {
             }
             floatingWindowOpen = open;
             // 任何「显式开关」（点播放页按钮 / 点 ✕）都代表用户的决定 →
-            // 撤销"因无字幕被自动关窗"的记忆，避免字幕晚到又把用户刚关掉的窗口打开。
+            // 撤销所有「自动关窗」的记忆（无字幕 / 播放结束），
+            // 避免之后字幕晚到或重新开播又把用户刚关掉的窗口打开。
             autoClosedForNoSubtitle = false;
+            autoClosedForPlaybackEnded = false;
         }
         notifyObservers();
     }
