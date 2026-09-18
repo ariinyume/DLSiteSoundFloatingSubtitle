@@ -4,7 +4,7 @@
 
 - 当前版本：**1.21.0**（`DLsiteFloat-1.21.0-debug.apk`，包名 `com.sena.dlsitesoundfloat`）
 - 📦 下载 APK：[Releases · v1.21.0](https://github.com/ariinyume/DLSiteSoundFloatingSubtitle/releases/tag/v1.21.0)
-- 📦 历史版本：[Releases · v1.20.5](https://github.com/ariinyume/DLSiteSoundFloatingSubtitle/releases/tag/v1.20.5)
+- 📦 开发进度：[DLsiteFloat插件开发进度管理](https://my.feishu.cn/wiki/CQoMwY4nFilzLkkrzG4cy44fnoh)
 
 
 ---
@@ -96,11 +96,10 @@
 ## 意见反馈
 
 - **GitHub Issues**（首选）：请在项目仓库的 Issues 区提交，并尽量附上：
-  1. 你的设备型号 / Android 版本 / ROM（尤其是否 ColorOS / MIUI 等）
-  2. DLsiteSound 的版本号
-  3. 复现步骤 + LSPosed 日志（`DLsiteSoundFloat` 过滤）+ 必要时 `dlsitefloat_net.log`
-- **提交前请先确认**：装的是不是最新 APK——看 LSPosed 日志里的
-  `==== BUILD 1.21.0 (launcher icon refined: r=300 rounded corners, smooth edges (no grey rim), outer shadow offset down+right so it sits clearly BELOW the icon [card-on-table drop shadow]; regenerated at mdpi/hdpi/xhdpi/xxhdpi/xxxhdpi with proportional scaling; version stays 1.21.0 / code 12100) ====` 一行。
+  1. 你的设备型号 / Android 版本 / ROM（尤其是否 ColorOS / 澎湃 / 原生 / 类原生 等）
+  2. 使用的 DLsiteSound 的版本号
+  3. 复现步骤 + LSPosed 日志（`DLsiteSoundFloat` 过滤）+ 必要时 `dlsitefloat_net.log`+ 录屏 / 截屏（请给敏感信息打码或截除）
+- **提交前请先确认**：装的是不是最新 APK
 - 仓库地址：<https://github.com/ariinyume/DLSiteSoundFloatingSubtitle>
 - 提交 Issue：<https://github.com/ariinyume/DLSiteSoundFloatingSubtitle/issues>
 
