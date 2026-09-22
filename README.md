@@ -186,5 +186,6 @@ DLsiteSound_FloatSubtitle/
 ├── tools/version_code.py            # 版本 code 生成器（MMDD 规则）
 ├── gradle/wrapper/                  # Gradle Wrapper 8.4
 ├── build.gradle / settings.gradle
+├── LICENSE                          # GPL-3.0 许可证全文
 └── README.md
 ```

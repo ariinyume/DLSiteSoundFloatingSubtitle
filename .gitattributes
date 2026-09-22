@@ -12,5 +12,10 @@ app/src/main/resources/META-INF/xposed/module.prop    text eol=lf
 # Unix 侧构建入口（在 Linux/macOS/CI 上 CRLF 会直接报 bad interpreter）
 gradlew text eol=lf
 
+# 许可证全文：入库与工作区都保持 LF
+#   它是纯文本、无功能依赖，但 Windows 上 core.autocrlf=true 会把工作区换成 CRLF，
+#   会让「验证 LICENSE 是否被篡改」这类 sha256 比对平白多出一个变量，故钉死。
+LICENSE text eol=lf
+
 # Windows 批处理必须保持 CRLF
 *.bat text eol=crlf
