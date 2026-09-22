@@ -465,6 +465,173 @@ v38 实测页面回位后按钮还留着 **20~107px** 的残留，而 `captureFo
 
 ---
 
+## v43：治「切后台再回前台，按钮凭空出现在非播放页」
+
+### 症状
+
+把 app 切到后台、再切回前台，**字幕开关按钮出现在首页/书架的右下角**（不是播放页），
+而且一直挂着不走（实测 20s+，直到再次 onPause 才 `removeButton`）。
+
+### 实测（2026-09-15，LSPosed 日志）
+
+四次 onResume **全部**复现，模式完全一致：
+
+```
+20:05:47.404  activity onResume -> ensureButton
+20:05:47.432  button created, init visibility=0          ← 0 = VISIBLE，一创建就可见
+20:05:47.436  player anchor alive=false (area=0%)
+20:05:47.436  anchor dead for 0ms (area=0% evidence=false need=600ms samples=1 still=0ms)
+20:05:47.436  hide suppressed: page held (vis=2772px ref=anchor snap=2772px/0ms attached=true)
+20:05:47.436  verdict=UNKNOWN | main=none bottom=none … anchor=none
+20:06:07.225  activity onPause -> removeButton                        ← 20 秒后才消失
+```
+
+`vis=2772px` = **一屏高**。查 `HOLD_SNAPSHOT_MS` 的注释发现，作者早就实测过
+「页面被拖到极限时拖走 **2710~2772px**，而屏幕高就是 2772」——
+也就是说「**被手指拖到极限的播放页**」与「**被滑走后停靠在屏外的播放页容器**」
+在位移量上**完全同量级、无法区分**。
+
+### 根因：三处叠加
+
+1. **`pageVisualOffset()` 是个「读取即续期」的陷阱（主因）。**
+   它每次被调用都无条件写 `sHeldOffset = vis; sHeldOffsetMs = now;`。
+   而它被 **55ms 心跳**（`notePageMotion`）、跟帧循环、以及 `isPageHeld()` 自己反复调用
+   → `HOLD_SNAPSHOT_MS` 这个「有效期」永远从 0 起算 → 只要 `|位移| ≥ PAGE_HOLD_PX(24)`
+   且参考点还 attached，**判据③就永久成立、抑制门永不失效**。
+   这与 v38 注释里写的「真正的放行由参考点 detach 和时间上限**双重**保证，所以不会赖着不走」
+   **正好相反** —— 时间上限根本没生效。
+
+2. **播放页滑走后容器停靠在屏外。** 播放页向下滑走（dismiss）后，它的容器停在
+   `translateY = 2772px`（一屏高）。此时 `verdict=UNKNOWN / anchor=none / area=0%` —— 
+   一丁点播放页证据都没有，但位移快照仍满足 `|2772| ≥ 24` 且参考点 attached。
+
+3. **`ensureButton()` 用「上次结论」初始化可见性，而那个值可能是过期的 true。**
+   `sLastDecision` 之所以停在 true，正是因为**离开播放页时抑制门把 hide 挡掉了**（第 1 条）。
+
+### 修法（`hook/ActivityButtonHook.java`，三处）
+
+| # | 改动 | 作用 |
+| --- | --- | --- |
+| 1 | `pageVisualOffset()`：快照**只在位移变化 ≥ `FOLLOW_DEADZONE_PX` 时才续期** | 时间上限真正生效（`HOLD_SNAPSHOT_MS` 1500 → 2600，覆盖「到位但没回弹」的 2.1s 空窗） |
+| 2 | `isPageHeld()` 加 **⓪ 总闸**：`sPlayerConfirmedInSession == false` → 一律返回 false | 会话内未确认播放页时，抑制门不参与；真的在播放页上时锚点很快被确认存活，门的保护不受影响 |
+| 3 | `ensureButton()`：可见性不再沿用 `sLastDecision`，改用 `RESUME_TRUST_MS`（1.5s） | 只有「onPause 前 1.5s 内确实见过播放页」才直接 VISIBLE；否则先 GONE 交给 `scheduleDetect()`（80/240/520ms 三次补检） |
+
+### 判据数据（第 3 条的取值依据）
+
+数据里最后一次 `player anchor alive=true` 在 **19:31:48**，而四次 onPause 分别在
+**19:34:04 / 19:35:59 / 19:44:14 / 19:57:52** —— 间隔全部 ≥136s ≫ 1.5s
+→ 判定为「不信任」→ 按钮先隐藏 → 症状彻底消失。
+反过来，从播放页切出去又马上切回来（≤1.5s）时照旧直接显示，没有「闪一下」的回归。
+
+### 验证方法（下一轮直接量）
+
+`button created, init visibility=` 现在会补打 `(trustLastPlayer=… lastPlayerSeenAgo=…ms)`：
+
+- 复现场景（切后台几分钟后回前台）：应为 `init visibility=8 (trustLastPlayer=false lastPlayerSeenAgo=≥60000ms)`；
+- 全程**不应**再出现「按钮可见 + `verdict=UNKNOWN`」的组合；
+- `hide suppressed: page held` 允许出现（拖手保护照旧），但**不允许永久连发** —— 
+  最后一次 `still=` 之后 `HOLD_SNAPSHOT_MS` 内必须出现一次 hide 或一次真运动。
+
+---
+
+## v44：治「偶尔不跟手」——拖动期间把主线程让给跟帧循环
+
+### 症状
+
+反馈原话（Ari 2026-09-16 11:20，附 LSPosed 日志）：
+
+> 右下角悬浮窗开关按钮还是偶尔有不跟手的情况，看看能否优化
+
+### 先把「公式对不对」和「跟得顺不顺」分开
+
+第一件事是**证明位移通道本身没错**——否则很容易又去改公式（v35~v37 已经证明那是错的方向）。
+拿两条**互相独立**的量做同区间比对：
+
+| 量 | 来源 | 性质 |
+| --- | --- | --- |
+| `vis` | `page follow: button translationY=…px (… vis=…)` | 跟帧循环写入的位移（transform 累加） |
+| `main y` | `verdict=PLAYER\|… y=…` | 检测扫描读到的**主滑条屏幕 y**（`getLocationOnScreen`，真值） |
+
+在同一时间网格上算增长率之比（`Δvis / Δpage`）：
+
+```
+11:19:56.855  dt= 56ms  Δpage=  +72  Δvis=  +72   ratio=1.00
+11:19:56.911  dt= 56ms  Δpage=  +50  Δvis=  +51   ratio=1.03
+11:19:56.967  dt= 55ms  Δpage=  +56  Δvis=  +52   ratio=0.95
+11:19:57.022  dt= 55ms  Δpage=  +57  Δvis=  +60   ratio=1.07
+11:19:57.077  dt= 55ms  Δpage=  +68  Δvis=  +58   ratio=0.86
+```
+
+一次完整回弹（`11:19:49.488→49.733`，2700px → 30px，逐帧 11ms）也全程咬住。
+**结论：transform-sum 通道是准的，按钮跟的就是页面本身。** 问题不在公式。
+
+> ⚠️ 复盘教训：用「日志间隔」推算帧率会被**日志阈值**骗到。`page follow` 只在位移变化
+> ≥`FOLLOW_LOG_STEP_PX`(64px) 时补打，所以「两次日志相隔 55ms」只说明**那 55ms 里位移
+> 跨了 64px**，跟帧可能是 ~90Hz（每帧 14px，每 5 帧打一行）。必须先做这条排除，
+> 才能去谈「跟得顺不顺」。
+
+### 根因：跟帧回调与第 1 条自己的扫描**抢同一个主线程**
+
+拖动播放页时宿主每帧 `setTranslationY` → 结构事件被合并成 ~50ms 一趟
+（`POKE_MIN_INTERVAL_MS`），**每趟跑一次整树扫描** —— 实测单次 **6~8ms**
+（用 `structure event -> instant scan` 与其后第一条证据行的时间差量出来的），
+再加 2 行长日志（`player anchor -> …` / `verdict=…`，同步写 logcat）。
+而这一切和 `Choreographer` 跟帧回调在**同一个主线程**上。
+
+实测代价（同一份日志）：
+
+```
+11:18:30.377 page follow on: button translationY=61px
+11:18:30.387 page follow: button translationY=127px
+11:18:30.389 verdict=PLAYER | … y=1927          ← 扫描 1
+11:18:30.398 page follow: button translationY=202px
+11:18:30.446 verdict=PLAYER | … y=2023          ← 扫描 2
+11:18:30.499 verdict=PLAYER | … y=1941          ← 扫描 3
+11:18:30.508 page follow: button translationY=117px   ← ⚠️ 距上一帧 110ms
+11:18:30.542 page follow: button translationY=52px
+```
+
+`30.398 → 30.508` 按钮**整整 110ms 没动**（页面同期走了 ~85px），而那一窗里模块刚做完
+**2 次扫描、写了 6 行日志**。日志密度统计：拖动期间 8~14 行/100ms。
+这就是「偶尔不跟手」的真身 —— 不是跟不上，是**那一帧压根没轮到跟帧回调**。
+
+### 修法（`hook/ActivityButtonHook.java`，三处）
+
+1. **拖动期间不扫描**（主修）：`detectAndLayout()` 在
+   `sFollowing && (now − sLastPageMotionMs) < PAGE_MOTION_HOLD_MS` 时**直接返回**，
+   只把心跳改成 `FOLLOW_QUIET_HEARTBEAT_MS`(120ms)。理由 —— 拖动期间扫描**没有决策价值**：
+   - 结论不可能是「离开播放页」，页面就在手指底下；真离开时锚点会 detach，
+     走 `removeView` / attach 监听那条路，不依赖周期性扫描；
+   - hide 本来就被 `isPageHeld()` 的「页面被拖住」压着；
+   - 基线采集要求「页面静止」，拖动中本来就采不到。
+   
+   页面一停（>200ms）条件立刻不成立 → **完整扫描自动恢复**，所以「松手/页面被卸载」
+   的判定最多晚 120ms。恢复时补打一行
+   `page follow quiet: skipped N scans while dragging`（下一轮直接量这条）。
+
+2. **静止注销 12 帧 → 90 帧**（`FOLLOW_STILL_FRAMES`，≈1s 热待机）：
+   注销后循环**只能靠宿主事件/心跳重新拉起**，而起手那一两帧就是跟不上。
+   实测 68 秒里循环被拆装 **14 次**（14 行 `page follow on`）。现在停手后循环
+   再待机约 1 秒：期间位移恒为 0 → **不写、不打日志**，只每帧读一次参考点
+   （~15 个字段读），「上下揉」时不存在拆装，起手零断档。
+
+3. **连带修正** `captureFollowBaseline()` 的门①：由「循环没在跑」改为
+   「循环报告页面已静止」（新增 `followReportsStill()`）。若不改，第 2 条会让
+   基线 / `sVisualBias`（transform 偏置）的标定被推迟 1 秒 —— 而 transform 通道
+   要等偏置标定完才敢用，**反倒把「跟手就绪」推迟 1 秒**，比不改更糟。
+
+### 验证方法（下一轮直接量）
+
+- 拖动结束后应出现 `page follow quiet: skipped N scans while dragging`，
+  N 与该次拖动的时长正相关（~50ms 一算，2s 的拖动 ≈ 40）；
+- 拖动期间 `verdict=` / `player anchor ->` **应当明显变稀**（只剩 120ms 一趟的跳过，
+  不打日志）；拖动结束后 120ms 内必须恢复；
+- `page follow` 的相邻两帧间隔在拖动中**不应**再出现 ≥100ms 的孤立尖峰
+  （正常特征：匀速拖 ~11ms、快甩 ~11ms 但每帧位移大）；
+- 上下揉页面时 `page follow on` 的行数应大幅下降（热待机生效的证据）。
+
+---
+
 ## 响应节奏（自适应）
 
 | 参数 | 值 | 说明 |
@@ -472,6 +639,7 @@ v38 实测页面回位后按钮还留着 **20~107px** 的残留，而 `captureFo
 | 检测节流 | 150ms | `DETECT_MIN_INTERVAL_MS` |
 | **结构事件加急** | **≥50ms** | v34：宿主 `addView/removeView/setVisibility/setTranslation*/setAlpha` 触发，令牌桶 12 次/秒封顶 |
 | **锚点探针** | **120ms** | `ANCHOR_WATCH_MS` —— 只查锚点一个 View（不遍历视图树），活/死翻转或持续失效时立刻触发完整扫描 |
+| **跟手静默** | **120ms（跳过扫描）** | v44：跟帧循环正在跟 + 页面 200ms 内动过 → 整树扫描整趟跳过，心跳按 `FOLLOW_QUIET_HEARTBEAT_MS`(120ms) 续上；页面一停立刻恢复完整扫描 |
 | 跟踪态心跳 | 200ms | 过渡态 / 结论与按钮现状不一致 / 结论刚变（< 4 次） |
 | 稳定态心跳 | 600ms | 连续 4 次同结论后省电 |
 | 锚点死亡确认窗 | 600ms | `ANCHOR_DEAD_MIN_MS`（+ 最少 2 次采样）；有正面证据时 200ms；**锚点被摘除时 0** |

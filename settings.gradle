@@ -8,8 +8,15 @@ pluginManagement {
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
+        // 2.0.0 迁移：本机离线构建用 —— io.github.libxposed:api:102.0.0 的本地副本
+        // （Maven Central 上该坐标的全部制品已下载到 toolchain/maven-local）。
+        // 放在**最前**：避免 gradle 先去 mavenCentral 探网（离线时不必要地报网络错）。
+        maven { url 'file:///F:/WorkBuddyCache/DLSiteSound_Plus/toolchain/maven-local' }
         google()
+        // mavenCentral 提供 io.github.libxposed:api:102.0.0（2.0.0 起的唯一依赖）。
         mavenCentral()
+        // 传统 Xposed API 的仓库（de.robv.android.xposed:api:82）：2.0.0 已不再使用，
+        // 保留只为「万一要临时回退到 1.21.x 分支比对」时不用改构建脚本。离线构建不受影响。
         maven { url 'https://api.xposed.info/' }
     }
 }

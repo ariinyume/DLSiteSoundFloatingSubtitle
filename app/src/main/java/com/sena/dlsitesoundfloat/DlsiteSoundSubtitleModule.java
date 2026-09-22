@@ -9,75 +9,217 @@ import com.sena.dlsitesoundfloat.hook.NetworkHook;
 import com.sena.dlsitesoundfloat.hook.PlayerPositionHook;
 import com.sena.dlsitesoundfloat.hook.PlayerSourceHook;
 import com.sena.dlsitesoundfloat.hook.SubtitleViewHook;
+import com.sena.dlsitesoundfloat.hook.StatusBarSubtitleHook;
 import com.sena.dlsitesoundfloat.hook.StructureWatcher;
+import com.sena.dlsitesoundfloat.util.StatusBarSubtitleBridge;
 import com.sena.dlsitesoundfloat.util.NetLogFile;
+import com.sena.dlsitesoundfloat.util.XposedCompat;
 
-import de.robv.android.xposed.IXposedHookLoadPackage;
-import de.robv.android.xposed.XC_MethodHook;
-import de.robv.android.xposed.XposedBridge;
-import de.robv.android.xposed.XposedHelpers;
-import de.robv.android.xposed.callbacks.XC_LoadPackage;
+import io.github.libxposed.api.XposedInterface;
+import io.github.libxposed.api.XposedModule;
+import io.github.libxposed.api.XposedModuleInterface;
 
-public class DlsiteSoundSubtitleModule implements IXposedHookLoadPackage {
+/**
+ * 模块入口（libxposed 现代 API，API 102）。
+ *
+ * ─────────────────────────────────────────────────────────────────────
+ * 2.0.0 迁移要点（改本文件前必读）
+ *
+ * ① 入口形态变了：
+ *      旧：{@code implements IXposedHookLoadPackage} + {@code handleLoadPackage(LoadPackageParam)}
+ *          —— 一个回调，包名从 {@code lpparam.packageName} 拿，classloader 从 {@code lpparam.classLoader} 拿。
+ *      新：{@code extends XposedModule}，回调拆成「加载期」与「就绪期」两个：
+ *          · {@link #onPackageLoaded}  —— 应用**尚未**创建 Application，能拿 ClassLoader；
+ *            但**不能**在这里做任何依赖 App 上下文的初始化（会拿到半成品环境）。
+ *          · {@link #onPackageReady}  —— Application 已创建、上下文可用，适合做真正的工作。
+ *          两个回调都会带 {@code getPackageName()} 与 {@code getDefaultClassLoader()/getClassLoader()}。
+ *
+ * ② 作用域语义变了（**这条最容易踩**）：
+ *      旧 API 的 scope 只决定「往哪些包注入」，回调只在被注入的包上触发。
+ *      新 API 的 scope 是**进程级**的：scope 内的进程里**所有**被加载的包都会触发回调
+ *      （RN 宿主会动态加载一堆包，ColorOS 的 SystemUI 更是）。所以必须在回调里
+ *      显式按包名过滤 —— 见 {@link #isTarget}。
+ *
+ * ③ 日志 API 变了：{@code XposedBridge.log(String)}（静态）→ {@code XposedInterface.log(int, String, String)}
+ *      （实例）。本模块 152 处日志调用分散在各层，统一走 {@link XposedCompat#log(String)}，
+ *      输出形态与旧版逐字节一致（tag=DLsiteSoundFloat，模块内部前缀留在消息里）。
+ *
+ * ④ 不再有 {@code XposedHelpers} / {@code XC_MethodHook}：反射助手与回调基类由
+ *      {@link XposedCompat} 自带（见该类的类头说明）。
+ *
+ * ⑤ 职责划分（本轮刻意如此）：{@link #onPackageLoaded} 只做「本类内部 Application#attach 的钩子」，
+ *      业务初始化（SubtitleRepository.init / 六个 Hook）全部放在 {@link #onPackageReady}。
+ *      理由：onPackageLoaded 早于 Application 创建，此时注册的钩子如果立刻触发，
+ *      拿到的 Context 还不完整；而 onPackageReady 之后一切就绪，顺序天然正确。
+ *      （旧代码把两者塞在同一个回调里，是传统 API 只给一次机会所致，不是有意设计。）
+ * ─────────────────────────────────────────────────────────────────────
+ */
+public class DlsiteSoundSubtitleModule extends XposedModule {
     private static final String TARGET_PKG = "jp.co.eisys.dlsitesound";
+    private static final String SYSTEMUI_PKG = "com.android.systemui";
+
+    /** 业务初始化是否已做过 —— 同一进程内两个回调可能都被调用，必须去重。 */
+    private static volatile boolean sInitialized = false;
+    /** Application#attach 钩子是否已挂 —— 同上，防止重复挂钩。 */
+    private static volatile boolean sAppAttachHooked = false;
+
+    // ======================================================================
+    // 生命周期回调
+    // ======================================================================
 
     @Override
-    public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
-        if (!TARGET_PKG.equals(lpparam.packageName)) {
+    public void onModuleLoaded(XposedModuleInterface.ModuleLoadedParam param) {
+        // 框架把模块载入进程后最先调用。这里注入兼容层，让日志在任何后续回调
+        // （含异常路径）里都能用。
+        //
+        // ⚠️ 不能在这一阶段挂钩子：onModuleLoaded 时**还没有任何 ClassLoader**，
+        //    连宿主类都加载不了。真正的挂钩在 onPackageLoaded（有 classloader）
+        //    与 onPackageReady（Application 已就绪）里。
+        XposedCompat.attach(this);
+        XposedCompat.log("[DLsiteSoundFloat] onModuleLoaded process=" + param.getProcessName()
+                + " isSystemServer=" + param.isSystemServer()
+                + " (hooks will be installed on package load)");
+    }
+
+    /**
+     * 应用加载期（此时 Application 还没创建）。
+     *
+     * 只做一件事：挂 {@code Application#attach(Context)} 的钩子 —— 需要在 Application
+     * 拿到 Context 的**第一时刻**同步状态栏字幕开关、初始化网络诊断日志（见旧代码注释）。
+     * 业务初始化放 {@link #onPackageReady}。
+     */
+    @Override
+    public void onPackageLoaded(XposedModuleInterface.PackageLoadedParam param) {
+        String pkg = param.getPackageName();
+        if (!isTarget(pkg)) {
+            return; // 作用域内的其它包（RN 动态包等）一律不处理
+        }
+        try {
+            hookApplicationAttach(param.getDefaultClassLoader());
+        } catch (Throwable t) {
+            XposedCompat.log("[DLsiteSoundFloat] hookApplicationAttach failed: "
+                    + t.getMessage());
+        }
+    }
+
+    /**
+     * 应用就绪期（Application 已创建、ClassLoader 可用）—— 业务初始化全部在这里。
+     */
+    @Override
+    public void onPackageReady(XposedModuleInterface.PackageReadyParam param) {
+        String pkg = param.getPackageName();
+        if (!isTarget(pkg)) {
             return;
         }
+        if (SYSTEMUI_PKG.equals(pkg)) {
+            StatusBarSubtitleHook.hook(param.getClassLoader());
+            return;
+        }
+        initTargetApp(pkg, param.getClassLoader());
+    }
 
-        XposedBridge.log("[DLsiteSoundFloat] Module loaded for " + lpparam.packageName);
+    // ======================================================================
+    // 分派
+    // ======================================================================
+
+    /** 这个包是不是本模块要处理的包。作用域是进程级的，必须自己筛。 */
+    private boolean isTarget(String pkg) {
+        return TARGET_PKG.equals(pkg) || SYSTEMUI_PKG.equals(pkg);
+    }
+
+    private void initTargetApp(String pkg, ClassLoader cl) {
+        if (sInitialized) {
+            return;
+        }
+        sInitialized = true;
+
+        XposedCompat.log("[DLsiteSoundFloat] Module loaded for " + pkg);
         // 版本标识：每次排查「功能怎么没生效」时，先看这行确认装的是不是最新 APK。
         // ⚠️ 保留版本号、只改括号描述会产生「同日同名包」，装机前务必核这一行。
-        XposedBridge.log("[DLsiteSoundFloat] ==== BUILD 1.21.0 (launcher icon refined: r=300 rounded corners, smooth edges (no grey rim), outer shadow offset down+right so it sits clearly BELOW the icon [card-on-table drop shadow]; regenerated at mdpi/hdpi/xhdpi/xxhdpi/xxxhdpi with proportional scaling; version stays 1.21.0 / code 12100) ====");
-        XposedBridge.log("[DLsiteSoundFloat] build applicationId=" + BuildConfig.APPLICATION_ID
+        XposedCompat.log("[DLsiteSoundFloat] ==== BUILD 2.0.1 / code 940 （work_diag_65 Ari 指令：状态栏字幕显示区域被缩到超级短 根修）。【bug1 流体云不存在时字幕只显示半截 根修】旧判据只看子视图自身 getVisibility 等于 VISIBLE，容器被摘掉或 GONE 后其子视图仍报 VISIBLE，死容器照样给出 left 等于 454，宽度被压到 341 至 380 即半截；改为容器与子视图一律用 isShown 加上宽高大于零，宽限由 60s 收到 2s，并新增 seeding state 状态翻转日志自证。【bug2 按钮太低 根修】旧口径取简介底边与滑条视图顶边中点，中心 1747 底边 1794，比滑条顶 1772 还低 23px 故压进度条；改为按钮底边强制落在滑条顶边往上 25dp 即 1698，按钮恒定 32dp 不压缩，日志新增 descStable 与 sliderTop 两个诊断量。【bug2 打开播放界面按钮上下抖动 根修】实测转场瞬间 ctx 的密度读数会从常态 2.9688 跳到 3.5 或 3.875（即 476 与 560 与 620dpi，正是 OPPO 屏幕缩放档位表），而按钮底边与右距都直接吃它故按钮上下瞬移 19 至 32px 且左右同偏，斜着抖；改为密度一次性锁定，仅在像素屏幕尺寸变化或持续 20 秒以上不一致时才重新锁定，并打 density spike ignored 诊断行。【bug1 状态栏字幕显示区域被缩到超级短 根修】行左界实测值的采信门旧口径拿自己当锚，sLineLeftAcc 初值为负一故首采样无条件过门，而 showLine 在隐藏时钟通知图标之后一毫秒就采样，那次重排还没跑，读到含通知图标占位的旧值 251 并永久锁存，之后真值 110 因超出容差被永久拒收，字幕宽少 138px 即被压成超级短；改为首采样也以常量 38dp 即 113px 为锚加正负 20dp 容差，单帧失真值直接拒收，并新增连续三拍稳定偏离才重锁的自愈，同时治本，隐藏或还原时钟通知图标真的改了可见性时置布局脏，使紧随其后的采样被 onGlobalLayout 拦掉，日志新增 line left rejected 与 line left relocked 两行诊断。【承 936 gap 4dp / 935 左界实测 / 934 滚动迟滞与速度下限 / 933 等宽补起滚 / 925 稳定性移回消费端】 基于 2.0.1，含 1.21.1~1.21.16 全部内容） ====");
+        XposedCompat.log("[DLsiteSoundFloat] build applicationId=" + BuildConfig.APPLICATION_ID
                 + " versionName=" + BuildConfig.VERSION_NAME);
 
         Context systemCtx = null;
         try {
-            Object activityThread = XposedHelpers.callStaticMethod(
-                    XposedHelpers.findClass("android.app.ActivityThread", lpparam.classLoader),
-                    "currentActivityThread");
-            systemCtx = (Context) XposedHelpers.callMethod(activityThread, "getSystemContext");
+            Class<?> activityThreadCls = XposedCompat.findClass("android.app.ActivityThread", cl);
+            Object activityThread = XposedCompat.callStaticMethod(activityThreadCls, "currentActivityThread");
+            systemCtx = (Context) XposedCompat.callMethod(activityThread, "getSystemContext");
         } catch (Throwable t) {
-            XposedBridge.log("[DLsiteSoundFloat] getSystemContext failed: " + t.getMessage());
+            XposedCompat.log("[DLsiteSoundFloat] getSystemContext failed: " + t.getMessage());
         }
 
         SubtitleRepository repo = SubtitleRepository.getInstance();
-        repo.init(systemCtx, lpparam.classLoader);
+        repo.init(systemCtx, cl);
 
-        NetworkHook.hook(lpparam.classLoader, repo);
-        PlayerPositionHook.hook(lpparam.classLoader, repo);
-        PlayerSourceHook.hook(lpparam.classLoader, repo);
-        SubtitleViewHook.hook(lpparam.classLoader, repo);
-        ActivityButtonHook.hook(lpparam.classLoader, repo);
+        NetworkHook.hook(cl, repo);
+        PlayerPositionHook.hook(cl, repo);
+        PlayerSourceHook.hook(cl, repo);
+        SubtitleViewHook.hook(cl, repo);
+        ActivityButtonHook.hook(cl, repo);
         // v34：钩住宿主视图树的结构事件（挂载/卸载/显隐/转场），把按钮显隐从「600ms 轮询」
         // 改成「宿主一动就扫」。最后一个装 —— 它依赖 ActivityButtonHook 的静态状态。
-        StructureWatcher.hook(lpparam.classLoader);
+        StructureWatcher.hook(cl);
 
         // 悬浮窗与目标 App 同进程，注册观察者后由 FloatingWindowManager 自动对齐显隐与内容
-        repo.addObserver(() ->
-                FloatingWindowManager.getInstance().sync(SubtitleRepository.getInstance().getAppContext()));
-
-        hookApplicationAttach(lpparam.classLoader, repo);
+        // 同时把当前字幕行广播给 SystemUI（与悬浮窗生命周期解耦：悬浮窗关了字幕照样在状态栏）
+        final Context sysCtx = systemCtx;
+        repo.addObserver(() -> {
+            Context c = SubtitleRepository.getInstance().getAppContext();
+            if (c == null) c = sysCtx;
+            FloatingWindowManager.getInstance().sync(c);
+            // 【1.21.15 问题 1】这里原本还有一句
+            // StatusBarSubtitleBridge.forceDisabledWhenNoSubtitles(c, repo) ——
+            // 含义是「判定本音轨无字幕，就把
+            // 用户长按开的状态栏字幕开关强制关掉」。
+            // 已删除：它只会让开关在用户不知情的
+            // 情况下自己失效，而且没有任何自动
+            // 恢复路径。「无字幕时状态栏不挂字幕」
+            // 下面这句 sendCurrentFromRepo 已经能保证：
+            // 无字幕时它算出 line=""，SystemUI 收到空行就
+            // 把字幕容器（连同通知徽标）整体 GONE，
+            // 时钟自然还原。
+            StatusBarSubtitleBridge.sendCurrentFromRepo(c, SubtitleRepository.getInstance());
+        });
     }
 
-    private void hookApplicationAttach(ClassLoader cl, SubtitleRepository repo) {
+    /**
+     * 钩 {@code android.app.Application#attach(Context)}，在 Application 拿到 Context 的
+     * 第一时间把上下文交给仓库 / 状态栏桥 / 网络诊断日志。
+     *
+     * 迁移对照：旧 {@code XposedHelpers.findAndHookMethod("android.app.Application", cl,
+     * "attach", Context.class, new XC_MethodHook(){ afterHookedMethod … param.args[0] … })}
+     * → 新 {@code hook(m).intercept(chain -> { chain.proceed(); chain.getArg(0); return null; })}。
+     */
+    private void hookApplicationAttach(ClassLoader cl) {
+        if (sAppAttachHooked) {
+            return;
+        }
+        sAppAttachHooked = true;
         try {
-            XposedHelpers.findAndHookMethod("android.app.Application", cl, "attach", Context.class, new XC_MethodHook() {
+            Class<?> appCls = XposedCompat.findClass("android.app.Application", cl);
+            java.lang.reflect.Method attach = XposedCompat.findMethodExact(appCls, "attach", Context.class);
+            XposedCompat.hookMethod(attach, new XposedCompat.VoidHook() {
                 @Override
-                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                    Context appCtx = (Context) param.args[0];
-                    repo.setAppContext(appCtx);
-                    // 此刻上下文才真正可用：初始化网络诊断日志并打印落盘路径
-                    NetLogFile.init(appCtx);
-                    XposedBridge.log("[DLsiteSoundFloat] Application attached, context ready");
-                    XposedBridge.log("[DLsiteSoundFloat] net log path -> " + NetLogFile.getPath());
+                protected void afterVoid(XposedInterface.Chain chain) {
+                    try {
+                        Context appCtx = (Context) chain.getArg(0);
+                        SubtitleRepository repo = SubtitleRepository.getInstance();
+                        repo.setAppContext(appCtx);
+                        // 同步状态栏字幕开关（默认关闭），让 SystemUI 侧拿到初始状态
+                        StatusBarSubtitleBridge.sendEnabled(appCtx, StatusBarSubtitleBridge.sAppEnabled);
+                        // 此刻上下文才真正可用：初始化网络诊断日志并打印落盘路径
+                        NetLogFile.init(appCtx);
+                        XposedCompat.log("[DLsiteSoundFloat] Application attached, context ready");
+                        XposedCompat.log("[DLsiteSoundFloat] net log path -> " + NetLogFile.getPath());
+                    } catch (Throwable t) {
+                        // 钩子体绝不能把异常抛回宿主
+                        XposedCompat.log("[DLsiteSoundFloat] onApplicationAttach body failed: " + t);
+                    }
                 }
             });
         } catch (Throwable t) {
-            XposedBridge.log("[DLsiteSoundFloat] hookApplicationAttach failed: " + t.getMessage());
+            XposedCompat.log("[DLsiteSoundFloat] hookApplicationAttach failed: " + t.getMessage());
         }
     }
 }

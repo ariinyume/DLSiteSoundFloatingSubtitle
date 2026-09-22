@@ -16,7 +16,7 @@ import android.view.WindowManager;
 import com.sena.dlsitesoundfloat.data.SubtitleRepository;
 import com.sena.dlsitesoundfloat.view.FloatingSubtitleView;
 
-import de.robv.android.xposed.XposedBridge;
+import com.sena.dlsitesoundfloat.util.XposedCompat;
 
 /**
  * 进程内悬浮窗管理器（单例）。
@@ -183,7 +183,7 @@ public class FloatingWindowManager {
             permissionPromptPending = false; // 成功挂载即重置提示守卫
             view.setBlurBehindActive(blurOn); // 玻璃底按模糊是否生效自适应通透度
             view.updateFromRepository();
-            XposedBridge.log(TAG + " floating window shown (pkg=" + ctx.getPackageName()
+            XposedCompat.log(TAG + " floating window shown (pkg=" + ctx.getPackageName()
                     + ", " + params.width + "x" + params.height
                     + " at " + params.x + "," + params.y
                     + (restored ? " [geometry restored]" : " [default geometry]") + ")");
@@ -191,7 +191,7 @@ public class FloatingWindowManager {
             lastFailMs = SystemClock.uptimeMillis(); // 只有失败才参与节流
             boolean canDraw = Build.VERSION.SDK_INT < Build.VERSION_CODES.M
                     || Settings.canDrawOverlays(ctx);
-            XposedBridge.log(TAG + " addView FAILED: " + e.getMessage()
+            XposedCompat.log(TAG + " addView FAILED: " + e.getMessage()
                     + " | canDrawOverlays=" + canDraw
                     + " | windowOwnerPkg=" + ctx.getPackageName()
                     + " (需给该 App 打开「显示在其他应用上层/悬浮窗」)");
@@ -220,11 +220,11 @@ public class FloatingWindowManager {
     private boolean applyBlurBehind(Context ctx) {
         if (!ENABLE_SYSTEM_BLUR_BEHIND) {
             // ColorOS 上会糊掉整个屏幕，已全局关闭（详见常量注释）。
-            XposedBridge.log(TAG + " blurBehind: DISABLED by config (would blur whole screen on ColorOS)");
+            XposedCompat.log(TAG + " blurBehind: DISABLED by config (would blur whole screen on ColorOS)");
             return false;
         }
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || params == null) {
-            XposedBridge.log(TAG + " blurBehind skipped: SDK_INT=" + Build.VERSION.SDK_INT);
+            XposedCompat.log(TAG + " blurBehind skipped: SDK_INT=" + Build.VERSION.SDK_INT);
             return false;
         }
         try {
@@ -239,11 +239,11 @@ public class FloatingWindowManager {
                 params.setBlurBehindRadius(dp(ctx, BLUR_RADIUS_DP));
                 params.flags |= WindowManager.LayoutParams.FLAG_BLUR_BEHIND;
             }
-            XposedBridge.log(TAG + " blurBehind: crossWindowBlurEnabled=" + enabled
+            XposedCompat.log(TAG + " blurBehind: crossWindowBlurEnabled=" + enabled
                     + ", radiusDp=" + BLUR_RADIUS_DP);
             return enabled;
         } catch (Throwable e) {
-            XposedBridge.log(TAG + " blurBehind unavailable: " + e.getMessage());
+            XposedCompat.log(TAG + " blurBehind unavailable: " + e.getMessage());
             return false;
         }
     }
@@ -257,9 +257,9 @@ public class FloatingWindowManager {
                     Uri.parse("package:" + ctx.getPackageName()));
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             ctx.startActivity(intent);
-            XposedBridge.log(TAG + " prompted overlay permission for " + ctx.getPackageName());
+            XposedCompat.log(TAG + " prompted overlay permission for " + ctx.getPackageName());
         } catch (Throwable e) {
-            XposedBridge.log(TAG + " promptOverlayPermission failed: " + e.getMessage());
+            XposedCompat.log(TAG + " promptOverlayPermission failed: " + e.getMessage());
         }
     }
 
@@ -273,7 +273,7 @@ public class FloatingWindowManager {
         }
         view = null;
         showing = false;
-        XposedBridge.log(TAG + " floating window hidden");
+        XposedCompat.log(TAG + " floating window hidden");
     }
 
     public boolean isShowing() {
@@ -334,7 +334,7 @@ public class FloatingWindowManager {
                         // （v16 之前是「距窗口右下角 44dp 见方」—— 既过大，又与三角形错位）。
                         resizing = view.hitResizeArea(event.getX(), event.getY());
                         // 诊断：确认触摸是否真的送达悬浮窗视图（若「点了没反应」，先看有没有这行）
-                        XposedBridge.log(TAG + " touch DOWN x=" + (int) event.getX()
+                        XposedCompat.log(TAG + " touch DOWN x=" + (int) event.getX()
                                 + " y=" + (int) event.getY()
                                 + " viewW=" + view.getWidth() + " viewH=" + view.getHeight()
                                 + " resizing=" + resizing);
@@ -383,7 +383,7 @@ public class FloatingWindowManager {
                         if (!moved && !resizing) {
                             view.toggleCloseButton();
                         } else {
-                            XposedBridge.log(TAG + " touch UP moved=" + moved
+                            XposedCompat.log(TAG + " touch UP moved=" + moved
                                     + " resizing=" + resizing + " -> no tap toggle");
                         }
                         saveGeometry(); // v29：抬手时再固化一次

@@ -24,7 +24,7 @@ import com.sena.dlsitesoundfloat.data.SubtitleRepository;
 
 import java.util.List;
 
-import de.robv.android.xposed.XposedBridge;
+import com.sena.dlsitesoundfloat.util.XposedCompat;
 
 /**
  * 悬浮窗内的字幕视图。
@@ -242,12 +242,12 @@ public class FloatingSubtitleView extends FrameLayout {
      */
     public void toggleCloseButton() {
         if (closeBtn == null) {
-            XposedBridge.log(TAG + " toggleCloseButton: closeBtn == null (view not init?)");
+            XposedCompat.log(TAG + " toggleCloseButton: closeBtn == null (view not init?)");
             return;
         }
         boolean show = closeBtn.getVisibility() != VISIBLE;
         closeBtn.setVisibility(show ? VISIBLE : GONE);
-        XposedBridge.log(TAG + " panel tapped -> close button " + (show ? "VISIBLE" : "GONE"));
+        XposedCompat.log(TAG + " panel tapped -> close button " + (show ? "VISIBLE" : "GONE"));
     }
 
     /**
@@ -314,7 +314,7 @@ public class FloatingSubtitleView extends FrameLayout {
         closeBtn.setLayoutParams(closeLp);
         closeBtn.setVisibility(GONE);
         closeBtn.setOnClickListener(v -> {
-            XposedBridge.log(TAG + " close button CLICKED -> setFloatingWindowOpen(false)");
+            XposedCompat.log(TAG + " close button CLICKED -> setFloatingWindowOpen(false)");
             // 关闭悬浮窗：置 false 后，repo 观察者会驱动 FloatingWindowManager 隐藏窗口，
             // 同时播放页按钮状态同步更新为「悬浮关」。
             SubtitleRepository.getInstance().setFloatingWindowOpen(false);
@@ -324,7 +324,7 @@ public class FloatingSubtitleView extends FrameLayout {
         addView(hint);
         addView(grip);
         addView(closeBtn); // 最后添加，保证在最上层、可点击
-        XposedBridge.log(TAG + " view built: padH=" + PANEL_PAD_H_DP + "dp padV=" + PANEL_PAD_V_DP
+        XposedCompat.log(TAG + " view built: padH=" + PANEL_PAD_H_DP + "dp padV=" + PANEL_PAD_V_DP
                 + "dp minTextPad=" + MIN_TEXT_PAD_DP + "dp corner=" + CORNER_RADIUS_DP
                 + "dp lightGlass=" + LIGHT_GLASS
                 + " currentScale=" + CURRENT_SCALE + " closeBtn=" + CLOSE_BTN_DP
@@ -784,7 +784,7 @@ public class FloatingSubtitleView extends FrameLayout {
         cancelScrollAnim();
         int oldY = scrollView.getScrollY();
         scrollView.scrollTo(0, y);
-        XposedBridge.log(TAG + " subtitle scroll: cue " + fromCue + "->" + lastCenteredCueIndex
+        XposedCompat.log(TAG + " subtitle scroll: cue " + fromCue + "->" + lastCenteredCueIndex
                 + " travel=" + travel + "px scrollDelta=" + (y - oldY) + "px");
         if (travel != 0) {
             startTravelAnim(travel);

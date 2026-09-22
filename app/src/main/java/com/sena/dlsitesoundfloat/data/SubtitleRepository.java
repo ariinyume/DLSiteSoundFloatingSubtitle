@@ -14,15 +14,30 @@ import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 
-import de.robv.android.xposed.XposedBridge;
+import com.sena.dlsitesoundfloat.util.XposedCompat;
 
 public class SubtitleRepository {
     private static SubtitleRepository instance;
 
     /** 音轨切换时：距上次成功加载字幕 JSON 多久以内，视为「新音轨预加载的字幕」而保留。 */
     private static final long PRELOAD_TOLERANCE_MS = 3500L;
-    /** 音轨切换后等多久仍没等到字幕 JSON，就判定「该音轨没有字幕」。 */
+    /** 音轨切换后等多久仍没等到字幕 JSON，就判定「该音轨没有字幕」（无缓存字幕时）。 */
     private static final long NO_SUBTITLE_GRACE_MS = 3000L;
+    /**
+     * 【1.21.15 问题 1】进入待确认时**已有缓存 cues** 的情况下，给字幕 JSON 的宽限时间。
+     *
+     * 原窗口固定 3000ms，而实测新音轨的字幕 JSON 到达延迟跨度极大：缓存命中时 ~0.2s，
+     * 冷请求（长时间空闲后首次切轨、要重新发网络请求）可达 11~15.6s。于是
+     * 「3s 没等到 JSON ⇒ 该音轨无字幕」这条推断频繁**假阴性** —— 日志实证：
+     *   18:20:25.879 判无字幕（cues were 55）→ 18:20:31.355 Loaded 105 cues（同一音轨，5.5s 后到）
+     *   17:35:02.521 判无字幕（cues were 81）→ 17:35:07.812 Loaded 152 cues（5.3s 后到）
+     *   17:22:02.745 判无字幕（cues were 81）→ 17:22:16.824 Loaded 81 cues（11.1s 后到）
+     * 而「进入待确认时已有 cues」本身就说明**这部作品是有字幕的**，值得多等一会儿；
+     * cues 本来就是空（用户一直待在无字幕音轨上）则维持 3000ms 结案，零代价。
+     */
+    private static final long NO_SUBTITLE_GRACE_MS_CACHED = 10000L;
+    /** 【1.21.15】判「无字幕」后若在这么久内又来字幕 JSON，就把它当假阴性记一笔。 */
+    private static final long FALSE_NEGATIVE_REPORT_MS = 60000L;
     /**
      * 播放位置比「待确认开始时的位置」回退这么多毫秒以上，就认为确实重开了一轨
      * （新音轨总是从 0 附近开始播）。
@@ -70,12 +85,46 @@ public class SubtitleRepository {
     private long pendingToken = 0L;
     /** 悬浮窗是否是被「本音轨无字幕」判定**自动关掉**的（用于字幕晚到后自动恢复）。 */
     private boolean autoClosedForNoSubtitle = false;
+    /**
+     * 【1.21.16 问题 1】**软裁决**：本音轨判「无字幕」，但**没有销毁 cues**。
+     *
+     * ── 为什么需要它（1.21.15 的假阴性根因）──
+     *
+     * 1.21.15 的裁决在「等待期内没有新的字幕 JSON」时，会**清空 cues** 并把它当作
+     * 不可逆事实（`cues = new ArrayList<>()`）。实测（2026-09-18 日志）这条推断有两个反例：
+     *
+     *   - R4（11:17:04.732 换轨）：cues=225 在手，10s 窗到点 JSON 仍未来 → 清 cues + 判无字幕；
+     *   - R6（11:32:37.793 换轨）：cues=49 在手（**同一部作品 3.5 秒前刚加载过**），
+     *     10s 窗到点 JSON 仍未来 → 清 cues + 判无字幕 → 用户点按钮被
+     *     `createButton()` 的 `!hasSubtitles()` 早退吞掉，按钮一直挂「无字幕」。
+     *
+     * 但「N 秒内没收到 JSON」**不是「不存在」的证据**。实测同一部作品的 JSON 到达延迟
+     * 跨度是 **711ms ~ 11973ms**（R1 711ms / R3 5893ms / R2 **11973ms**，已超过 10s 窗）。
+     * 既然手上有 cues 就说明**这部作品有字幕资源**，那这次裁决最多只能"降级显示"，
+     * 不能销毁数据 —— 否则 JSON 真的来了也没有读者了。
+     *
+     * 这正是本仓库铁律里那条：**「N 秒超时」不是「不存在」的证据 —— 量不到就只降级显示、
+     * 不销毁数据。** 与 1.21.15 修掉的「推断无权改写用户显式表达的状态」是同一类错误。
+     *
+     * 语义：
+     *   - `true`  → 显示层按「无字幕」处理（按钮文字/底色、悬浮窗、状态栏都降级），
+     *               但 `cues` / `subtitleLineSet` 原样保留；
+     *   - 任何一次新的 `loadFromJson` 成功都会把它清掉（见 loadFromJsonArrayInternal），
+     *     于是显示层自动恢复 —— 不需要用户重新进页面。
+     */
+    private volatile boolean softNoSubtitles = false;
     /** 待确认开始时的播放位置（-1 = 未知）；用于识别「其实没有真的换轨」。 */
     private long pendingStartPosMs = -1L;
     /** 待确认窗口内是否观察到播放位置**回退**（= 确实重开了一轨）。 */
     private boolean pendingSawPositionReset = false;
     /** 待确认窗口内收到的播放位置回调次数。 */
     private int pendingPosSamples = 0;
+    /**
+     * 【1.21.15 问题 1】最近一次判「本音轨无字幕」的时刻（uptimeMillis）；0 = 从未。
+     * 只用于事后取证：若判完没多久字幕 JSON 又到了，说明这次裁决是**假阴性**，
+     * 直接在日志里点名（见 {@link #loadFromJsonArrayInternal}），不用再靠人肉对时间线。
+     */
+    private volatile long lastNoSubtitleVerdictMs = 0L;
 
     // ---- 播放结束 → 自动关窗（v29）----
     /** Media3 {@code Player} 的播放状态取值（与 App 内部常量对齐）。 */
@@ -242,13 +291,13 @@ public class SubtitleRepository {
                 }
             }
             if (webvtt == null) {
-                XposedBridge.log("[DLsiteSoundFloat] loadFromJson: no subtitle array found");
+                XposedCompat.log("[DLsiteSoundFloat] loadFromJson: no subtitle array found");
                 return;
             }
             loadFromJsonArrayInternal(webvtt);
-            XposedBridge.log("[DLsiteSoundFloat] Loaded " + getCues().size() + " cues from JSON");
+            XposedCompat.log("[DLsiteSoundFloat] Loaded " + getCues().size() + " cues from JSON");
         } catch (Throwable e) {
-            XposedBridge.log("[DLsiteSoundFloat] loadFromJson error: " + e.getMessage());
+            XposedCompat.log("[DLsiteSoundFloat] loadFromJson error: " + e.getMessage());
         }
     }
 
@@ -256,12 +305,15 @@ public class SubtitleRepository {
         try {
             loadFromJsonArrayInternal(webvtt);
         } catch (Throwable e) {
-            XposedBridge.log("[DLsiteSoundFloat] loadFromJsonArray error: " + e.getMessage());
+            XposedCompat.log("[DLsiteSoundFloat] loadFromJsonArray error: " + e.getMessage());
         }
     }
 
     private void loadFromJsonArrayInternal(JSONArray webvtt) throws Exception {
         List<SubtitleCue> newCues = new ArrayList<>();
+        // 【1.21.15 问题 1】假阴性取证用的暂存（-1 = 本次没有）
+        long falseNegativeLagMs = -1L;
+        int falseNegativeCueCount = 0;
         for (int i = 0; i < webvtt.length(); i++) {
             JSONObject cue = webvtt.getJSONObject(i);
             String start = cue.optString("start_time", "00:00:00.000");
@@ -276,6 +328,8 @@ public class SubtitleRepository {
             newCues.add(new SubtitleCue(parseTime(start), parseTime(end), lineList));
         }
         boolean reopened = false;
+        // 【1.21.16 问题 1】本次是否撤销了「软裁决」降级显示
+        boolean softNoSubtitlesCleared = false;
         synchronized (lock) {
             cues = newCues;
             // v18：重建「字幕行精确匹配集」，供 isKnownSubtitleText() 做 O(1) 精确判定
@@ -307,6 +361,16 @@ public class SubtitleRepository {
             }
             // 记录加载时刻，供「换轨是否为新音轨预加载」判断
             lastLoadJsonMs = SystemClock.uptimeMillis();
+            // 【1.21.15 问题 1】假阴性取证：刚判完「本音轨无字幕」，字幕 JSON 就来了 ——
+            // 说明那次裁决是错的。直接把结论写进日志，省掉事后肉眼对时间线。
+            if (lastNoSubtitleVerdictMs > 0L) {
+                long verdictLag = lastLoadJsonMs - lastNoSubtitleVerdictMs;
+                if (verdictLag >= 0L && verdictLag <= FALSE_NEGATIVE_REPORT_MS) {
+                    falseNegativeLagMs = verdictLag;
+                    falseNegativeCueCount = newCues.size();
+                }
+                lastNoSubtitleVerdictMs = 0L;
+            }
             // 之前被**自动**关掉的窗口（「疑似无字幕」或 v29 的「播放结束」），
             // 新音轨的字幕其实到了 → 恢复回来（用户手动关的不在此列）
             if (autoClosedForNoSubtitle || autoClosedForPlaybackEnded) {
@@ -315,10 +379,32 @@ public class SubtitleRepository {
                 floatingWindowOpen = true;
                 reopened = true;
             }
+            // 【1.21.16 问题 1】软裁决的解除：字幕到了 = 本音轨确实有字幕 →
+            // 撤销降级显示。cues 从未被销毁，所以这一步就足够让按钮/悬浮窗/状态栏全部恢复。
+            if (softNoSubtitles) {
+                softNoSubtitles = false;
+                // 位置可能是旧的（硬裁决路径会清 -1L，软裁决不清）→ 强制重扫当前秒，
+                // 让恢复后的第一帧立刻落到正确的那条字幕行上。
+                lastScannedSecond = Integer.MIN_VALUE;
+                softNoSubtitlesCleared = true;
+            }
         }
         if (reopened) {
-            XposedBridge.log("[DLsiteSoundFloat] subtitles arrived -> reopen floating window"
+            XposedCompat.log("[DLsiteSoundFloat] subtitles arrived -> reopen floating window"
                     + " (auto-closed earlier)");
+        }
+        // 【1.21.15 问题 1】把假阴性结论点出来：打出这行就说明刚才那次「本音轨无字幕」
+        // 是误判 —— 该音轨其实有字幕，只是 JSON 比裁决窗来得更晚。裁决窗时长照这些数据调。
+        if (falseNegativeLagMs >= 0L) {
+            XposedCompat.log("[DLsiteSoundFloat] track decision was a FALSE NEGATIVE:"
+                    + " subtitle json arrived " + falseNegativeLagMs
+                    + "ms after the \"no subtitles\" verdict"
+                    + " -> cues=" + falseNegativeCueCount + " (this track does have subtitles)");
+        }
+        // 【1.21.16 问题 1】软裁决被撤销：数据从未销毁，显示层就此恢复。
+        if (softNoSubtitlesCleared) {
+            XposedCompat.log("[DLsiteSoundFloat] soft \"no subtitles\" verdict revoked"
+                    + " -> subtitles arrived, cues were kept all along; restoring UI");
         }
         notifyObservers();
     }
@@ -372,6 +458,8 @@ public class SubtitleRepository {
         boolean reopenedByTrack = false;
         long ago;
         int cueCount;
+        // 【1.21.15 问题 1】本次待确认窗口等多久 —— 有缓存字幕时给慢请求更长时间
+        long grace = NO_SUBTITLE_GRACE_MS;
         synchronized (lock) {
             ago = lastLoadJsonMs > 0 ? (now - lastLoadJsonMs) : Long.MAX_VALUE;
             cueCount = cues.size();
@@ -401,21 +489,25 @@ public class SubtitleRepository {
                 pendingSawPositionReset = false;
                 pendingPosSamples = 0;
                 suspended = true;
+                // 【1.21.15 问题 1】窗口分级：手上有缓存 cues = 这部作品有字幕，
+                // 大概率只是新音轨的 JSON 还在路上（冷请求实测能拖到 15s），多等一会儿。
+                grace = cueCount > 0 ? NO_SUBTITLE_GRACE_MS_CACHED : NO_SUBTITLE_GRACE_MS;
             }
         }
-        XposedBridge.log("[DLsiteSoundFloat] track changed via " + where
+        XposedCompat.log("[DLsiteSoundFloat] track changed via " + where
                 + " | lastJson=" + (ago == Long.MAX_VALUE ? "never" : ago + "ms ago")
                 + " | cues=" + cueCount
                 + " | pos=" + (playbackPositionMs < 0 ? "?" : playbackPositionMs + "ms")
                 + (suspended
-                        ? " -> SUSPEND subtitles, wait " + NO_SUBTITLE_GRACE_MS + "ms"
+                        ? " -> SUSPEND subtitles, wait " + grace + "ms"
+                                + (grace > NO_SUBTITLE_GRACE_MS ? " (had cues)" : "")
                         : " -> recent json, keep cues"));
         if (reopenedByTrack) {
-            XposedBridge.log("[DLsiteSoundFloat] new track after playback end -> reopen floating window");
+            XposedCompat.log("[DLsiteSoundFloat] new track after playback end -> reopen floating window");
         }
         notifyObservers();
         if (suspended) {
-            mainHandler.postDelayed(() -> resolvePendingTrack(token), NO_SUBTITLE_GRACE_MS);
+            mainHandler.postDelayed(() -> resolvePendingTrack(token), grace);
         }
     }
 
@@ -469,14 +561,34 @@ public class SubtitleRepository {
                     lastScannedSecond = Integer.MIN_VALUE;
                 } else {
                     // 等待期内没有任何新的字幕 JSON → 该音轨没有字幕
+                    // 【1.21.16 问题 1】这里原来无条件 `cues = new ArrayList<>()`，
+                    // 把「10s 内没等到 JSON」当成「该音轨无字幕」的**永久**结论。
+                    // 实测 JSON 延迟能到 11973ms，且 R6 是「同一作品 3.5s 前刚有 49 cues」，
+                    // 所以有 cues 在手时**绝不能销毁数据** —— 改成软裁决：只让显示层降级。
                     noSubtitles = true;
-                    cues = new ArrayList<>();
-                    subtitleLineSet.clear();
-                    currentSubtitles = new ArrayList<>();
-                    currentCueIndex = -1;
-                    lastScannedSecond = Integer.MIN_VALUE;
-                    playbackPositionMs = -1L;
-                    lastFedMs = -1L;
+                    // 【1.21.15 问题 1】留个时间戳：这次裁决若被后来的 JSON 打脸，
+                    // 加载字幕时会把「假阴性」直接写进日志。
+                    lastNoSubtitleVerdictMs = SystemClock.uptimeMillis();
+                    if (cueCount > 0) {
+                        // **软裁决**：保留 cues / subtitleLineSet，只标记「本音轨按无字幕显示」。
+                        // 晚到的 JSON 一到就自动解除（见 loadFromJsonArrayInternal）。
+                        softNoSubtitles = true;
+                        currentCueIndex = -1;
+                        lastScannedSecond = Integer.MIN_VALUE;
+                        // 注意：**不**清 playbackPositionMs / lastFedMs —— 位置是位置，
+                        // 与「有没有字幕」无关；清了反而会让恢复后的首帧字幕落错行。
+                        currentSubtitles = new ArrayList<>();
+                    } else {
+                        // 手上本来就没有任何 cues（这部作品压根没加载过字幕）→ 硬裁决，
+                        // 行为与旧版一致：清空 + 关窗。
+                        cues = new ArrayList<>();
+                        subtitleLineSet.clear();
+                        currentSubtitles = new ArrayList<>();
+                        currentCueIndex = -1;
+                        lastScannedSecond = Integer.MIN_VALUE;
+                        playbackPositionMs = -1L;
+                        lastFedMs = -1L;
+                    }
                     if (floatingWindowOpen) {
                         floatingWindowOpen = false;
                         autoClosedForNoSubtitle = true;
@@ -488,16 +600,16 @@ public class SubtitleRepository {
             }
         }
         if (spurious) {
-            XposedBridge.log("[DLsiteSoundFloat] track decision: SPURIOUS track change"
+            XposedCompat.log("[DLsiteSoundFloat] track decision: SPURIOUS track change"
                     + " (sawPositionReset=" + sawReset + ", samples=" + samples
                     + ", startPos=" + startPos + ", curPos=" + curPos
                     + ") -> keep cues=" + cueCount);
         } else if (noSubtitles) {
-            XposedBridge.log("[DLsiteSoundFloat] track decision: NO subtitles for this track"
+            XposedCompat.log("[DLsiteSoundFloat] track decision: NO subtitles for this track"
                     + " (cues were " + cueCount + ")"
                     + (closed ? " -> auto-closed floating window" : ""));
         } else {
-            XposedBridge.log("[DLsiteSoundFloat] track decision: subtitle json arrived"
+            XposedCompat.log("[DLsiteSoundFloat] track decision: subtitle json arrived"
                     + " -> keep cues=" + subCount);
         }
         notifyObservers();
@@ -543,11 +655,74 @@ public class SubtitleRepository {
                 }
             }
             if (reopened) {
-                XposedBridge.log("[DLsiteSoundFloat] playback resumed (state " + prev + "->" + state
+                XposedCompat.log("[DLsiteSoundFloat] playback resumed (state " + prev + "->" + state
                         + ") -> reopen floating window (auto-closed on playback end)");
                 notifyObservers();
             }
         }
+    }
+
+    // ======================================================================
+    // 播放 / 暂停（v45：暂停 → 状态栏字幕消失并还原原始状态栏）
+    // ======================================================================
+
+    /**
+     * 播放意愿三态：0 = 已暂停，1 = 播放中，-1 = 未知。
+     *
+     * 为什么要三态而不是 boolean：{@code getPlaybackState()} 只有 IDLE/BUFFERING/READY/ENDED，
+     * **READY 同时覆盖「正在播」和「已暂停」**，只有 {@code getPlayWhenReady()} 能区分。
+     * 而真机上 hook 有可能全挂（ROM 改类名 / expo-audio 换实现）——那时宁可当成「在播」
+     * 继续显示字幕，也不要因为读不到状态把功能整个弄没。
+     */
+    private volatile int playingState = -1;
+
+    /** 由 {@link com.sena.dlsitesoundfloat.hook.PlayerPositionHook} 采集到的播放意愿。 */
+    public void setPlaying(boolean playing) {
+        int v = playing ? 1 : 0;
+        if (v == playingState) {
+            return;
+        }
+        int prev = playingState;
+        playingState = v;
+        XposedCompat.log("[DLsiteSoundFloat] playback " + (playing ? "resumed" : "paused")
+                + " (playing " + prev + "->" + v + ")"
+                + (playing ? "" : " -> status bar subtitle will hide"));
+        notifyObservers();
+    }
+
+    /** true = 在播或状态未知（未知时按「在播」处理，保持宽容）。 */
+    public boolean isPlayingOrUnknown() {
+        return playingState != 0;
+    }
+
+    /** 最近一次已知的播放意愿原始值（-1 = 未知）。仅用于日志/排查。 */
+    public int getPlayingState() {
+        return playingState;
+    }
+
+    /**
+     * 当前字幕行的播放时长（毫秒）；0 = 未知。
+     *
+     * 状态栏字幕的「单程滚动」用它当动画时长 —— 需求是「根据字幕的播放时长，缓慢而逐渐地
+     * 从左播到右」，所以这里取的是 cue 的 endTime-startTime，而不是某个固定速度。
+     */
+    public long getCurrentCueDurationMs() {
+        int idx;
+        try {
+            idx = findCurrentCueIndex();
+        } catch (Throwable t) {
+            return 0L;
+        }
+        synchronized (lock) {
+            if (idx >= 0 && idx < cues.size()) {
+                SubtitleCue c = cues.get(idx);
+                double d = c.endTime - c.startTime;
+                if (d > 0) {
+                    return (long) (d * 1000.0);
+                }
+            }
+        }
+        return 0L;
     }
 
     private void onPlaybackEnded(int prevState) {
@@ -558,7 +733,7 @@ public class SubtitleRepository {
     /** 「播放结束」的延迟确认：这段时间内若已经又开始播（自动连播 / 重播），本次作废。 */
     private void confirmPlaybackEnded(int prevState) {
         if (lastPlaybackState != PSTATE_ENDED) {
-            XposedBridge.log("[DLsiteSoundFloat] playback end not confirmed (state came back to "
+            XposedCompat.log("[DLsiteSoundFloat] playback end not confirmed (state came back to "
                     + lastPlaybackState + ") -> keep floating window");
             return;
         }
@@ -574,7 +749,7 @@ public class SubtitleRepository {
                 closed = true;
             }
         }
-        XposedBridge.log("[DLsiteSoundFloat] playback ended (state " + prevState + "->" + PSTATE_ENDED + ")"
+        XposedCompat.log("[DLsiteSoundFloat] playback ended (state " + prevState + "->" + PSTATE_ENDED + ")"
                 + (closed ? " -> auto-closed floating window" : " (window already closed)"));
         if (closed) {
             notifyObservers();
@@ -622,15 +797,43 @@ public class SubtitleRepository {
         }
     }
 
+    /**
+     * 【1.21.16 问题 1】本音轨判了「无字幕」但 cues 还在（软裁决）。
+     * 显示层据此降级，数据层据此保住缓存等字幕晚到后自愈。
+     */
+    public boolean isSoftNoSubtitles() {
+        return softNoSubtitles;
+    }
+
+    /**
+     * 当前是否应当按「无字幕」显示 —— **唯一口径**。
+     *
+     * 三个来源合一：
+     *   - 手上根本没 cues（真无字幕）；
+     *   - 换轨待确认中（`isSuspended`，新音轨的字幕还没到）；
+     *   - 软裁决已下（本音轨 10s 内没等到 JSON，但 cues 保留着）。
+     *
+     * ⚠️ 显示层（按钮 / 悬浮窗 / 状态栏）必须**全部**走这个函数，
+     * 不要再各自拼 `!hasSubtitles() || isSuspended()` —— 那正是 1.21.16 之前
+     * 「三处 UI 口径不一」和「底色提前 9.5 秒变暗」的来源。
+     */
+    public boolean shouldShowNoSubtitles() {
+        synchronized (lock) {
+            return cues.isEmpty() || pendingTrackDecision || softNoSubtitles;
+        }
+    }
+
     public List<String> getCurrentSubtitles() {
         synchronized (lock) {
-            return pendingTrackDecision ? new ArrayList<>() : new ArrayList<>(currentSubtitles);
+            return (pendingTrackDecision || softNoSubtitles)
+                    ? new ArrayList<>() : new ArrayList<>(currentSubtitles);
         }
     }
 
     public List<SubtitleCue> getCues() {
         synchronized (lock) {
-            return pendingTrackDecision ? new ArrayList<>() : new ArrayList<>(cues);
+            return (pendingTrackDecision || softNoSubtitles)
+                    ? new ArrayList<>() : new ArrayList<>(cues);
         }
     }
 

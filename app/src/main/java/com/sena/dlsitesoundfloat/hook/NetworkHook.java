@@ -2,13 +2,12 @@ package com.sena.dlsitesoundfloat.hook;
 
 import com.sena.dlsitesoundfloat.data.SubtitleRepository;
 import com.sena.dlsitesoundfloat.util.NetLogFile;
+import com.sena.dlsitesoundfloat.util.XposedCompat;
 
 import java.lang.reflect.Method;
 import java.util.Locale;
 
-import de.robv.android.xposed.XC_MethodHook;
-import de.robv.android.xposed.XposedBridge;
-import de.robv.android.xposed.XposedHelpers;
+import io.github.libxposed.api.XposedInterface;
 
 /**
  * 拦截 DLsiteSound 的网络响应，提前读取字幕文件。
@@ -81,42 +80,42 @@ public class NetworkHook {
 
     private static void hookOkHttpResponseBuilder(ClassLoader cl, SubtitleRepository repo) {
         try {
-            Class<?> builderClass = XposedHelpers.findClass("okhttp3.Response$Builder", cl);
-            Method buildMethod = XposedHelpers.findMethodExact(builderClass, "build");
-            XposedBridge.hookMethod(buildMethod, new XC_MethodHook() {
+            Class<?> builderClass = XposedCompat.findClass("okhttp3.Response$Builder", cl);
+            Method buildMethod = XposedCompat.findMethodExact(builderClass, "build");
+            XposedCompat.hookMethod(buildMethod, new XposedCompat.SimpleHook() {
                 @Override
-                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                    Object response = param.getResult();
-                    if (response == null) {
-                        return;
+                protected Object after(XposedInterface.Chain chain, Object result) {
+                    if (result == null) {
+                        return null;
                     }
-                    captureResponse(response, repo);
+                    captureResponse(result, repo);
+                    return result; // 不改写返回值：okhttp 的响应原样放行
                 }
             });
-            XposedBridge.log(TAG + " hooked okhttp3.Response$Builder.build() [v34 json-only peek]");
+            XposedCompat.log(TAG + " hooked okhttp3.Response$Builder.build() [v34 json-only peek]");
         } catch (Throwable e) {
-            XposedBridge.log(TAG + " okhttp3.Response$Builder hook failed: " + e.getMessage());
+            XposedCompat.log(TAG + " okhttp3.Response$Builder hook failed: " + e.getMessage());
         }
     }
 
     private static void hookOkHttpRealCall(ClassLoader cl, SubtitleRepository repo) {
         // 仅做兜底尝试；DLsiteSound 的 okhttp3 常重打包导致 RealCall 找不到
         try {
-            Class<?> realCallClass = XposedHelpers.findClass("okhttp3.RealCall", cl);
-            Method executeMethod = XposedHelpers.findMethodExact(realCallClass, "execute");
-            XposedBridge.hookMethod(executeMethod, new XC_MethodHook() {
+            Class<?> realCallClass = XposedCompat.findClass("okhttp3.RealCall", cl);
+            Method executeMethod = XposedCompat.findMethodExact(realCallClass, "execute");
+            XposedCompat.hookMethod(executeMethod, new XposedCompat.SimpleHook() {
                 @Override
-                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                    Object response = param.getResult();
-                    if (response == null) {
-                        return;
+                protected Object after(XposedInterface.Chain chain, Object result) {
+                    if (result == null) {
+                        return null;
                     }
-                    captureResponse(response, repo);
+                    captureResponse(result, repo);
+                    return result;
                 }
             });
-            XposedBridge.log(TAG + " hooked okhttp3.RealCall.execute()");
+            XposedCompat.log(TAG + " hooked okhttp3.RealCall.execute()");
         } catch (Throwable e) {
-            XposedBridge.log(TAG + " okhttp3.RealCall hook failed: " + e.getMessage());
+            XposedCompat.log(TAG + " okhttp3.RealCall hook failed: " + e.getMessage());
         }
     }
 
@@ -128,7 +127,7 @@ public class NetworkHook {
         if (!isSubtitleCandidate(response, url)) {
             if (!sFirstSkipLogged) {
                 sFirstSkipLogged = true;
-                XposedBridge.log(TAG + " skip non-subtitle response (no peek):"
+                XposedCompat.log(TAG + " skip non-subtitle response (no peek):"
                         + " ctype=" + contentTypeOf(response)
                         + " code=" + codeOf(response)
                         + " url=" + (url == null ? "(null)" : url));
@@ -150,11 +149,11 @@ public class NetworkHook {
             // 优先按完整结构解析（{data:{webvtt:[...]}}）
             repo.loadFromJson(text);
             int n = repo.getCues().size();
-            XposedBridge.log(TAG + " >> parsed subtitle JSON from " + (url == null ? "(unknown url)" : url)
+            XposedCompat.log(TAG + " >> parsed subtitle JSON from " + (url == null ? "(unknown url)" : url)
                     + " cues=" + n);
             NetLogFile.log("  >> PARSED cues=" + n);
         } catch (Throwable e) {
-            XposedBridge.log(TAG + " parse error: " + e.getMessage());
+            XposedCompat.log(TAG + " parse error: " + e.getMessage());
             NetLogFile.log("  parseErr=" + e.getMessage());
         }
     }
@@ -191,11 +190,11 @@ public class NetworkHook {
 
         // ③ 体积门。
         try {
-            Object body = XposedHelpers.callMethod(response, "body");
+            Object body = XposedCompat.callMethod(response, "body");
             if (body == null) {
                 return false;
             }
-            Object lenObj = XposedHelpers.callMethod(body, "contentLength");
+            Object lenObj = XposedCompat.callMethod(body, "contentLength");
             if (lenObj instanceof Long && (Long) lenObj > PEEK_LIMIT) {
                 return false;
             }
@@ -222,11 +221,11 @@ public class NetworkHook {
 
     private static String contentTypeOf(Object response) {
         try {
-            Object body = XposedHelpers.callMethod(response, "body");
+            Object body = XposedCompat.callMethod(response, "body");
             if (body == null) {
                 return "";
             }
-            Object ct = XposedHelpers.callMethod(body, "contentType");
+            Object ct = XposedCompat.callMethod(body, "contentType");
             return ct == null ? "" : ct.toString().toLowerCase(Locale.US);
         } catch (Throwable e) {
             return "";
@@ -235,7 +234,7 @@ public class NetworkHook {
 
     private static Integer codeOf(Object response) {
         try {
-            Object c = XposedHelpers.callMethod(response, "code");
+            Object c = XposedCompat.callMethod(response, "code");
             return c instanceof Integer ? (Integer) c : null;
         } catch (Throwable e) {
             return null;
@@ -244,11 +243,11 @@ public class NetworkHook {
 
     private static String peekBodyText(Object response) {
         try {
-            Object body = XposedHelpers.callMethod(response, "peekBody", PEEK_LIMIT);
+            Object body = XposedCompat.callMethod(response, "peekBody", PEEK_LIMIT);
             if (body == null) {
                 return null;
             }
-            return (String) XposedHelpers.callMethod(body, "string");
+            return (String) XposedCompat.callMethod(body, "string");
         } catch (Throwable e) {
             NetLogFile.log("  peekErr=" + e.getMessage());
             return null;
@@ -257,16 +256,16 @@ public class NetworkHook {
 
     private static String getUrlFromResponse(Object response) {
         try {
-            Object request = XposedHelpers.callMethod(response, "request");
+            Object request = XposedCompat.callMethod(response, "request");
             if (request == null) {
                 return null;
             }
-            Object url = XposedHelpers.callMethod(request, "url");
+            Object url = XposedCompat.callMethod(request, "url");
             if (url == null) {
                 return null;
             }
             // HttpUrl.toString() 或 String
-            Object s = XposedHelpers.callMethod(url, "toString");
+            Object s = XposedCompat.callMethod(url, "toString");
             return s == null ? null : s.toString();
         } catch (Throwable e) {
             return null;

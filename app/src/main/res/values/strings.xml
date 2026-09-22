@@ -2,6 +2,8 @@
 <resources>
     <!-- LSPosed 模块列表里显示的名字（同时也作为桌面图标名） -->
     <string name="app_name">DLsiteFloat</string>
+    <!-- LSPosed 模块列表里显示的简介（2.0.0 起由 android:description 提供，不再用 meta-data） -->
+    <string name="app_description">DLsite Sound 字幕悬浮窗插件</string>
     <string name="channel_name">Floating Subtitle Service</string>
     <string name="channel_desc">Keep the floating subtitle window alive</string>
     <string name="service_notification_title">DLsiteSound Floating Subtitle</string>

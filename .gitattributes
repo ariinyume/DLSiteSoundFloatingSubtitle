@@ -1,0 +1,16 @@
+# 行尾规范化
+#
+# ⚠️ META-INF/xposed/ 下的三个文件是 libxposed 的「逐行裸解析」输入：
+#    java_init.list = 每行一个入口类名；scope.list = 每行一个作用域包名。
+#    如果检出时被写成 CRLF，解析出的类名/包名会带一个回车符（\r），
+#    框架找不到类 —— 表现是「模块装上了但完全没调起、日志里一个字都没有」。
+#    所以这三个文件必须在任何机器上都保持 LF。
+app/src/main/resources/META-INF/xposed/java_init.list text eol=lf
+app/src/main/resources/META-INF/xposed/scope.list     text eol=lf
+app/src/main/resources/META-INF/xposed/module.prop    text eol=lf
+
+# Unix 侧构建入口（在 Linux/macOS/CI 上 CRLF 会直接报 bad interpreter）
+gradlew text eol=lf
+
+# Windows 批处理必须保持 CRLF
+*.bat text eol=crlf

@@ -3,10 +3,12 @@ package com.sena.dlsitesoundfloat.hook;
 import android.os.SystemClock;
 
 import com.sena.dlsitesoundfloat.data.SubtitleRepository;
+import com.sena.dlsitesoundfloat.util.XposedCompat;
 
-import de.robv.android.xposed.XC_MethodHook;
-import de.robv.android.xposed.XposedBridge;
-import de.robv.android.xposed.XposedHelpers;
+import java.lang.reflect.Method;
+import java.util.List;
+
+import io.github.libxposed.api.XposedInterface;
 
 /**
  * 音轨切换 Hook —— 解决「切到没有字幕的音轨后，悬浮窗仍从头播放上一音轨的缓存字幕」。
@@ -88,32 +90,32 @@ public class PlayerSourceHook {
                                   boolean requireIndexChange, boolean seedIndexOnly) {
         Class<?> cls;
         try {
-            cls = XposedHelpers.findClass(className, cl);
+            cls = XposedCompat.findClass(className, cl);
         } catch (Throwable e) {
-            XposedBridge.log(TAG + " class not found: " + className);
+            XposedCompat.log(TAG + " class not found: " + className);
             return;
         }
         int hooked = 0;
         for (final String name : methodNames) {
-            try {
-                hooked += XposedBridge.hookAllMethods(cls, name, new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) {
-                        String where = className + "." + name;
-                        if (requireIndexChange) {
-                            notifyIfTrackIndexChanged(repo, where, param.thisObject);
-                            return;
-                        }
-                        if (seedIndexOnly) {
-                            seedTrackIndex(param.thisObject, where);
-                        }
-                        notifyTrackChanged(repo, where);
+            // 迁移对照：旧 XposedBridge.hookAllMethods(cls, name, XC_MethodHook) 返回 Unhook 集合，
+            // 代码里只取 .size()；XposedCompat.hookAllMethods 直接返回「成功挂钩的数量」。
+            hooked += XposedCompat.hookAllMethods(cls, name, new XposedCompat.SimpleHook() {
+                @Override
+                protected Object after(XposedInterface.Chain chain, Object r) {
+                    String where = className + "." + name;
+                    if (requireIndexChange) {
+                        notifyIfTrackIndexChanged(repo, where, chain.getThisObject());
+                        return r;
                     }
-                }).size();
-            } catch (Throwable ignored) {
-            }
+                    if (seedIndexOnly) {
+                        seedTrackIndex(chain.getThisObject(), where);
+                    }
+                    notifyTrackChanged(repo, where);
+                    return r;
+                }
+            });
         }
-        XposedBridge.log(TAG + " hooked " + className
+        XposedCompat.log(TAG + " hooked " + className
                 + (requireIndexChange ? " [index-verified]"
                         : (seedIndexOnly ? " [unconditional + seed]" : " [unconditional]"))
                 + " (" + hooked + " methods)");
@@ -128,17 +130,16 @@ public class PlayerSourceHook {
     private static void hookTrackIndex(ClassLoader cl, SubtitleRepository repo) {
         Class<?> cls;
         try {
-            cls = XposedHelpers.findClass("expo.modules.audio.AudioPlaylist", cl);
+            cls = XposedCompat.findClass("expo.modules.audio.AudioPlaylist", cl);
         } catch (Throwable e) {
             return;
         }
         try {
-            int n = XposedBridge.hookAllMethods(cls, "getCurrentTrackIndex", new XC_MethodHook() {
+            int n = XposedCompat.hookAllMethods(cls, "getCurrentTrackIndex", new XposedCompat.SimpleHook() {
                 @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    Object res = param.getResult();
+                protected Object after(XposedInterface.Chain chain, Object res) {
                     if (!(res instanceof Integer)) {
-                        return;
+                        return res;
                     }
                     int idx = (Integer) res;
                     long now = SystemClock.uptimeMillis();
@@ -151,27 +152,28 @@ public class PlayerSourceHook {
                     //    数据层会用它重算字幕行 → 跳回已播过的字幕（问题 1）。
                     if (last == Integer.MIN_VALUE || since > INDEX_STALE_MS) {
                         sLastTrackIndex = idx;
-                        XposedBridge.log(TAG + " seeded track index=" + idx
+                        XposedCompat.log(TAG + " seeded track index=" + idx
                                 + " (first/stale observation"
                                 + (since > INDEX_STALE_MS ? ", since=" + since + "ms" : "") + ")");
-                        return;
+                        return res;
                     }
                     if (idx != last) {
                         if (isListReset(last, idx)) {
                             // 列表被重置（切作品 / 重新装载），不是列表内换轨
                             sLastTrackIndex = idx;
-                            XposedBridge.log(TAG + " ignored " + last + "->" + idx
+                            XposedCompat.log(TAG + " ignored " + last + "->" + idx
                                     + " (playlist reset, not a track change)");
-                            return;
+                            return res;
                         }
                         sLastTrackIndex = idx;
                         notifyTrackChanged(repo, "AudioPlaylist.getCurrentTrackIndex " + last + "->" + idx);
                     }
+                    return res;
                 }
-            }).size();
-            XposedBridge.log(TAG + " hooked AudioPlaylist.getCurrentTrackIndex (" + n + " methods)");
+            });
+            XposedCompat.log(TAG + " hooked AudioPlaylist.getCurrentTrackIndex (" + n + " methods)");
         } catch (Throwable e) {
-            XposedBridge.log(TAG + " hookTrackIndex failed: " + e.getMessage());
+            XposedCompat.log(TAG + " hookTrackIndex failed: " + e.getMessage());
         }
     }
 
@@ -193,7 +195,7 @@ public class PlayerSourceHook {
         int idx = readTrackIndex(holder);
         if (idx != Integer.MIN_VALUE && sLastTrackIndex != idx) {
             sLastTrackIndex = idx;
-            XposedBridge.log(TAG + " seeded track index=" + idx + " from " + where);
+            XposedCompat.log(TAG + " seeded track index=" + idx + " from " + where);
         }
     }
 
@@ -220,14 +222,14 @@ public class PlayerSourceHook {
         sLastIndexSeenMs = now;
         if (last == Integer.MIN_VALUE || since > INDEX_STALE_MS) {
             sLastTrackIndex = idx;
-            XposedBridge.log(TAG + " seeded track index=" + idx + " from " + where
+            XposedCompat.log(TAG + " seeded track index=" + idx + " from " + where
                     + " (first/stale observation, no change notification)");
             return;
         }
         if (idx != last) {
             if (isListReset(last, idx)) {
                 sLastTrackIndex = idx;
-                XposedBridge.log(TAG + " ignored " + where + " " + last + "->" + idx
+                XposedCompat.log(TAG + " ignored " + where + " " + last + "->" + idx
                         + " (playlist reset, not a track change)");
                 return;
             }
@@ -236,7 +238,7 @@ public class PlayerSourceHook {
             return;
         }
         // 序号没变 → 这个方法只是被调了一下，并没有真的换轨
-        XposedBridge.log(TAG + " ignored " + where + " (track index unchanged=" + idx
+        XposedCompat.log(TAG + " ignored " + where + " (track index unchanged=" + idx
                 + ", no-op navigation)");
     }
 
@@ -246,7 +248,7 @@ public class PlayerSourceHook {
             return Integer.MIN_VALUE;
         }
         try {
-            Object r = XposedHelpers.callMethod(holder, "getCurrentTrackIndex");
+            Object r = XposedCompat.callMethod(holder, "getCurrentTrackIndex");
             if (r instanceof Integer) {
                 return (Integer) r;
             }

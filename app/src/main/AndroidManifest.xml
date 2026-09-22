@@ -4,23 +4,19 @@
 
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
+    <!--
+      libxposed 现代 API（2.0.0 起）：
+        · 不再需要 xposedmodule / xposeddescription / xposedminversion / xposedscope 四个 meta-data。
+        · 模块列表里的「模块名」取 android:label，「简介」取 android:description。
+        · 入口类在 src/main/resources/META-INF/xposed/java_init.list；
+          作用域在 META-INF/xposed/scope.list；最低/目标 API 在 META-INF/xposed/module.prop。
+        ⚠️ 保留 meta-data 会被新版 LSPosed 当成「传统模块」，与 java_init.list 并存时行为不确定。
+    -->
     <application
         android:label="@string/app_name"
+        android:description="@string/app_description"
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="false">
-
-        <meta-data
-            android:name="xposedmodule"
-            android:value="true" />
-        <meta-data
-            android:name="xposeddescription"
-            android:value="DLSite Sound 字幕悬浮窗插件" />
-        <meta-data
-            android:name="xposedminversion"
-            android:value="93" />
-        <meta-data
-            android:name="xposedscope"
-            android:value="jp.co.eisys.dlsitesound" />
 
     </application>
 </manifest>

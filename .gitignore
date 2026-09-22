@@ -19,4 +19,7 @@ captures/
 *.apk
 *.aab
 
+# 本地诊断工作区（反汇编 / 日志抓包，单目录百 MB 级，绝不入库）
+work_diag_*/
+
 # 注意：gradle.properties 是构建必需（android.useAndroidX 等），不要忽略，需纳入版本库

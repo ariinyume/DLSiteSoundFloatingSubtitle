@@ -3,22 +3,60 @@ plugins {
 }
 
 // ============================================================================
-//  版本 / 包名 规则（v28）
+//  版本 / 包名 规则（v28；2.0.0 起走 libxposed 现代 API）
 //
 //  单包：包名 com.sena.dlsitesoundfloat。
 //
 //  LSPosed 模块列表里显示的三要素：
 //    · 模块名  ← res/values/strings.xml 的 app_name（DLsiteFloat）
-//    · 简介    ← AndroidManifest 的 <meta-data name="xposeddescription">
+//    · 简介    ← AndroidManifest 的 android:description（@string/app_description）
 //    · 图标    ← @mipmap/ic_launcher（res/mipmap-*/ic_launcher.png，圆角 80px）
 //
 //  ⚠️ namespace 与 applicationId 同为 com.sena.dlsitesoundfloat：
-//     java 包名与 assets/xposed_init 里的入口类全名都跟 namespace 走。
+//     java 包名与 META-INF/xposed/java_init.list 里的入口类全名都跟 namespace 走。
+//
+//  ── 2.0.0：传统 Xposed API → libxposed 现代 API（API 102）──
+//    · 依赖：de.robv.android.xposed:api:82 → io.github.libxposed:api:102.0.0
+//      （官方 AAR 在 **Maven Central**，settings.gradle 已有 mavenCentral()）。
+//    · 入口：assets/xposed_init → src/main/resources/META-INF/xposed/java_init.list
+//    · 作用域：assets/xposed_scope → META-INF/xposed/scope.list
+//    · 模块配置：新增 META-INF/xposed/module.prop（minApiVersion / targetApiVersion）
+//    · 简介/最低版本：AndroidManifest 的 4 个 xposed* meta-data 全部删除
+//      （现代 API 不再读 meta-data；模块名走 android:label、简介走 android:description）
+//    · ⚠️ META-INF/xposed/ 下三个文件**不要写注释行**（# 开头）：
+//      libxposed 的 java_init.list 是「逐行 = 一个类名」的裸解析器，
+//      混入注释会让入口解析失败 → 表现为「装上了但完全没调起、日志里一个字都没有」。
 // ============================================================================
 
-def appVersionTag = '1.21.0'
-def appVersionCode = 12100
-def appVersionName = '1.21.0'
+// ── 版本号规则（v29；2.0.0 起）────────────────────────────────────────────
+//   versionName : 语义化版本（2.0.0 / 2.0.1 …）
+//   versionCode : **发版前（以 push 到 git 为准）最后修改日期的 MMDD**，
+//                 如 9 月 20 日发版 → 0920；10 月 3 日 → 1003。
+//                 ⚠️ 不是 20000 这种「语义版本 ×1000」的老规则。
+//                 同日多次发版时后一位可用 0921/0922 递增（保持单调即可）。
+def appVersionTag = '2.0.1'
+// ⚠️ 写成 int 字面量 925（不要写 0925 —— Groovy 可能按八进制/前导零解析）：
+//    versionCode 的**数值**是 925，管理器里显示 925，可读语义看 appVersionCodeLabel。
+//    【0921.1】2.0.1 的**9/21 第一版**（code 923 → 924，versionName 不变）：
+//    几何 75x32dp / 圆角 16dp / 垂直中点复核（+诊断日志）；
+//    bug1 滑条坐标稳定性判据（按钮上下摆动）；bug2 字幕半截宽度；
+//    新功能：双击状态栏字幕位置关闭状态栏字幕。
+//    【0921.2】code 924 → **925**：**P0 回归修复** —— 924 的 bug1 稳定性判据
+//    被错做进了「探测」里（不稳定直接 return），导致 hasMainSlider 永不置位、
+//    verdict 塌成 UNKNOWN、**按钮完全不出现**（实测 PLAYER 判定 90 次 → 1 次）。
+//    修法：探测只如实上报，新增 ScanResult.mainSliderStable 把「能否采信」
+//    交给消费端（ActivityButtonHook）—— 不稳定时沿用上次稳定值，绝不隐藏按钮。
+//    【0921.7】code 930：**三条 bug 日志实证修复**（work_diag_55）。
+//    bug1 先半截再整行：showLine 的 applyFluidBoundary(true) 在 sLayoutDirty 时被
+//    降级成 150ms 延迟合并 → 新行长文本先以旧行宽度可见再落地 = 半截；改 force 路径
+//    无条件立即落地（脏则落地后再核一次防漂移）。
+//    bug2 单击就关闭：删除 sLineView 旧双击监听（与 root dispatchTouchEvent 观察者
+//    共享 sLastTapMs，一次 DOWN 被算两遍）；仅保留 root hook。
+//    bug3 按钮掉到播放控件下：handleSlider 稳定性判据（929 改丢）恢复「基准跟上一帧
+//    原始坐标 + 容差放宽到 12px」，消除 925 式死锁 → sLastSliderCy 重新收敛 → 中点落位。
+def appVersionCode = 940
+def appVersionCodeLabel = '0922.5'
+def appVersionName = '2.0.1'
 
 android {
     namespace 'com.sena.dlsitesoundfloat'
@@ -63,5 +101,7 @@ androidComponents {
 }
 
 dependencies {
-    compileOnly 'de.robv.android.xposed:api:82'
+    // libxposed 现代 API（API 102）。compileOnly：API 由框架在运行时提供，不打进 APK。
+    // ⚠️ 只能 compileOnly —— 打进包会导致模块与框架的 XposedInterface 类冲突。
+    compileOnly 'io.github.libxposed:api:102.0.0'
 }

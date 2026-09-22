@@ -17,7 +17,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
-import de.robv.android.xposed.XposedBridge;
+import com.sena.dlsitesoundfloat.util.XposedCompat;
 
 /**
  * 视图树扫描器（React Native 兼容）。
@@ -179,6 +179,37 @@ public class SubtitleViewHook {
         public int mainSliderX;
         public int mainSliderY;
         public float mainSliderAlpha = 1f;
+        /**
+         * 【code 923 几何 4】「一行淡色小字简介」的底边屏幕 y（px）；{@code -1} = 没找到。
+         *
+         * 判定口径：主滑条**顶边之上**、离滑条最近的那条单行小字文本框的底边。
+         * 它和 {@link #mainSliderY}（滑条中心）一起决定按钮组的垂直中点。
+         */
+        public int descLineBottom = -1;
+        /** 【code 924】本次扫描收集到的「单行小字」候选总数（0 = 收集条件把简介行漏了）。 */
+        public int descCandidateCount = 0;
+        /**
+         * 【code 925 修复】本次扫描到的**主滑条坐标是否已稳定**（跨帧一致）。
+         *
+         * ─────────────────────────────────────────────────────────────────────
+         * ⚠️⚠️ code 924 的 P0 回归就出在「把稳定性判据做进了**探测**里」：
+         *   `handleSlider()` 在不稳定时直接 {@code return}，于是
+         *   {@code r.hasMainSlider} 永远为 false →
+         *   ① `scan()` 里算 descLineBottom 的 {@code if (r.hasMainSlider)} 不成立 →
+         *      descBottom 恒 -1 → 几何 4 中点永不生效；
+         *   ② verdict 直接塌成 UNKNOWN / OTHER → **按钮根本不出来**。
+         *   实测（Ari 日志 09:51）：PLAYER 判定从 code 923 的 **90 次** 跌到 **1 次**。
+         *   根因是 RN 页面**每帧都在重排**，相邻两次扫描的 getLocationOnScreen
+         *   差值几乎总 > 2px ⇒ 判据永远不满足 ⇒ 探测彻底瘫痪。
+         *
+         * 正确口径：**探测只负责「如实报告看到了什么」，稳定性是「消费端的事」**。
+         *   · 本字段照实告诉消费端「这批坐标能不能直接拿来驱动 UI」；
+         *   · 消费端（ActivityButtonHook）在 unstable 时**沿用上一次稳定值**，
+         *     而不是拒绝这次扫描 —— 「判不出来」绝不能等价于「什么都没看到」。
+         *   （同源教训：1.21.16「N 秒超时不是不存在的证据」。）
+         * ─────────────────────────────────────────────────────────────────────
+         */
+        public boolean mainSliderStable = true;
 
         /** 屏幕底部的宽滑条（= 列表页 mini-player 的进度条）。 */
         public boolean hasBottomSlider;
@@ -316,11 +347,19 @@ public class SubtitleViewHook {
         float density;
         /** 本次扫描的根（decorView）。用于避免把根当成锚点。 */
         View root;
+        /**
+         * 【code 923 几何 4】本次扫描收集到的**单行小字**文本框：
+         * 每项 = {left, top, right, bottom, height}（屏幕坐标 / px）。
+         * 时间文本（{@code 04:48} / {@code 04:48 / 12:00}）不入列 —— 它们不是简介。
+         */
+        final List<int[]> textBoxes = new ArrayList<>();
+        /** 【code 924】本次收集到的「单行小字」候选数（诊断用：真机上是不是 0）。 */
+        int textBoxCount = 0;
     }
 
     public static void hook(ClassLoader cl, SubtitleRepository repo) {
         // 结构扫描在 ActivityButtonHook 的定时检测里调用，这里只保留轻量日志
-        XposedBridge.log(TAG + " structural scanner ready (fresh+visibility-aware scan + page anchor)");
+        XposedCompat.log(TAG + " structural scanner ready (fresh+visibility-aware scan + page anchor)");
     }
 
     /**
@@ -344,6 +383,26 @@ public class SubtitleViewHook {
         List<int[]> labels = new ArrayList<>();
         Rect visRect = new Rect();               // 复用同一个 Rect，避免每个 View 都 new
         collect(root, r, repo, labels, visRect, ctx);
+
+        // 【code 923 几何 4】从收集到的文本框里挑出「一行淡色小字简介」：
+        // 主滑条**顶边之上**、且离滑条最近的那一条（= 底边最大的那条）。
+        // 距离上限 DESC_GAP 防止把更上面的音轨大标题当成简介。
+        r.descCandidateCount = ctx.textBoxCount;
+        if (r.hasMainSlider) {
+            int sliderTop = r.mainSliderY - r.mainSliderH / 2;
+            // 【code 924】距离上限 220dp -> 260dp：真机（1272x2772 @3.5）里
+            //   简介行底边到滑条顶边的实测间距在大字 / 多行时会超过 220dp（= 770px），
+            //   一超就被判「太远 → 不是简介」而落回旧口径 -> 中点永远不生效。
+            //   上限的作用只是「别把更上面的音轨大标题当简介」，260dp 仍远小于标题距离。
+            int maxGap = (int) (260f * ctx.density);
+            int best = -1;
+            for (int[] b : ctx.textBoxes) {
+                if (b[3] <= sliderTop && sliderTop - b[3] <= maxGap && b[3] > best) {
+                    best = b[3];
+                }
+            }
+            r.descLineBottom = best;
+        }
 
         List<int[]> timeOnly = new ArrayList<>();
         for (int[] L : labels) {
@@ -420,6 +479,21 @@ public class SubtitleViewHook {
                         if (timeRange) {
                             r.hasProgressPair = true;
                         }
+                        // 【code 923 几何 4】收集单行小字文本框（排除时间文本）。
+                        // 【code 924】高度上限 60dp -> **80dp**：真机里简介行常带一行换行，
+                        //   57dp 的行高在部分字号下会越界（60dp 是「排除大标题」的约数，不是硬约束）；
+                        //   大标题实测高度远大于 80dp（dump 里 252px = 72dp 是「两行标题」，
+                        //   单行大标题也在 100dp+），放宽到 80dp 不会把标题吃进来。
+                        if (!timeOnly && !timeRange && t.length() >= 2) {
+                            int vh = v.getHeight();
+                            if (vh > 0 && vh <= 80f * ctx.density) {
+                                int[] bl = new int[2];
+                                v.getLocationOnScreen(bl);
+                                ctx.textBoxes.add(new int[]{
+                                        bl[0], bl[1], bl[0] + v.getWidth(), bl[1] + vh, vh});
+                                ctx.textBoxCount++;
+                            }
+                        }
                         if (t.length() >= 2
                                 && looksLikeSubtitleText(t)
                                 && repo.isKnownSubtitleText(t)
@@ -458,6 +532,19 @@ public class SubtitleViewHook {
      *      不拦的话，过渡动画会把播放页**自己的主滑条**误当成 mini-player 滑条 → 判 OTHER →
      *      按钮被误隐藏，这正是「有时快有时慢」的根源。
      */
+    /** 【code 924 bug1】跨帧保存「上一次采纳的滑条几何」，只用于稳定性判据。 */
+    private static int sStableSliderY = Integer.MIN_VALUE;
+    private static int sStableSliderH = Integer.MIN_VALUE;
+    private static int sStableSliderX = Integer.MIN_VALUE;
+    private static int sStableHit = 0;
+    /** 【code 924 bug1】连续几次扫描坐标一致才采信。2 = 相邻两次一致。 */
+    private static final int SLIDER_STABLE_HITS = 2;
+    /** 【code 924 bug1】纵坐标容差（px）。【code 930 bug 3】从 2 放宽到 12：
+     *   真机（work_diag_55）实测主滑条 y 在 1799/1805/1807 间抖动（±8px，RN 重排中间态），
+     *   2px 容差下永远凑不齐「连续 2 帧一致」→ 925 式死锁 → sLastSliderCy 恒 -1 →
+     *   按钮永远兜底位。12px 覆盖真实抖动且按钮位置差 ≤12px 不可感。 */
+    private static final int SLIDER_STABLE_TOL = 12;
+
     private static void handleSlider(View v, ScanResult r, Ctx ctx) {
         int w = v.getWidth();
         int h = v.getHeight();
@@ -479,6 +566,57 @@ public class SubtitleViewHook {
         if (!xOnScreen || !yOnScreen) {
             return;
         }
+
+        // ── 【code 924 bug1 → code 925 修复】滑条坐标的**稳定性判据** ──
+        // code 923 的实测铁证（Ari 日志 00:31:06）：
+        //   同一批 dump 显示 ReactSlider @70,1789 1132x63（真值 cy=1820），
+        //   但相邻两次扫描一次报 y=1890（差 70px）、一次报 1820。
+        //   ⇒ getLocationOnScreen 在**页面 settle 期间**会返回中间态坐标
+        //     （RN 的重排/回弹是逐帧改 transform，布局尚未落定）。
+        // 而 mainSliderY 是「读到就用」的：中间态 → 按钮位置算错 → 用户看到「上下摆动」。
+        //
+        // 🔴 code 924 的错误修法（已回退，勿重犯）：在这里 `return` 掉不稳定帧。
+        //    后果是**判据把探测本身掐死了** —— RN 每帧都在重排，差值几乎总 > 容差，
+        //    于是 hasMainSlider 永不置位，vertdict 塌成 UNKNOWN，按钮整个不出来。
+        //    （铁证：PLAYER 判定 90 次 → 1 次；descBottom 恒 -1。）
+        //
+        // ✅ code 925 正确口径：**照实上报**，稳定性交给消费端决策。
+        //    · 本函数**永远**把看到的滑条填进 r（探测职责 = 如实报告）；
+        //    · r.mainSliderStable 表示「这批坐标能不能直接拿来驱动 UI」；
+        //    · ActivityButtonHook 在 unstable 时沿用上一次稳定值（位置短暂不精确，
+        //      但绝不跳变，也绝不因为「没判稳」就把按钮藏掉）。
+        // 【code 930 bug 3 修复】稳定性判据重新审视（work_diag_55 实锤）：
+        //   929 真机 sliderCy 在 1799/1805/1807/1999 间跳动 + 偶发 cy=0 幽灵，旧判据
+        //   （sStableSliderY 只在 geomStable 时更新 + 2px 容差）一旦首帧采纳了错误基准
+        //   （幽灵 / 转场 / 另一条滑条 at 1999）就永远不收敛 → sLastSliderCy 恒 -1 →
+        //   按钮永远兜底位（286px，掉到播放控件下面）= Ari 复现的 bug 3。
+        //   修复：① 容差 12px（见 SLIDER_STABLE_TOL，覆盖真实 ±8px 抖动）；② 坐标跳变时
+        //   把比较基准钉到「当前帧原始坐标」（else 分支），下一帧只需接近当前帧即可收敛，
+        //   不再卡在冻结的旧基准上永不达标；③ 连续 2 帧收敛即采信（SLIDER_STABLE_HITS=2）。
+        boolean geomSame = Math.abs(cy - sStableSliderY) <= SLIDER_STABLE_TOL
+                && Math.abs(h - sStableSliderH) <= SLIDER_STABLE_TOL
+                && Math.abs(loc[0] - sStableSliderX) <= SLIDER_STABLE_TOL;
+        if (geomSame) {
+            if (sStableHit < SLIDER_STABLE_HITS) {
+                sStableHit++;
+            }
+        } else {
+            sStableHit = 1;
+            // 基准跟到当前帧：换视图 / 转场 / 抖动导致坐标跳变时，把比较基准挪到这一帧，
+            // 下一帧只需接近这一帧就收敛，而不是永远差一个冻结旧值 → 永不达标。
+            sStableSliderY = cy;
+            sStableSliderH = h;
+            sStableSliderX = loc[0];
+        }
+        boolean geomStable = sStableHit >= SLIDER_STABLE_HITS
+                || sStableSliderY == Integer.MIN_VALUE;
+        if (geomStable) {
+            sStableSliderY = cy;
+            sStableSliderH = h;
+            sStableSliderX = loc[0];
+        }
+        // 本条滑条是否「本帧可采信」：不稳定时标记出去，但**绝不 return**。
+        r.mainSliderStable = r.mainSliderStable && geomStable;
 
         // 【v26 关键】页面容器必须真的占着屏幕 —— 否则这条滑条属于一个正在滑入 / 滑出的页面。
         View container = findPageContainer(v, ctx);
@@ -774,11 +912,11 @@ public class SubtitleViewHook {
         StringBuilder sb = new StringBuilder();
         int[] budget = {DUMP_MAX_LINES};
         dumpRec(root, 0, 0, 0, sb, budget);
-        XposedBridge.log(TAG + " ===== view tree dump begin (<= " + DUMP_MAX_LINES + " lines) =====");
+        XposedCompat.log(TAG + " ===== view tree dump begin (<= " + DUMP_MAX_LINES + " lines) =====");
         for (String line : sb.toString().split("\n")) {
-            XposedBridge.log(TAG + " DUMP " + line);
+            XposedCompat.log(TAG + " DUMP " + line);
         }
-        XposedBridge.log(TAG + " ===== view tree dump end =====");
+        XposedCompat.log(TAG + " ===== view tree dump end =====");
     }
 
     private static void dumpRec(View v, int depth, int ox, int oy,

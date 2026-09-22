@@ -7,22 +7,26 @@ import android.graphics.drawable.GradientDrawable;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.util.DisplayMetrics;
 import android.view.Choreographer;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewParent;
 import android.view.ViewTreeObserver;
 import android.widget.FrameLayout;
+import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import com.sena.dlsitesoundfloat.data.SubtitleRepository;
+import com.sena.dlsitesoundfloat.util.StatusBarSubtitleBridge;
+import com.sena.dlsitesoundfloat.util.XposedCompat;
 
 import java.lang.ref.WeakReference;
+import java.lang.reflect.Method;
 
-import de.robv.android.xposed.XC_MethodHook;
-import de.robv.android.xposed.XposedBridge;
-import de.robv.android.xposed.XposedHelpers;
+import io.github.libxposed.api.XposedInterface;
 
 /**
  * 在 DLsiteSound 播放页注入一个悬浮按钮，用于开关字幕悬浮窗。
@@ -118,7 +122,11 @@ import de.robv.android.xposed.XposedHelpers;
  *     重新 measure/layout → `onGlobalLayout` 再次触发扫描 → **布局回环** ＝「卡顿」。
  *
  * 结论：**按钮位置必须是常量，与页面几何解耦。** 还原 v31 之前的口径 ——
- * 右下角、距屏底 {@link #BUTTON_BOTTOM_DP}（=96）dp、宽 {@link #BUTTON_W_DP}（=76）dp。
+ * 屏幕上「主滑条上方靠右」（v57 起，需求指定），尺寸是两个 {@link #CAPSULE_W_DP} dp 的胶囊。
+ *
+ * ⚠️ 类头这一段描述的是 v32 时期的「常量右下角」，v57 已改。之所以保留历史段落：
+ *    里面记录的**反面教训**（位置跟着几何走 → 满屏跳 + 布局回环）依然成立，
+ *    v57 只是用「迟滞 + 只写 LayoutParams 不写 translationY 基准」把它化解掉。
  * 位置恒定后 {@link #showButton} 里那句「只在真的变化时才 setLayoutParams」的守卫自然生效，
  * 只在首次摆位时触发布局一次，回环不可能发生。
  *
@@ -336,15 +344,128 @@ public class ActivityButtonHook {
     private static final String TAG = "[DLsiteSoundFloat:Button]";
     private static final String ACTIVITY_CLASS = "jp.co.eisys.dlsitesound.MainActivity";
     private static final int BUTTON_ID = 0x7F999001;
-    private static final int BUTTON_BG_NORMAL = 0x99000000;
-    private static final int BUTTON_BG_ACTIVE = 0x993A3968;
+    /** 状态栏字幕胶囊的 id。 */
+    private static final int CAPSULE_ID_STATUSBAR = 0x7F999002;
+    /** 悬浮窗字幕胶囊的 id。 */
+    private static final int CAPSULE_ID_FLOATING = 0x7F999003;
 
-    /** 按钮尺寸（dp）。宽度 v31 一度收到 60dp（为塞进传输控件行右端），v32 撤销锚定后还原 76dp。 */
-    private static final int BUTTON_W_DP = 76;
-    private static final int BUTTON_H_DP = 34;
+    /**
+     * ── v57（2026-09-20）：字幕开关从「单按钮 + 长按/短按」改成**双胶囊按钮** ──
+     *
+     * 需求原话（Ari 2026-09-20）：
+     *   「以 Material Design 3 作为设计基础，参考图片中的按键设计和按键所在界面中的位置。
+     *     将悬浮窗字幕和状态栏字幕拆分成两个按键，均通过点击触发；如无字幕，状态栏字幕按键消失，
+     *     悬浮窗字幕按键显示无字幕。按键位置是在音轨大标题和播放进度条中间靠右侧。」
+     *
+     * 设计稿量出来的规格（参考图是设计稿，实际渲染见 control-*.png）：
+     *   · 胶囊 86x38px（设计稿）→ 按需求「再宽些」取 96x36dp；
+     *   · 间距 12px（设计稿，≈ 高 x0.32）→ 取 8dp；
+     *   · **全圆角**（设计稿圆角 = 高/2 = 19px）→ 这里是胶囊的关键特征，
+     *     旧版 setCornerRadius(8) 是圆角矩形，必须改成 h/2 才是 MD3 胶囊。
+     *
+     * 配色（设计稿给的 HEX，勿改）：
+     *   · #212042 —— 关态（深紫黑）
+     *   · #584179 —— 开态（紫）
+     * ⚠️ 旧版的绿色 #1EB980（状态栏开）已废弃 —— 新设计里两个按钮各自用
+     *    #584179 表示「自己开着」，不再用绿色区分，也不再需要「长按照亮」的中间态。
+     */
+    private static final int CAPSULE_BG_OFF = 0xFF212042;
+    private static final int CAPSULE_BG_ON = 0xFF584179;
+
+    /**
+     * 胶囊尺寸（dp）。
+     *
+     * 【code 922 问题 3】96x36 -> **90x35**，两钮间距 8 -> **10**。
+     * 尺寸收紧后单钮更贴近 MD3 filled button 的紧凑比例（90/35 = 2.571），
+     * 而间距加宽到 10dp 让两个胶囊的「独立感」更明确 —— 96x36 + 8dp 时
+     * 两钮几乎连成一条长胶囊，用户反馈分辨不出是两个独立按钮。
+     */
+    private static final int CAPSULE_W_DP = 75;
+    private static final int CAPSULE_H_DP = 32;
+    /** 【code 935 bug2】胶囊高度下限（dp）：可用带不足时按钮缩到这个值就不再缩。 */
+    private static final int CAPSULE_MIN_H_DP = 20;
+    /** 【code 935 bug2】胶囊高度（px）；-1 = 还没算过。【code 936】恒为 32dp。 */
+    private static int sCapsuleHPx = -1;
+    /** 【code 936 bug2】简介底边逐帧翻转时的迟滞阈值（dp）。 */
+    private static final int DESC_HYSTERESIS_DP = 24;
+    /** 【code 936 bug2】去抖后采信的简介底边（px）；-1 = 还没采信过。 */
+    private static int sDescBottomStable = -1;
+    /** 两个胶囊之间的间距（dp）。【code 922 问题 3】8 -> 10。 */
+    private static final int CAPSULE_GAP_DP = 10;
+    /**
+     * 【code 923 几何 2】胶囊圆角（dp）—— **固定 15dp**。
+     *
+     * 旧写法是 {@code setCornerRadius(999f)}，靠 GradientDrawable 把超出部分自动钳到
+     * h/2 来实现「全圆角」。h=35dp 时它等于 17.5dp；改到 h=30dp 后会**悄悄变成 15dp**
+     * —— 圆角跟着高度走，是典型的「改一处连带动另一处」。
+     * 需求现在明确要 15dp，那就写死，并在 dex 层验得到（见 createCapsuleDrawable）。
+     */
+    private static final int CAPSULE_RADIUS_DP = 16;
+    /** 胶囊文字大小（sp）。 */
+    private static final float CAPSULE_TEXT_SP = 13f;
+
+    /**
+     * 【1.21.13 问题 2】按钮底色的三种模式。文字 / alpha / 底色三者必须**同一个口径、
+     * 一起判等**，否则就会出现「文字已变、底色没变」的错位（1.21.12 就是这样把绿色
+     * 底色留在了「无字幕」按钮上）。
+     */
+    // 【v57】BTN_BG_MODE_* 三常量已删除 —— 新设计只有「开/关」两态
+    // （见 CAPSULE_BG_ON / CAPSULE_BG_OFF），不再需要三态模式枚举。
+    // 【v57】LONG_PRESS_MS 也已删除 —— 长按交互整体取消（需求：「均通过点击触发」）。
+
+    // 【v57】BUTTON_W_DP / BUTTON_H_DP 已删除 —— 尺寸口径统一到
+    // CAPSULE_W_DP / CAPSULE_H_DP / CAPSULE_GAP_DP（见上面那段）。
+    // 两套尺寸常量并存必然出现「改一处忘一处」，这是本项目反复踩过的老坑。
 
     /** 按钮距屏幕右缘的边距（dp）。 */
     private static final int BUTTON_RIGHT_DP = 16;
+
+    /**
+     * 【v57】按钮组底边距**主滑条中心**的距离（dp）。
+     *
+     * 旧版按钮在右下角常量位（距屏底 96dp），那是 v32 的结论 ——
+     * 当时理由是「播放页可滚动，主滑条位置是变量，跟着它走会让按钮满屏跳」。
+     * 那个结论在**按钮位于底部空白带**时成立；现在需求明确要把它放到
+     * 「音轨大标题与进度条之间靠右」，位置**必须**由滑条几何推导。
+     *
+     * 所以 v57 把「位置是常量」这条规则收紧为：**初始底边是常量，跟随量走 translationY**
+     * （位移不触发布局，因此不会复现 v31 那种 setLayoutParams → requestLayout → 布局回环）。
+     *
+     * 取值：滑条中心往上 32dp 处作为按钮组底边。
+     *
+     * 【code 922 问题 3】24 -> **32**（整体上移 8dp，需求原话「两个按钮向上移动 8dp」）。
+     * 帧标定依据（VID1 真机录屏，588x1280 帧坐标系 -> 真机 1272x2772 / density 3.0）：
+     *   · 改前实测「按钮组下沿 y=797、主滑条中心 y≈830.5」→ 间距 33.5px ≈ 24.1dp
+     *     —— 与旧常量 24 完全吻合，证明本量测口径可信；
+     *   · 需求要再上移 8dp ⇒ 32dp ⇒ 帧内应为 44.5px。
+     * 这个位置仍未触及上方简介行（帧内简介行底边在 y≈745 一带），
+     * 且离滑条本体的触摸热区更远，不会误触拖动。
+     */
+    private static final int CAPSULE_ABOVE_SLIDER_DP = 32;
+    /**
+     * 【code 937 问题2（Ari 指令）】按钮**底边**强制落在「滑条视图顶边」往上这么多 dp 处。
+     *
+     * 采用值 25（Ari 指令「调整按钮位置在播放进度条上面25dp位置」；
+     * 938 的 20 → 939 的 25，单位一律 dp —— Ari 已澄清此前那条「15px」是笔误）。
+     * 实测（density 2.975 / screenH 2772 / 935 日志 00:30）：sliderCy=1799、
+     * mainSliderH=54 ⇒ 滑条顶边 1772 ⇒ 底边 = 1772 - 25*2.975 ≈ 1698。
+     * 该口径**不再参考简介底边**，因此位置与简介行的抖动彻底解耦（每帧只跟滑条走）。
+     *
+     * ⚠️ 【code 939】本值必须与 {@link #stableDensity} 一起看：转场瞬间被污染的
+     * density（2.975 -> 3.5 / 3.875）会让本值与 CAPSULE_H_DP 同时放大，
+     * 光调这个数字消不掉抖动。
+     */
+    private static final int CAPSULE_ABOVE_SLIDER_TOP_DP = 25;
+    /** 【code 932 bug4】按钮底边距滑条中心的最小净距（dp）。20dp=60px，避开滑条本体。 */
+    private static final int SLIDER_MIN_CLEAR_DP = 20;
+
+    /**
+     * 【code 923 几何 4】识别「一行淡色小字简介」时，允许它在主滑条上方多远（dp）。
+     *
+     * 比这更远的文本行（音轨大标题之类）不算简介，否则中点会被拉到太高、
+     * 按钮跑到标题旁边去。
+     */
+    private static final int DESC_SEARCH_MAX_DP = 220;
 
     /**
      * 按钮距屏幕底缘的边距（dp）—— v32 起**重新是唯一口径**（v31 曾把它降级成「兜底值」），
@@ -358,6 +479,26 @@ public class ActivityButtonHook {
      * 这是这块屏上唯一既显眼、又不挡事的独立条带。
      */
     private static final int BUTTON_BOTTOM_DP = 96;
+
+    /**
+     * 【1.21.12 问题 2】按钮从「有字幕」切到「无字幕」之前，先压这么久的延时。
+     *
+     * 换轨后仓库会进「待确认」窗口（{@link com.sena.dlsitesoundfloat.data.SubtitleRepository}
+     * 的 `NO_SUBTITLE_GRACE_MS` = 3000ms）：字幕先挂起不显示，等新音轨的字幕 JSON；
+     * 等到窗口结束还没到才裁决「本音轨无字幕」（清 cues + 关悬浮窗）。
+     *
+     * 按钮原先只看 `hasSubtitles()`（= cues 非空），而 cues 在窗口期内**还没清**
+     * -> 按钮一直显示「悬浮开」，死等 3 秒才变 —— Ari：「用了三秒才切换为无字幕」。
+     *
+     * 为什么 500ms 够：work_diag_35 全量日志里「换轨 -> 字幕 JSON 到达」的实测延迟是
+     * **115ms**（15:01:03.295 -> .410）与 **345ms**（15:25:18.527 -> .872）。
+     * 压 500ms 就能把「新音轨其实有字幕」的情况整个滤掉（全程不闪），
+     * 而真没字幕的音轨也能在 ~0.5s 表态，比原来的 3s 快 6 倍。
+     *
+     * ⚠️ 这只是**提前表态 UI**，数据侧那 3000ms 裁决窗一个字没动 ——
+     * 提前显示「无字幕」不等于清 cues，JSON 真迟到时窗口还会自动恢复。
+     */
+    private static final long BUTTON_NO_SUB_DELAY_MS = 500L;
 
     /**
      * 两次扫描之间的最小间隔。
@@ -544,10 +685,22 @@ public class ActivityButtonHook {
     private static final int FOLLOW_DEADZONE_PX = 6;
 
     /**
-     * 跟帧循环的**静止帧数**上限（≈ 200ms @60fps）：连续这么多帧参考点没动，
+     * 跟帧循环的**静止帧数**上限（≈ 1s @60fps）：连续这么多帧参考点没动，
      * 就认为页面停了、注销帧回调。空闲时**零成本**（没有注册任何帧回调）。
+     *
+     * ⚠️ v44 从 12（≈130ms）放宽到 90。原因是「上一版剩下的那种偶尔不跟手」：
+     * 注销之后循环**只能靠宿主结构事件或心跳重新拉起**，而起手那一两帧就是跟不上的
+     * —— 实测一边上下揉页面一边看日志，68 秒里循环被拆装 **14 次**
+     * （`page follow on` 14 行），每次重启都要等一次事件。
+     *
+     * 现在页面停手后循环再「热待机」约 1 秒：热待机期间位移恒为 0 → **不写、不打日志**，
+     * 只是每帧读一次参考点（~15 个字段读，注释里早就论证过可忽略），
+     * 于是「揉」的时候根本不存在拆装，起手零断档；真正的长时间静止仍然会注销。
+     *
+     * 连带修正见 {@link #captureFollowBaseline()}：那道门原来读的是「循环没在跑」，
+     * 而循环现在会在静止后再待机 ~1s，所以改读「循环自己报告页面已静止」。
      */
-    private static final int FOLLOW_STILL_FRAMES = 12;
+    private static final int FOLLOW_STILL_FRAMES = 90;
 
     /** 单次跟帧循环的硬时长上限（安全网：万一参考点一直在抖，也不会无限跟）。 */
     private static final long FOLLOW_MAX_MS = 20000L;
@@ -621,6 +774,28 @@ public class ActivityButtonHook {
     private static final int FOLLOW_LOG_STEP_PX = 64;
 
     /**
+     * v44：**跟手进行中把主线程让出来** —— 跳过扫描时改用的心跳间隔（ms）。
+     *
+     * 问题（2026-09-16 11:18/11:19 日志实测）：拖动播放页时宿主每帧 setTranslationY，
+     * 结构事件被合并成 ~50ms 一趟，每趟跑一次**整树扫描**（实测单次 6~8ms）+ 2 行长日志，
+     * 而跟帧回调跟它**抢同一个主线程** → 日志里出现真实的跟手断档：
+     * `11:18:30.398` 写下 202px 之后，下一帧直到 `11:18:30.508` 才来（**110ms**），
+     * 那一窗里模块刚做了 2 次扫描、写了 6 行日志；11:19 里还有一批 55/78ms 的稀疏段。
+     *
+     * 处理：跟帧循环正在跟（{@code sFollowing}）+ 页面刚动过（{@link #PAGE_MOTION_HOLD_MS}
+     * 窗口内）→ {@link #detectAndLayout} 直接跳过整树扫描（拖动期间扫描没有决策价值，
+     * 理由写在跳过点），只把心跳按这个短间隔续上。
+     *
+     * 为什么是 120ms：跳过期间每 120ms 还是一趟（一趟只有几次字段读，成本≈0），
+     * 而**页面一停就立刻恢复完整扫描** —— 所以「松手 / 页面被卸载」的判定最多晚 120ms，
+     * 肉眼无感，但拖动过程中主线程净省下扫描与日志两块开销。
+     */
+    private static final long FOLLOW_QUIET_HEARTBEAT_MS = 120L;
+
+    /** v44 诊断：本轮「跟手静默」连续跳过了多少次扫描（恢复扫描时打一行）。 */
+    private static int sQuietScanSkips = 0;
+
+    /**
      * 「页面还在手上」的位移门限（v35 起，px）。
      *
      * 拖动播放页时，**下层的列表页会从缝里露出来**，它那条底部 mini-player 滑条会被
@@ -646,8 +821,29 @@ public class ActivityButtonHook {
      *
      * 快照把「页面刚才被拖开过」这件事记住一段时间，把判据撑过这段空窗。
      * 真正的放行由「参考点已 detach」和这个时间上限**双重**保证，所以不会赖着不走。
+     *
+     * ⚠️ v43：这个「时间上限」曾经是假的 —— {@link #pageVisualOffset()} 每次被调用
+     * （心跳每 55ms 一次）都会无条件续期 {@link #sHeldOffsetMs}，于是窗口永远从 0 起算，
+     * 判据③永久成立。现已改成「位移真的变了才续期」，所以这条上限才真正生效。
+     * 值同时从 1500 提到 2600：窗口以前从「最后一次**变动**」起算，而实测
+     * 「页面已到位、但还没回弹」的空窗最长 2.1s（见上），1500 会在老场景里提前放行。
      */
-    private static final long HOLD_SNAPSHOT_MS = 1500L;
+    private static final long HOLD_SNAPSHOT_MS = 2600L;
+
+    /**
+     * 切回前台时，允许多信任「上次结论」的窗口（v43，ms）。
+     *
+     * {@link #ensureButton} 用「onPause 之前 ≤ 这个窗口内确实见到过播放页」来决定
+     * 新按钮是否直接以 VISIBLE 重建。旧实现是无条件用 {@code sLastDecision} 初始化，
+     * 而那个值可能是**过期的 true**（离开播放页时抑制门把 hide 挡掉了 → 见
+     * {@link #pageVisualOffset()} 的 v43 复盘）→ 于是回到前台时按钮凭空出现在首页上。
+     *
+     * 判据数据（2026-09-15 四次复现）：最后一次 `player anchor alive=true` 在 19:31:48，
+     * 四次 onPause 分别在 19:34:04 / 19:35:59 / 19:44:14 / 19:57:52，间隔全部 ≥136s
+     * —— 判定为「不信任」→ 按钮先隐藏，由紧随其后的检测决定，症状彻底消失。
+     * 而从播放页切出去马上切回来（≤1.5s）时照旧直接显示，不会有「闪一下」的回归。
+     */
+    private static final long RESUME_TRUST_MS = 1500L;
 
     /** 「尚无基线」哨兵值（用 Integer.MIN_VALUE 而不是 0，避免把屏幕顶边当成合法基线）。 */
     private static final int FOLLOW_NO_BASELINE = Integer.MIN_VALUE;
@@ -761,6 +957,15 @@ public class ActivityButtonHook {
      * 在「确认静止」的那一刻取一次差，就把这个常数抹平了，而且**不需要反复重采**。
      */
     private static int sVisualBias = FOLLOW_NO_BASELINE;
+    /**
+     * 【code 923 bug1】宿主布局常数偏置的**独立备份**。
+     *
+     * 它不受 {@link #invalidateFollow} 影响，只在「真的换页」（全量作废）时才清 ——
+     * 存在的理由见 {@link #ensureHostBias()} 的复盘：靠「别去清 sVisualBias」堵不住。
+     */
+    private static int sHostBias = FOLLOW_NO_BASELINE;
+    /** {@link #sHostBias} 是否已标定过。 */
+    private static boolean sHostBiasValid = false;
     /** transform 位移通道是否被证实**有效**（见过 ≥8px 的变化）。有效则不再用基线通道。 */
     private static boolean sVisualSeen = false;
     /** 最近一次「页面在动」的时刻（uptimeMillis），见 {@link #PAGE_MOTION_HOLD_MS}。 */
@@ -788,6 +993,21 @@ public class ActivityButtonHook {
     /** 最近一次扫描用的屏幕尺寸（{@link #isPageHeld} 要用它算锚点可见面积）。 */
     private static int sLastScreenW = 0;
     private static int sLastScreenH = 0;
+
+    /**
+     * 本次「前台会话」里是否**已经确认过当前是播放页**（v43）。
+     *
+     * 由 {@link #ensureButton}（每次 onResume）置 false，播放页证据出现时置 true
+     * （PLAYER 判定分支 / 锚点存活分支）。{@link #isPageHeld()} 拿它当总闸：
+     * 「门」的前提是「播放页确实在眼前」，切回前台时屏幕上可能是首页/书架，
+     * 此时按「页面被拖开」处理就会把按钮永久留在非播放页上。
+     */
+    private static boolean sPlayerConfirmedInSession = false;
+
+    /** 上一次 onPause 的时刻（v43，见 {@link #RESUME_TRUST_MS}）。 */
+    private static long sPauseAtMs = 0L;
+    /** 上一次 onPause 那一刻「最近一次见到播放页」的时刻（0 = 本会话没见过）。 */
+    private static long sPausePlayerSeenMs = 0L;
     /** 上一次「便宜采样」读到的参考点 y（见 {@link #maybeStartPageFollow()}）。 */
     private static int sSampleY = FOLLOW_NO_BASELINE;
     /** 基线候选：连续两次读到同一个位置才落定基线（见 {@link #captureFollowBaseline()}）。 */
@@ -800,11 +1020,167 @@ public class ActivityButtonHook {
     private static View sPickFallback = null;
     private static int sPickBudget = 0;
 
+    /**
+     * 【v57】悬浮窗字幕开关按钮（右）。
+     *
+     * ⚠️ 命名沿革：v57 之前这是**唯一**的按钮（`sButton`），短按切悬浮窗、长按切状态栏。
+     * 现在它只负责悬浮窗，状态栏那个是 {@link #sStatusBarButton}。保留原名是为了让
+     * 既有 57 处引用（跟随、判空、可见性）**不改语义地**继续工作 —— 它们关心的本来就是
+     * 「按钮组整体在不在」，而容器 {@link #sButtonGroup} 承担了那个角色。
+     */
     private static TextView sButton;
+
+    /**
+     * 【v57】状态栏字幕开关按钮（左）。
+     *
+     * 需求：「如无字幕，状态栏字幕按键消失」→ 无字幕时本按钮 {@code View.GONE}，
+     * 而不是变灰/禁用 —— 消失就是消失（需求原话「消失」）。
+     */
+    private static TextView sStatusBarButton;
+
+    /**
+     * 【v57】承载两个胶囊的容器。
+     *
+     * 为什么必须有容器：两个按钮要作为**一组**一起跟随滑条、一起显隐。
+     * 若各自 setLayoutParams 定位，一次变更会触发两次 requestLayout；
+     * 有容器则「组的位置」只由容器一个 translationY 决定（不触发布局）。
+     *
+     * 容器是 {@code LinearLayout}（horizontal），本身**不设背景**，
+     * 尺寸 wrap_content —— 它的作用是布局与位移，不是视觉。
+     */
+    private static LinearLayout sButtonGroup;
+
+    /**
+     * 【v57】按钮组底边当前跟随到的 y（屏幕坐标，px）；{@code NO_FOLLOW_Y} = 尚未定位。
+     *
+     * 迟滞用：只有目标值与它相差超过 {@link #CAPSULE_FOLLOW_DEADZONE_PX} 才写 translationY，
+     * 否则逐帧微抖会灌爆「相等才跳过」的缓存（1.21.10 踩过）。
+     */
+    private static int sCapsuleFollowY = Integer.MIN_VALUE;
+
+    /** 【v57】上一次写入的 translationY（px），与 {@link #applyCapsuleOffset} 的判等用。 */
+    private static int sCapsuleAppliedDy = Integer.MIN_VALUE;
+
+    /** 【v57】跟随迟滞阈值（px）：目标位移与当前位移差小于它就**不动**。 */
+    private static final int CAPSULE_FOLLOW_DEADZONE_PX = 6;
+
+    /**
+     * 【v57】最近一次扫描到的主滑条中心 y（**屏幕坐标**，px）；{@code -1} = 未知。
+     *
+     * 为什么缓存它而不是把 scan 结果整个存下来：本类只需要这一个数来算按钮位置，
+     * 存整个 ScanResult 会让「新鲜证据」的生命周期变长（scan 的契约是「所有字段都是
+     * 本次的新鲜证据，绝不跨帧保留」）。只取一个 int，语义最小、最不容易出错。
+     *
+     * 只在主线程读写（扫描与 showButton 都在主线程）。
+     */
+    private static int sLastSliderCy = -1;
+    /** 【code 934 bug3】最近一次扫描到的主滑条**视图高度**（px）；-1 = 未知。
+     *  用于把「滑条中心」换算回「滑条视图顶部」（MID 分支的几何基准）。 */
+    private static int sLastSliderH = -1;
+    /**
+     * 【code 923 几何 3】最近一次扫描到的**主滑条右缘**屏幕 x（px）；{@code -1} = 未知。
+     * 与 {@link #sLastSliderCy} 同样的更新契约：只在扫到滑条时才写，扫不到保持上次值。
+     */
+    private static int sLastSliderRightPx = -1;
+    /**
+     * 【code 923 几何 4】最近一次扫描到的「一行淡色小字简介」**底边**屏幕 y（px）；
+     * {@code -1} = 未知。同上：只在扫到时才写。
+     */
+    private static int sLastDescBottomY = -1;
+    /** 【code 924】几何 4 诊断：上次打过的候选数 / 命中底边（变了才打）。 */
+    private static int sLastDescCand = Integer.MIN_VALUE;
+    private static int sLastDescBottomLogged = Integer.MIN_VALUE;
+    /** 【code 924】几何 4 的上次落地分支 / 结果，用于「变了才打日志」。 */
+    private static boolean sLastMidUsed = false;
+
+    /**
+     * 【code 927 问题 3】「按钮位置是基于哪一组几何算出来的」快照。
+     *
+     * 真机根因（work_diag_52 铁证）：
+     *   · `[几何5] button created at FALLBACK bottom=286px (sLastSliderCy=-1)` ×2
+     *   · 此后 `[几何4] capsuleBottom` **0 次** —— 位置再没被重算过
+     *   · `verdict=PLAYER` 全场只 4 次、`button shown (player page)` 只 1 次
+     *   ⇒ 位置重算只挂在 showButton/ensureButton 上，而 showButton 依赖的 sLastSliderCy
+     *     又是**同一轮 scan** 才更新 ⇒ **自引用、永远差一拍**：
+     *     ensureButton 时 sLastSliderCy=-1 → 落兜底位；等它变成 1799 时
+     *     showButton 已经不跑了 ⇒ 位置永不纠正。
+     *   修法：几何更新点**独立触发**重落位；本快照用于「几何真的变了才重算」。
+     */
+    private static int sPlacedGeoSliderCy = Integer.MIN_VALUE;
+    private static int sPlacedGeoDescBottom = Integer.MIN_VALUE;
+    private static int sPlacedGeoSliderRight = Integer.MIN_VALUE;
+    /** 【code 927】capsuleBottomForSlider 调用计数（诊断：区分「没调用」与「调了没变」）。 */
+    private static int sCbCallCount = 0;
+    /** 【code 927 问题 3】按钮是否由兜底位创建（几何未就绪时的临时落位，必须补纠正）。 */
+    private static boolean sCapsulePlacedByFallback = false;
+    private static int sLastMidCenterY = Integer.MIN_VALUE;
+    /**
+     * 【code 923】最近一次拿到的 displayMetrics.density（px/dp）。
+     * {@link #createCapsuleDrawable} 要按 dp 算圆角，但它没有 Context 参数 ——
+     * 由 {@link #dip2px} 与 {@link #createButtonGroup} 顺手维护，不在调用链上加参数。
+     */
+    private static float sDensityPx = 0f;
+
+    /**
+     * 【code 939 bug2 根修】「不抖的 density」。
+     *
+     * ── 真机实证（work_diag_64 / 2026-09-22 09:12 日志）──
+     * `centerY = sliderTop - dip2px(20) - dip2px(32)/2` 与右侧的 dip2px 都直接吃
+     * {@code ctx} 的 {@code DisplayMetrics.density}，而**打开播放界面转场的那几秒**
+     * 它会被从一个不稳定的配置上下文里读到：
+     *   · 常态 d=2.9688（476dpi）→ capsuleH=95、右距 59px；
+     *   · 转场中 d=3.5（560dpi）  → capsuleH=112、右距 70px；
+     *   · 转场中 d=3.875（620dpi）→ capsuleH=124、右距 77px。
+     * 三者恰好是 OPPO「屏幕缩放」档位表
+     * {@code ro.density.screenzoom.qdh=[500,476,560,600,620]} 的第 2/3/5 档
+     * ⇒ **不是布局真的变了**（同一时刻滑条仍在 1799、简介仍在 1722、
+     * 屏幕仍是 1272x2772），只是 density 读数被污染。
+     * 按钮因此上下瞬移 19~32px、左右同时偏 11~18px（斜着抖）——
+     * 正是 Ari 反馈的「打开播放界面按钮会上下抖动一下」。
+     *
+     * ── 取法 ──
+     * 一次性锁定，之后只有两种情况才允许改：
+     *   ① 像素屏幕尺寸变了（旋转 / 分屏 / 换屏）—— 用 widthPixels*31+heightPixels 指纹判；
+     *   ② 与锁定值持续不一致超过 {@link #DENSITY_RELOCK_MS} 且样本数够
+     *      （覆盖「用户真的改了显示大小」：此时 px 不变、density 持久变化）。
+     * 其余一律沿用锁定值，并打一行 {@code density spike ignored} 留痕。
+     */
+    private static float sLockedDensity = 0f;
+    /** 锁定时的像素屏幕尺寸指纹（w*31+h）。变了才认作真正的屏幕/窗口重配置。 */
+    private static int sLockedPxKey = 0;
+    /** 与锁定值不一致的起始时刻（uptimeMillis，0 = 当前一致）。 */
+    private static long sDensityDiffSinceMs = 0L;
+    /** 与锁定值不一致的累计样本数（进入不一致态即重置）。 */
+    private static int sDensityDiffCount = 0;
+    /** 持续不一致多久才认作「真的改了显示大小」而重新锁定。 */
+    private static final long DENSITY_RELOCK_MS = 20000L;
+    /** 持续不一致至少积累多少个样本才允许重新锁定（防抖）。 */
+    private static final int DENSITY_RELOCK_SAMPLES = 100;
     private static Activity sActivity;
     private static ViewTreeObserver.OnGlobalLayoutListener sLayoutListener;
     private static long sLastDetectMs = 0L;
-    private static String sLastBtnText;
+    // 【v57】sLastBtnText / sLastBtnBgMode 已合并为 sLastBtnSig（见其注释）。
+    /**
+     * 【1.21.12 问题 2】「切进无字幕」的延时是否已排队（见 {@link #BUTTON_NO_SUB_DELAY_MS}）。
+     * 存这个是为了让窗口期内反复来的观察者通知别重复排队。
+     * 只在主线程读写（{@link #applyButtonText} 一律跑在 uiHandler 上）。
+     */
+    private static boolean sBtnNoSubPending = false;
+    /** 代次：任何一次状态落笔/状态一致都 +1，用来作废排队中的延时切换。 */
+    private static int sBtnNoSubGen = 0;
+
+    /**
+     * 【v57】上次落笔的**两个**按钮的文字（悬浮窗钮 / 状态栏钮，以 '\u0000' 分隔）。
+     *
+     * 为什么合成一个字符串：{@link #applyButtonText} 的判等是「全部视觉属性都一致才跳过」，
+     * 而两个按钮各有文字 + 底色 + 可见性 —— 拆成 6 个字段判等容易漏（1.21.13/1.21.14
+     * 就是漏字段导致「文字变了底色没变」）。合成一个签名串，判等天然覆盖全部。
+     *
+     * 签名格式（顺序固定）：
+     *   {@code 悬浮窗文字 | 悬浮窗底色 | 状态栏文字 | 状态栏底色 | 状态栏可见性}
+     */
+    private static String sLastBtnSig = null;
+
     /** 连续判「非播放页」的采样次数。一旦判为播放页立即清零。 */
     private static int sNotPlayerStreak = 0;
     /** 本轮「连续判非播放页」的起点时刻（uptimeMillis）；0 = 当前不在连败中。 */
@@ -960,7 +1336,7 @@ public class ActivityButtonHook {
                 uiHandler.removeCallbacks(detectRunnable);
                 uiHandler.post(detectRunnable);
             } catch (Throwable e) {
-                XposedBridge.log(TAG + " anchor watch error: " + e.getMessage());
+                XposedCompat.log(TAG + " anchor watch error: " + e.getMessage());
             } finally {
                 uiHandler.removeCallbacks(anchorWatchRunnable);
                 uiHandler.postDelayed(anchorWatchRunnable, ANCHOR_WATCH_MS);
@@ -1059,7 +1435,7 @@ public class ActivityButtonHook {
         sFollowBaseY = sTmpLoc[1] - sFollowAppliedY;
         sBaseCandY = FOLLOW_NO_BASELINE;
         sSampleY = FOLLOW_NO_BASELINE;
-        XposedBridge.log(TAG + " page follow rebase: ref -> "
+        XposedCompat.log(TAG + " page follow rebase: ref -> "
                 + (isPlayBtn ? "play-button" : "anchor")
                 + " | base " + oldBase + " -> " + sFollowBaseY
                 + " (keep offset " + sFollowAppliedY + "px)");
@@ -1197,13 +1573,30 @@ public class ActivityButtonHook {
         }
         sVisualOffset = sum;
         int vis = (sVisualBias == FOLLOW_NO_BASELINE) ? sum : (sum - sVisualBias);
-        // v38：**成功读到位移时就留一份快照**，供 isPageHeld 的判据③用。
+        // v38：留一份「页面刚才被拖开过」的快照，供 isPageHeld 的判据③用。
         // 页面被拖到极限后参考点会失去「可用」资格、面积也趋近 0，判据②会失效；
-        // 这份快照把「页面刚才确实被拖开过」记住 HOLD_SNAPSHOT_MS 毫秒，
-        // 撑过「页面已到位、但还没回弹」的那段空窗（实测最长 2.1s 的 hide→show 间隔）。
-        sHeldOffset = vis;
-        sHeldOffsetMs = SystemClock.uptimeMillis();
-        sHoldProbeRef = new WeakReference<>(v);
+        // 这份快照把这段空窗撑过去（实测最长 2.1s 的 hide→show 间隔）。
+        //
+        // ⚠️ v43 修一个致命陷阱：原来是**每次读到就续期**（无条件写 sHeldOffsetMs）。
+        // 而本函数被心跳（notePageMotion）、跟帧循环、以及 isPageHeld() 自己反复调用，
+        // 于是 HOLD_SNAPSHOT_MS 这个「有效期」永远从 0 开始计时 —— 只要 |位移| ≥
+        // PAGE_HOLD_PX 且参考点还 attached，判据③就**永久成立**、抑制门永不失效，
+        // 与下面 HOLD_SNAPSHOT_MS 注释里「不会赖着不走」的设计意图正好相反。
+        //
+        // 实测后果（2026-09-15 19:34 / 19:42 / 19:55 / 20:05，四次 onResume 全部复现）：
+        // 播放页被滑走后容器停在 translateY=2772px（= 一屏高，正是「拖到极限」的停靠位——
+        // 与真实拖动 2710~2772px 完全同量级，位移本身无法区分）。切后台再回前台时
+        // sLastDecision 还停在过期的 true → 按钮以 VISIBLE 重建 → 此后每次心跳都刷新快照
+        // → hide 被永久压制 → 按钮在**首页**上一挂几十秒（直到 onPause 才 removeButton）。
+        //
+        // 现在改成「位移变化 ≥ FOLLOW_DEADZONE_PX 才续期」：快照 = 「最后一次真的动过」，
+        // 时间上限才真的会到期。匀速拖动每帧都在变 → 窗口照样被持续续期，不影响拖手保护。
+        if (sHeldOffset == FOLLOW_NO_BASELINE
+                || Math.abs(vis - sHeldOffset) >= FOLLOW_DEADZONE_PX) {
+            sHeldOffset = vis;
+            sHeldOffsetMs = SystemClock.uptimeMillis();
+            sHoldProbeRef = new WeakReference<>(v);
+        }
         if (sVisualBias == FOLLOW_NO_BASELINE) {
             return sum; // 还没确认过静止 → 先原样返回（调用方的死区判断照旧成立）
         }
@@ -1244,7 +1637,7 @@ public class ActivityButtonHook {
         if (vis != FOLLOW_NO_BASELINE && sVisualBias != FOLLOW_NO_BASELINE) {
             if (!sVisualSeen && Math.abs(vis) >= FOLLOW_DEADZONE_PX) {
                 sVisualSeen = true;
-                XposedBridge.log(TAG + " page follow channel: transform-sum active (first motion "
+                XposedCompat.log(TAG + " page follow channel: transform-sum active (first motion "
                         + vis + "px, bias=" + sVisualBias + ")");
             }
             if (sVisualSeen) {
@@ -1274,7 +1667,7 @@ public class ActivityButtonHook {
         if (sVisualBias != FOLLOW_NO_BASELINE && !sVisualSeen
                 && Math.abs(vis) >= FOLLOW_DEADZONE_PX) {
             sVisualSeen = true;
-            XposedBridge.log(TAG + " page follow channel: transform-sum active (first motion "
+            XposedCompat.log(TAG + " page follow channel: transform-sum active (first motion "
                     + vis + "px, bias=" + sVisualBias + ")");
         }
         if (sMotionSampleY == FOLLOW_NO_BASELINE
@@ -1303,6 +1696,16 @@ public class ActivityButtonHook {
      *      把门撑过那段空窗；页面真被卸载时参考点会 detach → 立即放行。
      */
     private static boolean isPageHeld(long now) {
+        // ⓪ v43 总闸：本次前台会话里**还没确认过播放页** → 这道门一律不放行。
+        // 门的意义是「别在用户拖播放页时把按钮藏了」，前提是播放页确实在眼前；
+        // 切后台再回前台时屏幕上可能是首页/书架，播放页容器只是**停靠在屏外**
+        // （translateY=2772px），此时按「拖开」处理会让 hide 被永久压制
+        // —— 按钮就挂在非播放页上不走了（详见 pageVisualOffset() 的 v43 复盘）。
+        // 放行不会误伤：真的在播放页上时锚点很快就会被确认存活（同帧或下一次扫描），
+        // 确认之后门照常生效；拖动本来也来不及在确认之前开始。
+        if (!sPlayerConfirmedInSession) {
+            return false;
+        }
         if (sLastPageMotionMs != 0L && now - sLastPageMotionMs < PAGE_MOTION_HOLD_MS) {
             return true;
         }
@@ -1326,6 +1729,21 @@ public class ActivityButtonHook {
     }
 
     /**
+     * 跟帧循环是否**报告页面已静止**（{@link #captureFollowBaseline()} 的门①）。
+     *
+     * v44：以前这道门直接读 {@code !sFollowing}，而循环现在会在页面停手后再
+     * 热待机 {@link #FOLLOW_STILL_FRAMES} 帧（≈1s，见那条常量的注释）才注销 ——
+     * 若还按「没在跑」判断，基线 / 偏置采集会被推迟 1 秒，跟手反而更晚就绪。
+     *
+     * 语义：循环没在跑 → 当作静止（与老行为一致）；在跑但已连续 FOLLOW_STILL_FRAMES
+     * 帧读到同一个位移 → 同样是静止。**「位移为 0」由调用方另行把关**，
+     * 所以这个判据只回答「页面还在不在动」。
+     */
+    private static boolean followReportsStill() {
+        return !sFollowing || sFollowStill >= FOLLOW_STILL_FRAMES;
+    }
+
+    /**
      * 在**页面静止**时采集基线（只由 PLAYER 分支调用）。
      *
      * 三道门，缺一不可（每一道都对应一种会把按钮永久带偏的坑）：
@@ -1342,7 +1760,12 @@ public class ActivityButtonHook {
      * 教训：**诊断字段写进日志之前，先确认它读的是「当前生效的那一份状态」**。
      */
     private static void captureFollowBaseline() {
-        if (sFollowing || sFollowAppliedY != 0
+        // v44：门① 从「循环没在跑」改成「循环自己报告页面已静止」。
+        // 循环现在会在页面静止后再热待机 ~1s（见 FOLLOW_STILL_FRAMES），若仍按
+        // 「没在跑」判断，基线 / 偏置的采集会被无谓推迟整整 1 秒 —— 而 transform 通道
+        // 要等 sVisualBias 标定完才敢用，等于把「跟手就绪」整整推迟 1 秒，反倒更不跟手。
+        // 新判据语义等价：位移为 0（下一行）+ 连续 FOLLOW_STILL_FRAMES 帧没动 = 页面确实静止。
+        if (!followReportsStill() || sFollowAppliedY != 0
                 || Looper.myLooper() != Looper.getMainLooper()) {
             return;
         }
@@ -1386,9 +1809,13 @@ public class ActivityButtonHook {
         // 此时累加出来的 sum 就是那条常驻偏置（通常为 0，但不假设它一定为 0）。
         if (sVisualBias == FOLLOW_NO_BASELINE && vis != FOLLOW_NO_BASELINE) {
             sVisualBias = sVisualOffset;
-            XposedBridge.log(TAG + " page follow bias calibrated: " + sVisualBias
+            XposedCompat.log(TAG + " page follow bias calibrated: " + sVisualBias
                     + "px (ref=" + (sFollowRefIsPlayBtn ? "play-button" : "anchor") + ")");
         }
+        // 【code 923 bug1】标定成功 → 立刻另存一份到「宿主偏置备份」。
+        // 之后不管谁把 sVisualBias 清了，ensureHostBias() 都能把它填回去。
+        sHostBias = sVisualBias;
+        sHostBiasValid = true;
         sSampleY = FOLLOW_NO_BASELINE;      // 基线更新 → 便宜采样的历史值作废
         sMotionSampleY = FOLLOW_NO_BASELINE;
     }
@@ -1420,8 +1847,9 @@ public class ActivityButtonHook {
             return; // 帧回调和共享临时数组都只允许主线程用；非主线程的钩子直接跳过
         }
         notePageMotion(); // 无论如何先采样一次「页面在不在动」（只读字段，极为便宜）
-        if (sFollowing || sActivity == null || sButton == null
-                || sButton.getVisibility() != View.VISIBLE) {
+        ensureHostBias(); // 【code 923 bug1】同上，偏置在这里也要先补回来
+        if (sFollowing || sActivity == null || sButtonGroup == null
+                || sButtonGroup.getVisibility() != View.VISIBLE) {
             return;
         }
         long now = SystemClock.uptimeMillis();
@@ -1457,10 +1885,44 @@ public class ActivityButtonHook {
      * 于是出现大量 {@code page follow skipped: no settled baseline yet}（实测 15 次），
      * 表现就是「页面在动、按钮一动不动」。现在**只要有一条第就能启动**。
      */
+    /**
+     * 【code 923 bug1】把「宿主布局常数偏置」从备份里**补回来**。
+     *
+     * ── 为什么需要它（code 922 那次修复为什么没生效）──
+     * 922 把按钮重建 / onPause 两处的 {@code invalidateFollow()} 改成
+     * {@code invalidateFollow(true)} 以保留 sVisualBias。但真机日志（22:49:53 那一轮，
+     * 45 分钟 / 28 次 onResume）显示：
+     *   · {@code page follow bias calibrated} 仍然出现 **26 次**
+     *     （它只在 {@code sVisualBias == FOLLOW_NO_BASELINE} 时才打）；
+     *   · {@code page follow skipped: no baseline & no transform channel} **29 次**，
+     *     几乎每条 onResume→ensureButton 后面都跟一条。
+     * 而 smali 层能写 sVisualBias 的位置**只有 3 处**（clinit / captureFollowBaseline /
+     * invalidateFollow(Z) 且被 {@code if-nez p0} 守护），两处调用点传参实为
+     * {@code const/4 vN, 0x1}，无参重载 {@code invalidateFollow()V} **没有任何调用点**。
+     * ⇒ 存在一条源码与 smali 都查不到的清零路径，「别去清它」这条路堵不住。
+     *
+     * ── 所以改成主动兜底 ──
+     * 偏置一旦标定过就另存一份；之后**在每一个要用它的入口**先调用本函数。
+     * 于是无论那条未知路径什么时候把它清掉，下一次读取前都会被填回来：
+     *   · {@link #syncFollowOffsetOnShow()} 首帧就能算出位移 → 按钮**不会**先在
+     *     translationY=0 露脸再跳（= 用户说的「闪现」）；
+     *   · {@link #startPageFollow()} 立刻具备 transform 通道 → 不再打 no-baseline 空转；
+     *   · {@link #maybeStartPageFollow()} 的「页面此刻被拖开」判据也能立刻成立。
+     */
+    private static void ensureHostBias() {
+        if (sVisualBias != FOLLOW_NO_BASELINE || !sHostBiasValid) {
+            return;
+        }
+        sVisualBias = sHostBias;
+        sVisualSeen = true;
+        XposedCompat.log(TAG + " page follow bias restored from host cache: " + sHostBias + "px");
+    }
+
     private static void startPageFollow() {
         if (sFollowing) {
             return;
         }
+        ensureHostBias(); // 【code 923 bug1】先把可能被清掉的宿主偏置补回来
         boolean transformReady = sVisualSeen && sVisualBias != FOLLOW_NO_BASELINE;
         if (sFollowBaseY == FOLLOW_NO_BASELINE && !transformReady) {
             // 诊断（v36 新增）：v35 这里**静默失败** —— 页面明明在动、循环就是起不来，
@@ -1468,7 +1930,7 @@ public class ActivityButtonHook {
             long now = SystemClock.uptimeMillis();
             if (now - sFollowRejectLogMs >= 1000L) {
                 sFollowRejectLogMs = now;
-                XposedBridge.log(TAG + " page follow skipped: no baseline & no transform channel");
+                XposedCompat.log(TAG + " page follow skipped: no baseline & no transform channel");
             }
             return; // 两条通道都没有 —— 等一次「页面静止的 PLAYER 扫描」把基线/偏置采出来
         }
@@ -1515,18 +1977,60 @@ public class ActivityButtonHook {
     /**
      * **彻底作废**整个跟手机制（位移 / 基线 / 偏置 / 参考点）。
      *
-     * 什么时候用：参考点真的没了、换页面了、按钮被重建了 —— 也就是「旧的位移参考系
-     * 整体失效」的时刻。**不要**在普通的 hide 里用它（那正是 v36 的病根：
+     * 什么时候用：参考点真的没了、**换页面了** —— 也就是「旧的位移参考系整体失效」
+     * 的时刻。**不要**在普通的 hide 里用它（那正是 v36 的病根：
      * 拖动中 hide 顺手扔掉基线 → 重新显示后按钮卡在原位）。
+     *
+     * ⚠️ 【code 922 问题 2】**按钮重建不再走这里**（改用 {@code invalidateFollow(true)}）——
+     * 宿主偏置与按钮新旧无关，跟着按钮一起作废会导致「切前台首帧跟手空转 + 按钮闪现」。
+     * 只有「页面真的换了」（宿主布局偏置本身可能变了）才该用本入口全量作废。
      */
     private static void invalidateFollow() {
+        invalidateFollow(false);
+    }
+
+    /**
+     * 【code 922 问题 2】参考系作废。{@code keepHostBias=true} 时**保留**
+     * {@link #sVisualBias} 与 {@link #sVisualSeen}。
+     *
+     * ── 为什么必须区分（问题 2 的根因之一）──
+     *
+     * {@code sVisualBias} 是**宿主布局的常数偏置** —— 祖先链里常驻的非零
+     * {@code translationY}（系统 insets、宿主布局补偿）。它由
+     * {@link #captureFollowBaseline()} 在「确认页面静止」那一刻采一次差得到，
+     * 与「我们的按钮是新是旧」**毫无关系**。
+     *
+     * 旧实现只有「全量作废」一个入口，于是 {@link #removeButton} → {@link #ensureButton}
+     * （切后台再切回，一次会话里实测发生 21 次）每次都把偏置抹掉。后果实测：
+     *   · 每次 onResume 后 15~21ms 必有一条
+     *     `page follow skipped: no baseline & no transform channel`
+     *     —— 切前台后的**第一帧跟手必然空转**；
+     *   · {@link #syncFollowOffsetOnShow()} 见 {@code sVisualBias == FOLLOW_NO_BASELINE}
+     *     直接 return → 按钮在 {@code translationY=0} 的**基准位先露脸**，
+     *     等 `page follow bias calibrated` 完成（实测 54~637ms 后）才挪到正确位
+     *     —— 这就是用户说的「**两个按钮会闪现**」。
+     *
+     * 保留偏置后：偏置仍准确（同一个宿主进程、同一套 insets），
+     * 且 {@link #followOffset()} 第一帧就走 transform 通道 ⇒ 上面两个症状一起消失。
+     * 偏置在**换页 / 参考点真的没了**时仍会被全量作废（{@code keepHostBias=false}），
+     * 不会把「页面换了」误当成「宿主偏置没变」。
+     *
+     * 注意：{@link #sVisualOffset} 是「本帧读到的原始累加值」，任何情况下都要清 ——
+     * 它是**瞬时量**，留着会让下一帧的差值算错。
+     */
+    private static void invalidateFollow(boolean keepHostBias) {
         stopPageFollow(true);
         sFollowAppliedY = 0;
         sFollowBaseY = FOLLOW_NO_BASELINE;
         sBaseCandY = FOLLOW_NO_BASELINE;
         sVisualOffset = FOLLOW_NO_BASELINE;
-        sVisualBias = FOLLOW_NO_BASELINE;
-        sVisualSeen = false;
+        if (!keepHostBias) {
+            sVisualBias = FOLLOW_NO_BASELINE;
+            sVisualSeen = false;
+            // 真的换页 → 宿主布局本身可能变了，备份一并作废。
+            sHostBias = FOLLOW_NO_BASELINE;
+            sHostBiasValid = false;
+        }
         sFollowRef = null;
         sFollowRefIsPlayBtn = false;
         sLastPlayScanMs = 0L;
@@ -1560,8 +2064,8 @@ public class ActivityButtonHook {
                     sFollowing = false; // 先置 false：下面任何一条 return 都意味着循环结束
                     boolean again = false;
                     try {
-                        if (sActivity == null || sButton == null
-                                || sButton.getVisibility() != View.VISIBLE) {
+                        if (sActivity == null || sButtonGroup == null
+                                || sButtonGroup.getVisibility() != View.VISIBLE) {
                             return;
                         }
                         int delta = followOffset();
@@ -1627,6 +2131,8 @@ public class ActivityButtonHook {
                                 applyFollowOffset(0);
                             }
                             if (sFollowStill >= FOLLOW_STILL_FRAMES) {
+                                // v44：这个阈值已放宽到 90 帧（≈1s 热待机）—— 见常量的注释。
+                                // 静止期间位移恒为 0 → 不写、不打日志，只有每帧一次参考点读。
                                 return;
                             }
                         }
@@ -1684,13 +2190,13 @@ public class ActivityButtonHook {
 
     /** 把位移写到按钮上。用 {@code setTranslationY} —— **不 requestLayout**，因此不可能形成 v31 那种布局回环。 */
     private static void applyFollowOffset(int dy) {
-        if (sButton == null || dy == sFollowAppliedY) {
+        if (sButtonGroup == null || dy == sFollowAppliedY) {
             return;
         }
         sFollowAppliedY = dy;
         sSelfTranslate = true; // 挡住我们自己的 setTranslationY 触发的结构事件
         try {
-            sButton.setTranslationY(dy);
+            sButtonGroup.setTranslationY(dy);
         } catch (Throwable ignored) {
         } finally {
             sSelfTranslate = false;
@@ -1711,13 +2217,8 @@ public class ActivityButtonHook {
             sFollowLogged = true;
             sFollowLoggedY = dy;
             sFollowLoggedMs = nowMs;
-            XposedBridge.log(TAG + " page follow" + (first ? " on" : "") + ": button translationY="
-                    + dy + "px (ref=" + (sFollowRefIsPlayBtn ? "play-button" : "anchor")
-                    + " vis=" + sVisualOffset + " base=" + sFollowBaseY
-                    + " ch=" + (sVisualSeen ? "transform" : "baseline") + ")");
-            if (gap.length() > 0) {
-                XposedBridge.log(TAG + " page follow resume:" + gap);
-            }
+            // 【code 933 精简】移除每帧 follow 日志（真机 443 行/会话，纯噪音）。
+            //   位移的实时观测改由 statusbar/verdict 等低频日志承担。
         }
     }
 
@@ -1782,7 +2283,7 @@ public class ActivityButtonHook {
         uiHandler.post(detectRunnable);
         if (sPokeLogged < MAX_POKE_LOGS) {
             sPokeLogged++;
-            XposedBridge.log(TAG + " structure event -> instant scan [" + reason
+            XposedCompat.log(TAG + " structure event -> instant scan [" + reason
                     + "] #" + sPokeCount);
         }
     }
@@ -1813,43 +2314,116 @@ public class ActivityButtonHook {
                     pokeStructureChanged("anchor detached");
                 }
             });
-            XposedBridge.log(TAG + " anchor attach-state watched");
+            XposedCompat.log(TAG + " anchor attach-state watched");
         } catch (Throwable e) {
-            XposedBridge.log(TAG + " watchAnchorAttachment failed: " + e.getMessage());
+            XposedCompat.log(TAG + " watchAnchorAttachment failed: " + e.getMessage());
+        }
+    }
+
+    /** 【code 924】双击关闭请求的接收器（App 进程侧，唯一执行落点）。 */
+    private static android.content.BroadcastReceiver sDismissReceiver;
+
+    /**
+     * 【code 924】注册「双击状态栏字幕 -> 关闭」的请求接收器。
+     *
+     * SystemUI 进程发 {@link StatusBarSubtitleBridge#ACTION_DISMISS_REQUEST}；
+     * 本方法在 App 进程收到后，走**与胶囊按钮点击完全相同**的路径：
+     *   canToggle 判据 -> toggleAppEnabled -> resendCurrentFromRepo -> 刷新按钮。
+     * 这样「状态栏字幕开关」在整个系统里只有一个写入口（唯一计算函数）。
+     */
+    private static void registerDismissReceiver(final Activity activity,
+                                                final SubtitleRepository repo) {
+        if (sDismissReceiver != null) {
+            return;
+        }
+        try {
+            sDismissReceiver = new android.content.BroadcastReceiver() {
+                @Override
+                public void onReceive(android.content.Context context, android.content.Intent it) {
+                    if (it == null
+                            || !StatusBarSubtitleBridge.ACTION_DISMISS_REQUEST
+                                    .equals(it.getAction())) {
+                        return;
+                    }
+                    try {
+                        if (!StatusBarSubtitleBridge.canToggle(repo)) {
+                            XposedCompat.log(TAG + " dismiss ignored: no subtitles");
+                            return;
+                        }
+                        boolean on = StatusBarSubtitleBridge.toggleAppEnabled(activity);
+                        StatusBarSubtitleBridge.resendCurrentFromRepo(activity, repo);
+                        XposedCompat.log(TAG + " status bar subtitle " + (on ? "ON" : "OFF")
+                                + " (double tap on status bar)"
+                                + " reason=" + it.getStringExtra(
+                                        StatusBarSubtitleBridge.EXTRA_DISMISS_REASON));
+                        uiHandler.post(() -> applyButtonText(repo, true));
+                    } catch (Throwable t) {
+                        XposedCompat.log(TAG + " dismiss receiver failed: " + t);
+                    }
+                }
+            };
+            android.content.IntentFilter f = new android.content.IntentFilter(
+                    StatusBarSubtitleBridge.ACTION_DISMISS_REQUEST);
+            try {
+                activity.registerReceiver(sDismissReceiver, f, Context.RECEIVER_EXPORTED);
+            } catch (Throwable t) {
+                activity.registerReceiver(sDismissReceiver, f);
+            }
+            XposedCompat.log(TAG + " dismiss receiver registered (double tap)");
+        } catch (Throwable t) {
+            XposedCompat.log(TAG + " registerDismissReceiver failed: " + t);
         }
     }
 
     public static void hook(ClassLoader cl, SubtitleRepository repo) {
         try {
-            Class<?> activityClass = XposedHelpers.findClass("android.app.Activity", cl);
-            XposedHelpers.findAndHookMethod(activityClass, "onResume", new XC_MethodHook() {
+            Class<?> activityClass = XposedCompat.findClass("android.app.Activity", cl);
+            Method onResume = XposedCompat.findMethodExact(activityClass, "onResume");
+            XposedCompat.hookMethod(onResume, new XposedCompat.VoidHook() {
                 @Override
-                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                    Activity activity = (Activity) param.thisObject;
+                protected void afterVoid(XposedInterface.Chain chain) {
+                    Object self = chain.getThisObject();
+                    if (!(self instanceof Activity)) {
+                        return;
+                    }
+                    Activity activity = (Activity) self;
                     if (!activity.getClass().getName().equals(ACTIVITY_CLASS)) {
                         return;
                     }
-                    XposedBridge.log(TAG + " activity onResume -> ensureButton");
+                    XposedCompat.log(TAG + " activity onResume -> ensureButton");
                     ensureButton(activity, repo);
                 }
             });
 
-            XposedHelpers.findAndHookMethod(activityClass, "onPause", new XC_MethodHook() {
+            Method onPause = XposedCompat.findMethodExact(activityClass, "onPause");
+            XposedCompat.hookMethod(onPause, new XposedCompat.VoidHook() {
                 @Override
-                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                    Activity activity = (Activity) param.thisObject;
+                protected void afterVoid(XposedInterface.Chain chain) {
+                    Object self = chain.getThisObject();
+                    if (!(self instanceof Activity)) {
+                        return;
+                    }
+                    Activity activity = (Activity) self;
                     if (!activity.getClass().getName().equals(ACTIVITY_CLASS)) {
                         return;
                     }
-                    XposedBridge.log(TAG + " activity onPause -> removeButton");
+                    XposedCompat.log(TAG + " activity onPause -> removeButton");
                     removeButton(activity);
                 }
             });
 
             repo.addObserver(() -> updateButtonText(repo));
-            XposedBridge.log(TAG + " hooked Activity lifecycle");
+            // 【1.21.13 问题 2】状态栏字幕开关（胶囊底色的真源）一变就立刻重画按钮底色。
+            // 这条链路与上面的仓库观察者**互相独立**：开关由「点击状态栏胶囊」改动，
+            // 该动作发生在点击回调里、不经过仓库观察者，所以不保证还会再触发一次 applyButtonText。
+            // 【v57】旧版这里是「长按 1s 触发」，长按已取消（需求：「只保留点击」），
+            //        但**这条监听链路要保留** —— 它解决的是「开关变了底色没跟上」，
+            //        跟触发方式是长按还是点击无关。
+            StatusBarSubtitleBridge.setEnabledListener(() ->
+                    uiHandler.post(() -> updateButtonDrawable(repo)));
+            XposedCompat.log(TAG + " hooked Activity lifecycle");
         } catch (Throwable e) {
-            XposedBridge.log(TAG + " hook failed: " + e.getMessage());
+            XposedCompat.log(TAG + " hook failed: " + e.getMessage());
         }
     }
 
@@ -1857,24 +2431,136 @@ public class ActivityButtonHook {
         uiHandler.post(() -> {
             try {
                 sActivity = activity;
+                sDensityPx = stableDensity(activity); // 【code 939】走锁定值，避免转场伪 density
                 ViewGroup decor = (ViewGroup) activity.getWindow().getDecorView();
-                sButton = decor.findViewById(BUTTON_ID);
+                sButtonGroup = decor.findViewById(BUTTON_ID);
+                // 【v57】容器在树上时，两个子按钮必须**一起捞回来**。
+                // 走复用分支（切后台回来）时不会进 createButtonGroup，若不在这里补捞，
+                // sButton/sStatusBarButton 会停在上一轮的悬空引用上 —— 表现是按钮不再更新
+                // （白板或看不见变化），且没有任何异常日志。旧版单按钮时容器即按钮，
+                // 一次 findViewById 就够了，所以这是双按钮改造**新引入**的缺陷。
+                syncCapsuleRefsFromGroup();
                 boolean freshButton = false;
-                if (sButton == null) {
-                    sButton = createButton(activity, repo);
+                boolean trustLastPlayer = false;
+                // v43：本次前台会话以「尚未确认播放页」开场 —— 抑制门在确认之前一律不放行。
+                sPlayerConfirmedInSession = false;
+                if (sButtonGroup == null) {
+                    sButtonGroup = createButtonGroup(activity, repo);
+                    // v42：初始位置直接放右下角（与 showButton 判定为播放页后的位置一致），
+                    // 不再用左上角占位。否则 onResume 重建按钮（sLastDecision=true → 直接 VISIBLE）
+                    // 而检测还没判定为播放页的窗口期（如正滑页面/页面过渡 → 判定 OTHER 走 break 维持原状、
+                    // 不调 showButton），按钮会可见地先出现在左上角，直到 showButton 才挪到右下角 ——
+                    // 即用户看到的「悬浮窗按钮突然出现在 app 左上角，重开播放页后才正常」。
+                    // 【v57】组宽 = 两个胶囊 + 一个间距（这是初始 LayoutParams 的宽；
+                    // 实际测量后 setLayoutParams 不再覆写，靠 showButton 的迟滞门控制）。
+                    // 【code 923 bug2】容器宽度必须是 **WRAP_CONTENT**，不能写死总宽。
+                    //
+                    // 旧代码写死「两钮 + 间距」= 190dp：状态栏钮在无字幕时 GONE，
+                    // 但容器宽度**不收缩**，LinearLayout 的子钮水平靠左 → 「无字幕」钮
+                    // 停在原来状态栏钮的位置，右侧空出整整一个钮 + 间距。
+                    // 真机量测：无字幕钮右缘距屏右 ≈ 123dp = 16dp 边距 + 100dp 未收缩宽度，
+                    // 与「固定 190dp 宽、只显示 90dp 内容」完全吻合。
+                    // （源码里 3270 行那句注释写着「因为 LinearLayout 是 wrap_content」，
+                    //  但代码并没有那么写 —— 注释与实现不一致，正是这个 bug 的藏身处。）
+                    // 【code 924】双击关闭请求的接收器：按钮组首次创建时注册一次。
+        //   放在这里而不是 hook(cl, repo)：hook() 拿不到 Activity，而注册需要它。
+        registerDismissReceiver(activity, repo);
+        int btnMaxW = dip2px(activity, CAPSULE_W_DP * 2 + CAPSULE_GAP_DP);
+                    int btnDefH = dip2px(activity, CAPSULE_H_DP);
+                    int btnScreenW = activity.getResources().getDisplayMetrics().widthPixels;
+                    int btnScreenH = activity.getResources().getDisplayMetrics().heightPixels;
+                    // 【code 923 几何 3】右缘对齐滑条最右端（取不到滑条时退回常量）。
+                    int btnWantRight = capsuleRightForSlider(activity, btnScreenW);
+                    if (btnWantRight + btnMaxW > btnScreenW) {
+                        btnWantRight = Math.max(0, btnScreenW - btnMaxW - dip2px(activity, 8));
+                    }
+                    // 【v57】初始位置也尽量用滑条推导（与 showButton 同口径），
+                    // 避免「先出现在右下角、判为播放页后再跳到滑条上方」的闪跳
+                    // （这正是 v42 修过的那类问题，只是坐标换了地方）。
+                    int btnWantBottom = capsuleBottomForSlider(activity, btnScreenH);
+                    boolean btnUsedFallback = false;
+                    if (btnWantBottom <= 0) {
+                        btnWantBottom = dip2px(activity, BUTTON_BOTTOM_DP);
+                        btnUsedFallback = true;
+                    }
+                    if (btnWantBottom + btnDefH > btnScreenH) {
+                        btnWantBottom = Math.max(0, btnScreenH - btnDefH - dip2px(activity, 8));
+                    }
+                    sCapsuleFollowY = btnWantBottom; // 记下来，showButton 的兜底链能用上
+                    // 【code 927 问题 3】记下「建按钮时用的几何」。
+                    //   若那时是兜底位（sLastSliderCy<=0），快照保持 MIN_VALUE 哨兵，
+                    //   保证几何第一个到手时 replaceCapsuleByGeometry 一定会重算。
+                    sCapsulePlacedByFallback = btnUsedFallback;
+                    if (!btnUsedFallback && sLastSliderCy > 0) {
+                        sPlacedGeoSliderCy = sLastSliderCy;
+                        sPlacedGeoDescBottom = sLastDescBottomY;
+                        sPlacedGeoSliderRight = sLastSliderRightPx;
+                    } else {
+                        sPlacedGeoSliderCy = Integer.MIN_VALUE;
+                        sPlacedGeoDescBottom = Integer.MIN_VALUE;
+                        sPlacedGeoSliderRight = Integer.MIN_VALUE;
+                        XposedCompat.log(TAG + " [几何5] button created at FALLBACK bottom="
+                                + btnWantBottom + "px (geometry not ready yet, sLastSliderCy="
+                                + sLastSliderCy + ") -> will re-place");
+                        // 【code 929 bug 4 诊断】FALLBACK 落位的同时记一次 page anchor 当前 y；
+                        //   让真机复现时能直接看到第一次出现按钮的初始 translationY 到底落在哪
+                        //   —— 如果它已经在锚点附近，catch-up 幅度 < 64px；如果还在屏幕边缘，
+                        //   那就是 page follow 还没接管导致用户感觉"先闪一下"。
+                        try {
+                            int anchorY = -1;
+                            if (sFollowRef != null) {
+                                View ref = sFollowRef.get();
+                                // 【code 930 清理】恢复 F4_diag 误改：参考点存活才读它的位移，
+                                //   否则记 -1（catch-up 通道不可用，按钮第一帧在基准位露脸属预期）。
+                                if (ref != null && ref.isAttachedToWindow()) {
+                                    anchorY = pageVisualOffset();
+                                }
+                            }
+                            XposedCompat.log(TAG + " [几何5b] FALLBACK button anchorY="
+                                    + anchorY + " (catch-up effect depends on this)");
+                        } catch (Throwable ignored) { }
+                    }
                     FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                            dip2px(activity, BUTTON_W_DP),
-                            dip2px(activity, BUTTON_H_DP));
-                    lp.gravity = Gravity.TOP | Gravity.START;
-                    lp.leftMargin = dip2px(activity, 16);
-                    lp.topMargin = dip2px(activity, 200);
-                    sButton.setLayoutParams(lp);
-                    // 用上次结论初始化，而不是一律 GONE。
-                    // 否则每次 onResume 重建按钮都要从"隐形"开始，干等下一次扫描才出现。
-                    sButton.setVisibility(Boolean.TRUE.equals(sLastDecision) ? View.VISIBLE : View.GONE);
-                    decor.addView(sButton);
+                            ViewGroup.LayoutParams.WRAP_CONTENT, btnDefH);
+                    lp.gravity = Gravity.BOTTOM | Gravity.END;
+                    lp.leftMargin = 0;
+                    lp.topMargin = 0;
+                    lp.rightMargin = btnWantRight;
+                    lp.bottomMargin = btnWantBottom;
+                    sButtonGroup.setLayoutParams(lp);
+                    // v43：可见性**不再盲目沿用「上次结论」** —— 那个值可能是过期的 true
+                    // （离开播放页时若抑制门把 hide 挡掉了，sLastDecision 会一直停在 true，
+                    //  见 pageVisualOffset() 的 v43 复盘）。盲目沿用会让按钮在回到前台那一刻
+                    // 凭空出现在首页/书架上，并且被永久抑制门一直摁住不消失。
+                    //
+                    // 新判据：只有「切后台前 ≤ RESUME_TRUST_MS 内**确实见到过播放页**」才敢直接
+                    // 亮出来（常见场景：从播放页切出去又马上切回来 → 保持原体验、不闪）；
+                    // 否则一律先 GONE，把「该不该显示」完全交给紧随其后的检测
+                    // （scheduleDetect 在 80/240/520ms 各补一次；在播放页上锚点通常第一次
+                    //  检测就被确认存活 → 立即 showButton，肉眼无感）。
+                    // 【code 922 问题 2】判据从「时间窗内」收紧为「时间窗内 **且** 位移能同步」。
+                    //
+                    // 为什么必须加第二个条件：旧判据 `间隔 <= RESUME_TRUST_MS(1500ms)` 是**纯阈值**，
+                    // 而实测该间隔的分布极散（19 / 47 / 86 / 147 / 178 / 292 / 348 / 394 /
+                    // 1048 / 1373 / 1613 / 1697 / 2128 / 2685 / 2928 / 4505 / 6168ms），
+                    // 同一个物理动作（从播放页切出去再切回来）会随机落在阈值两侧 →
+                    // 表现就是用户说的「**有时**两个按钮会闪现」。
+                    //
+                    // 而「闪现」的直接成因是：以 VISIBLE 入场的那一刻
+                    // {@link #syncFollowOffsetOnShow()} 因偏置缺失直接 return，
+                    // 按钮先在 translationY=0 的基准位露脸，几十~几百 ms 后才跳到正确位。
+                    // 所以只要**位移通道不可用，就不抢先显形** —— 交给紧随其后的检测
+                    // （scheduleDetect 在 80/240/520ms 各补一次）在位置算得准之后再 show。
+                    // 这样「闪现」的两种来源（阈值抖动 + 先露脸再跳）一并消失。
+                    boolean canSyncOffset = sVisualSeen && sVisualBias != FOLLOW_NO_BASELINE;
+                    trustLastPlayer = sPauseAtMs != 0L && sPausePlayerSeenMs != 0L
+                            && (sPauseAtMs - sPausePlayerSeenMs) <= RESUME_TRUST_MS
+                            && canSyncOffset;
+                    sButtonGroup.setVisibility(trustLastPlayer ? View.VISIBLE : View.GONE);
+                    sLastDecision = trustLastPlayer; // 不信任时不能让它冒充「已确认」
+                    decor.addView(sButtonGroup);
                     freshButton = true;
-                    sLastBtnText = null; // 新按钮创建后，强制 updateButtonText 重新 setText
+                    sLastBtnSig = null; // 新按钮组创建后，强制 updateButtonText 重新落笔
                     sNotPlayerStreak = 0;
                     sNotPlayerSinceMs = 0L;
                     sLastEvidenceSig = null;  // 允许下一次扫描重新打一行证据日志
@@ -1882,8 +2568,11 @@ public class ActivityButtonHook {
                     resetAnchorTracking();
                     sLastProbeAlive = null;
                     // v35：新按钮一律从「零位移 + 无基线」开始（旧按钮的位移不该继承）。
-                    // v37：基线/偏置/参考点整体作废 —— 新按钮是个全新的参考系。
-                    invalidateFollow();
+                    // v37：基线/参考点整体作废 —— 新按钮是个全新的参考系。
+                    // 【code 922 问题 2】但**宿主偏置要留下**：它是宿主布局的常数，
+                    // 与按钮新旧无关。不放行它 → 第一帧跟手空转 + 按钮先在基准位露脸再跳
+                    // （= 用户说的「闪现」），见 invalidateFollow(boolean) 的完整复盘。
+                    invalidateFollow(true);
                 }
 
                 // 刚从后台/别的页面回来 —— 视图树还在铺，先快速跟踪一阵再退回常规心跳。
@@ -1909,11 +2598,14 @@ public class ActivityButtonHook {
                 armHeartbeat();
                 armAnchorWatch();
                 if (freshButton) {
-                    XposedBridge.log(TAG + " button created, init visibility="
-                            + sButton.getVisibility());
+                    XposedCompat.log(TAG + " button created, init visibility="
+                            + sButtonGroup.getVisibility()
+                            + " (trustLastPlayer=" + trustLastPlayer + " lastPlayerSeenAgo="
+                            + ((sPauseAtMs == 0L || sPausePlayerSeenMs == 0L)
+                                    ? -1 : (sPauseAtMs - sPausePlayerSeenMs)) + "ms)");
                 }
             } catch (Throwable e) {
-                XposedBridge.log(TAG + " ensureButton error: " + e.getMessage());
+                XposedCompat.log(TAG + " ensureButton error: " + e.getMessage());
             }
         });
     }
@@ -1934,11 +2626,16 @@ public class ActivityButtonHook {
                 if (btn != null) {
                     decor.removeView(btn);
                 }
+                sButtonGroup = null;
                 sButton = null;
+                sStatusBarButton = null;
                 // v35：跟帧循环必须停 —— 按钮都没了，再跟就是纯浪费（而且 sButton==null
                 // 时帧回调里的守卫虽会拦住，但循环会一直挂着不退）。
-                // v37：按钮重建 = 旧的位移参考系整体失效 → 用 invalidateFollow() 彻底作废。
-                invalidateFollow();
+                // v37：按钮重建 = 旧的位移参考系整体失效 → 作废基线/参考点。
+                // 【code 922 问题 2】宿主偏置保留（keepHostBias=true）—— 理由见
+                // invalidateFollow(boolean)。这里若全量作废，下一次 onResume 的
+                // 首帧跟手又会空转一次，等于白修。
+                invalidateFollow(true);
                 // 注意：sLastDecision **刻意不重置** —— 回到前台时用它初始化按钮可见性，
                 // 避免「切后台回前台按钮文字/可见性丢失」。已确认页面类型后由检测覆盖。
                 sNotPlayerStreak = 0;
@@ -1956,12 +2653,17 @@ public class ActivityButtonHook {
                 sLastPokeMs = 0L;
                 sPokeWindowStartMs = 0L;
                 sPokeWindowCount = 0;
-                // 切后台后按钮被销毁，但 sLastBtnText 是静态变量，必须重置。
-                // 否则 onResume 重建按钮时 updateButtonText 会认为文字没变而跳过 setText，
+                // v43：记下「切后台的时刻」与「那一刻最近一次见到播放页的时刻」，
+                // 供 ensureButton 判断新按钮要不要直接以 VISIBLE 重建（见 RESUME_TRUST_MS）。
+                // 必须在 sLastPlayerSeenMs 被任何路径改动之前取。
+                sPauseAtMs = SystemClock.uptimeMillis();
+                sPausePlayerSeenMs = sLastPlayerSeenMs;
+                // 切后台后按钮被销毁，但 sLastBtnSig 是静态变量，必须重置。
+                // 否则 onResume 重建按钮时 updateButtonText 会认为状态没变而跳过落笔，
                 // 导致回到前台按钮只剩背景、没有文字。
-                sLastBtnText = null;
+                sLastBtnSig = null;
             } catch (Throwable e) {
-                XposedBridge.log(TAG + " removeButton error: " + e.getMessage());
+                XposedCompat.log(TAG + " removeButton error: " + e.getMessage());
             }
         });
     }
@@ -1981,7 +2683,7 @@ public class ActivityButtonHook {
     }
 
     private static void detectAndLayout(Activity activity, SubtitleRepository repo) {
-        if (sButton == null || activity == null || activity.isFinishing() || activity.isDestroyed()) {
+        if (sButtonGroup == null || activity == null || activity.isFinishing() || activity.isDestroyed()) {
             return;
         }
         // 节流：全局布局回调非常频繁，限制检测频率，避免主线程被拖死。
@@ -1995,6 +2697,30 @@ public class ActivityButtonHook {
         sForceNextDetect = false;
         sLastDetectMs = now;
 
+        // ── v44：跟手期间**不做整树扫描**，把主线程让给跟帧循环 ──
+        //
+        // 拖动播放页时宿主每帧 setTranslationY → 结构事件被合并成 ~50ms 一趟，
+        // 每趟一次整树扫描（实测单次 6~8ms）+ 2 行长日志，而跟帧回调与它**抢同一个主线程**。
+        // 实测代价：`11:18:30.398` 写下 202px 后，下一帧直到 `11:18:30.508` 才来（**110ms**），
+        // 那一窗里模块刚跑完 2 次扫描、写了 6 行日志 —— 这就是「偶尔不跟手」的真身。
+        //
+        // 拖动期间扫描**没有决策价值**：
+        //   · 结论不可能是「离开播放页」—— 页面就在手指底下；真离开时锚点会 detach，
+        //     走 removeView / attach 监听那条路，不靠这里的周期性扫描；
+        //   · hide 本来就被 isPageHeld() 的「页面被拖住」判据压着；
+        //   · 基线采集要求「页面静止」，拖动中本来就采不到。
+        // 所以直接跳过，只把心跳按 FOLLOW_QUIET_HEARTBEAT_MS（120ms）续上 ——
+        // 页面一停，本条件立刻不成立，完整扫描自动恢复（含「页面被卸载」的判定）。
+        if (sFollowing && sLastPageMotionMs != 0L
+                && now - sLastPageMotionMs < PAGE_MOTION_HOLD_MS) {
+            sQuietScanSkips++;
+            sNextHeartbeatMs = FOLLOW_QUIET_HEARTBEAT_MS;
+            return;
+        }
+        if (sQuietScanSkips > 0) {
+            sQuietScanSkips = 0; // 【code 933 精简】不再逐扫描打日志（170 行/会话）
+        }
+
         int verdict = SubtitleViewHook.PAGE_UNKNOWN;
         boolean ambiguous = false;
         try {
@@ -2007,6 +2733,51 @@ public class ActivityButtonHook {
             // 不读取任何历史标记，不可见子树直接跳过。
             SubtitleViewHook.ScanResult scan = SubtitleViewHook.scan(decor, repo);
             repo.setCurrentSubtitles(scan.liveLines);
+            // 【v57】缓存主滑条中心 y —— 按钮组要靠它算「进度条上方」的位置。
+            // 只取这一个数（scan 的契约是「绝不跨帧保留」，所以不留整个对象）。
+            //
+            // ⚠️ **只在扫到滑条时才更新，扫不到就保持上次的值**（`-1` 是「从未扫到过」的
+            //    哨兵，不是「本次没扫到」）。理由：这个赋值点同时服务「列表页 → 播放页」
+            //    的判定链，列表页 / 切轨瞬间 / 转场动画中都可能 hasMainSlider=false。
+            //    若那时打 -1，capsuleBottomForSlider 会返回 -1 → 按钮掉回
+            //    BUTTON_BOTTOM_DP 兜底位 → **先跳一下再跳回来**（用户看到的闪跳）。
+            //    保持上次值只是「位置短暂不精确」，远比跳一下好；真到了没有滑条的页面，
+            //    hideButton 会把整个按钮组藏掉，位置根本不显示。
+            //    （同类教训见 1.21.10：布局/几何做输入必须带迟滞，别让瞬时态直接驱动 UI。）
+            //
+            // 🔴🔴 【code 925】这里还必须再叠一层 `scan.mainSliderStable` ——
+            //    code 924 把「稳定性判据」错做进了**探测**里（不稳定就 return），
+            //    结果探测被掐死：hasMainSlider 永不置位 → 按钮完全不出现（P0）。
+            //    现在稳定性判据回到**消费端**（也就是这里），探测负责如实上报。
+            //    语义：不稳定 = 坐标可能是 RN settle 的中间态 → **不采信**，
+            //    沿用上一次稳定值（下面 `if` 不成立即天然保持 sLastSliderCy 不变）。
+            //    关键差别：这只影响「按钮摆在哪」，**不影响「按钮出不出现」**
+            //    （出现与否由 verdict 决定，而 verdict 只看 hasMainSlider）。
+            if (scan.hasMainSlider && scan.mainSliderY > 0 && scan.mainSliderStable) {
+                sLastSliderCy = scan.mainSliderY;
+                sLastSliderH = scan.mainSliderH;
+            }
+            // 【code 923 几何 3】滑条右缘 x（= 左缘 x + 宽度）—— 按钮右缘要跟它对齐。
+            if (scan.hasMainSlider && scan.mainSliderW > 0 && scan.mainSliderX >= 0) {
+                sLastSliderRightPx = scan.mainSliderX + scan.mainSliderW;
+            }
+            // 【code 923 几何 4】简介行底边 y —— 与滑条中心一起决定按钮的垂直中点。
+            if (scan.descLineBottom > 0) {
+                sLastDescBottomY = scan.descLineBottom;
+            }
+            // 【code 924】诊断：为什么中点不生效？三种可能各对应一个不同的数字——
+            //   ① descCandidateCount == 0  -> 收集条件把简介行整个漏了（高度 / 文本条件）
+            //   ② descCandidateCount > 0 但 descLineBottom == -1
+            //                              -> 距离上限太紧或滑条顶边算错
+            //   ③ descLineBottom > 0 但按钮仍贴滑条 -> 是消费端（capsuleBottomForSlider）的事
+            // 计数式日志：只在数字变了时打，避免 55ms 一行。
+            if (scan.descCandidateCount != sLastDescCand
+                    || scan.descLineBottom != sLastDescBottomLogged) {
+                sLastDescCand = scan.descCandidateCount;
+                sLastDescBottomLogged = scan.descLineBottom;
+                // 【code 933 精简】desc probe 诊断日志移除（103 行/会话）；
+                //   落位是否生效改看低频的 [几何4] capsuleBottom / [几何6]。
+            }
 
             int screenW = decor.getWidth() > 0
                     ? decor.getWidth()
@@ -2016,6 +2787,17 @@ public class ActivityButtonHook {
                     : decor.getResources().getDisplayMetrics().heightPixels;
             sLastScreenW = screenW;
             sLastScreenH = screenH;
+
+            // 🔴🔴 【code 927 问题 3】几何更新点**独立触发**按钮重落位。
+            //
+            //   这是本轮问题 3 的核心修法。真机根因：位置重算只挂在 showButton 里，
+            //   而 showButton 依赖的 sLastSliderCy 又是**同一轮 scan** 才更新的
+            //   ⇒ 自引用、永远差一拍：ensureButton 落 286px 兜底位后，
+            //     等 sLastSliderCy 真的到手时，showButton 早就不跑了 ⇒ 位置永不纠正。
+            //   现在：几何（sLastSliderCy / sLastDescBottomY / sLastSliderRightPx）
+            //   一更新就在这里重算并落地，与 showButton 的调用时机彻底解耦。
+            //   必须先于下面 showButton 的判定调用，这样同一帧里 showButton 也能看到新值。
+            replaceCapsuleByGeometry(activity, screenW, screenH, false);
 
             // v38：扫描心跳也要刷新「页面最后运动的时刻」。
             // 它是「离开播放页」确认窗的起算点（见下面 deadFor），刷新源必须足够可靠；
@@ -2043,14 +2825,8 @@ public class ActivityButtonHook {
                     sLastProbeAlive = Boolean.TRUE;
                     sLastPlayerSeenMs = now;
                     sLastAnchorAlive = Boolean.TRUE;
-                    if (!sTreeDumped) {
-                        sTreeDumped = true;
-                        try {
-                            // v33 诊断：定位「播放器传输控件行」用的真实视图树，只打一次。
-                            SubtitleViewHook.dumpViewTree(decor);
-                        } catch (Throwable ignored) {
-                        }
-                    }
+                    // 【code 933 精简】不再打视图树 dump（每次最多 260 行，纯结构参考）。
+                    sTreeDumped = true;
                     // 更新播放页锚点（页面级容器），供主滑条被回收时继续判定「还在播放页」。
                     if (scan.anchorRef != null) {
                         sPlayerAnchor = scan.anchorRef;
@@ -2058,13 +2834,14 @@ public class ActivityButtonHook {
                         watchAnchorAttachment(scan.anchorRef.get());
                         if (!scan.anchorDesc.equals(sLastAnchorDesc)) {
                             sLastAnchorDesc = scan.anchorDesc;
-                            XposedBridge.log(TAG + " player anchor -> " + scan.anchorDesc);
+                            XposedCompat.log(TAG + " player anchor -> " + scan.anchorDesc);
                         }
                     }
                     // v35：确认在播放页 → 顺手把「播放键」认下来，并在页面静止时采集跟随基线。
                     // 只在页面静止（跟帧循环没跑 + 位移为 0）时才采 —— 见 captureFollowBaseline()。
                     captureFollowBaseline();
                     sLastDecision = Boolean.TRUE;
+                    sPlayerConfirmedInSession = true; // v43：本会话确认过播放页 → 抑制门解闸
                     showButton(activity, repo, screenW, screenH);
                     break;
                 }
@@ -2118,7 +2895,7 @@ public class ActivityButtonHook {
                         sPlayerAnchor = scan.anchorRef;
                         sAnchorDetached = false;
                         watchAnchorAttachment(scan.anchorRef.get());
-                        XposedBridge.log(TAG + " player anchor adopted (unpaired main slider) -> "
+                        XposedCompat.log(TAG + " player anchor adopted (unpaired main slider) -> "
                                 + scan.anchorDesc);
                     }
                     if (sAnchorDetached) {
@@ -2126,7 +2903,7 @@ public class ActivityButtonHook {
                         // 这是「离开播放页」最干净的一条信号，不必再等 ANCHOR_DEAD_MIN_MS 的确认窗
                         // —— 确认窗本来就是为了防「页面假死又滑回来」，而视图被摘掉不会滑回来。
                         if (Boolean.TRUE.equals(sLastDecision)) {
-                            XposedBridge.log(TAG + " anchor detached from window -> hide (hard evidence)");
+                            XposedCompat.log(TAG + " anchor detached from window -> hide (hard evidence)");
                         }
                         sLastDecision = Boolean.FALSE;
                         hideButton("anchor detached");
@@ -2135,13 +2912,14 @@ public class ActivityButtonHook {
                     boolean anchorAlive = isPlayerAnchorAlive();
                     if (sLastAnchorAlive == null || sLastAnchorAlive != anchorAlive) {
                         sLastAnchorAlive = anchorAlive;
-                        XposedBridge.log(TAG + " player anchor alive=" + anchorAlive
+                        XposedCompat.log(TAG + " player anchor alive=" + anchorAlive
                                 + " (area=" + Math.round(anchorAreaRatio(screenW, screenH) * 100) + "%)");
                     }
                     if (anchorAlive) {
                         // 页面级容器还在屏幕上 → 仍在播放页（主滑条只是被 RN 回收 / 控制条隐藏）。
                         // v25：**立即恢复显示**，不再傻等下一次扫到主滑条（那要 ~0.6s）。
                         sLastPlayerSeenMs = now;
+                        sPlayerConfirmedInSession = true; // v43：锚点存活也是播放页证据
                         resetAnchorTracking();
                         // v30：ANCHOR_HARD_TIMEOUT 的计时起点必须是「锚点**连续**存活的时刻」。
                         // 旧版用 sUnknownSinceMs（= 进入 UNKNOWN 的时刻，早得多）：长时间 UNKNOWN 之后
@@ -2153,7 +2931,7 @@ public class ActivityButtonHook {
                         if (now - sAnchorAliveSinceMs >= ANCHOR_HARD_TIMEOUT_MS) {
                             // 兜底：锚点**连续**存活却一直 UNKNOWN（锚点可能选得过高 / 是常驻容器）。保守隐藏。
                             if (Boolean.TRUE.equals(sLastDecision)) {
-                                XposedBridge.log(TAG + " UNKNOWN + anchor alive for "
+                                XposedCompat.log(TAG + " UNKNOWN + anchor alive for "
                                         + (now - sAnchorAliveSinceMs) + "ms -> hide (fallback)");
                             }
                             sLastDecision = Boolean.FALSE;
@@ -2171,7 +2949,7 @@ public class ActivityButtonHook {
                         // 从未取到过锚点（findPlayerAnchor 返回 null 的页面结构）：只能靠时间宽限兜底。
                         if (sLastPlayerSeenMs == 0L || now - sLastPlayerSeenMs >= NO_ANCHOR_GRACE_MS) {
                             if (Boolean.TRUE.equals(sLastDecision)) {
-                                XposedBridge.log(TAG + " no player evidence for "
+                                XposedCompat.log(TAG + " no player evidence for "
                                         + (sLastPlayerSeenMs == 0L ? -1 : (now - sLastPlayerSeenMs))
                                         + "ms (anchor=never) -> hide");
                             }
@@ -2223,7 +3001,7 @@ public class ActivityButtonHook {
                             sAnchorDeadLogged = true;
                             // 诊断：把**判据原始量**打出来（面积 / 有无正面证据 / 需要的确认窗 /
                             // 页面已静止多久），下一轮才能直接用真实数据校准 ANCHOR_DEAD_MIN_MS。
-                            XposedBridge.log(TAG + " anchor dead for " + deadFor + "ms"
+                            XposedCompat.log(TAG + " anchor dead for " + deadFor + "ms"
                                     + " (area=" + Math.round(anchorAreaRatio(screenW, screenH) * 100) + "%"
                                     + " evidence=" + evidence + " need=" + need + "ms"
                                     + " samples=" + sAnchorDeadSamples
@@ -2238,7 +3016,7 @@ public class ActivityButtonHook {
                         if (Boolean.TRUE.equals(sLastDecision) && isPageHeld(now)) {
                             if (!sHoldSuppressLogged) {
                                 sHoldSuppressLogged = true;
-                                XposedBridge.log(TAG + " hide suppressed: page held (vis="
+                                XposedCompat.log(TAG + " hide suppressed: page held (vis="
                                         + sVisualOffset + "px ref="
                                         + (sFollowRefIsPlayBtn ? "play-button" : "anchor")
                                         + " snap=" + sHeldOffset + "px/"
@@ -2249,7 +3027,7 @@ public class ActivityButtonHook {
                         }
                         if (deadFor >= need && sAnchorDeadSamples >= ANCHOR_DEAD_MIN_SAMPLES) {
                             if (Boolean.TRUE.equals(sLastDecision)) {
-                                XposedBridge.log(TAG + " no player evidence for "
+                                XposedCompat.log(TAG + " no player evidence for "
                                         + (sLastPlayerSeenMs == 0L ? -1 : (now - sLastPlayerSeenMs))
                                         + "ms (anchor dead " + deadFor + "ms evidence=" + evidence
                                         // v38：门失守时**快照的值**必须看得见，否则下一轮
@@ -2272,13 +3050,13 @@ public class ActivityButtonHook {
             String sig = scan.evidenceSignature();
             if (!sig.equals(sLastEvidenceSig)) {
                 sLastEvidenceSig = sig;
-                XposedBridge.log(TAG + " verdict=" + SubtitleViewHook.verdictName(verdict)
+                XposedCompat.log(TAG + " verdict=" + SubtitleViewHook.verdictName(verdict)
                         + " | " + scan.describe(screenW, screenH));
             }
 
             repo.setPlayerPageVisible(Boolean.TRUE.equals(sLastDecision));
         } catch (Throwable e) {
-            XposedBridge.log(TAG + " detectAndLayout error: " + e.getMessage());
+            XposedCompat.log(TAG + " detectAndLayout error: " + e.getMessage());
         } finally {
             // 只更新下一次心跳的节奏；真正重排在 heartbeatRunnable 的 finally 里，
             // 保证「无论本次是否被节流、是否抛异常」心跳都不会断。
@@ -2301,7 +3079,8 @@ public class ActivityButtonHook {
             return AMBIGUOUS_RECHECK_MS;
         }
 
-        boolean buttonVisible = sButton != null && sButton.getVisibility() == View.VISIBLE;
+        boolean buttonVisible = sButtonGroup != null
+                && sButtonGroup.getVisibility() == View.VISIBLE;
         if ((verdict == SubtitleViewHook.PAGE_PLAYER) != buttonVisible) {
             return HEARTBEAT_FAST_MS; // 结论与现状不符 → 尽快收敛（离开播放页后的隐藏就走这条）
         }
@@ -2361,53 +3140,310 @@ public class ActivityButtonHook {
         return SubtitleViewHook.visibleAreaRatio(v, screenW, screenH);
     }
 
+    /**
+     * 【v57】按主滑条几何算按钮组底边距屏幕底的量（px）。
+     *
+     * 需求：「按键位置是在音轨大标题和播放进度条中间靠右侧」。
+     * 滑条中心 y（屏幕坐标）往上 {@link #CAPSULE_ABOVE_SLIDER_DP} dp 处作为
+     * 按钮组的**底边** —— 于是按钮组正好坐在滑条上方、不压滑条、也不碰上方简介。
+     *
+     * ── 取不到滑条时怎么办（必须回答，否则会有机型/页面结构没有滑条）──
+     * 返回 -1，由调用方沿用上次成功的值；再不行才退回旧版常量右下角
+     * （{@link #BUTTON_BOTTOM_DP}，v32 验证过「不遮挡任何宿主控件」的安全位）。
+     * 宁可位置不对也不能没有位置。
+     *
+     * @return 底边距（px）；-1 = 本次取不到滑条
+     */
+    /**
+     * 【code 935 bug2】把自适应后的胶囊高度落到两个按钮上（只在变化时写，避免布局回环）。
+     */
+    private static void applyCapsuleHeight() {
+        if (sCapsuleHPx <= 0) {
+            return;
+        }
+        try {
+            if (sStatusBarButton != null) {
+                ViewGroup.LayoutParams p = sStatusBarButton.getLayoutParams();
+                if (p != null && p.height != sCapsuleHPx) {
+                    p.height = sCapsuleHPx;
+                    sStatusBarButton.setLayoutParams(p);
+                }
+            }
+            if (sButton != null) {
+                ViewGroup.LayoutParams p = sButton.getLayoutParams();
+                if (p != null && p.height != sCapsuleHPx) {
+                    p.height = sCapsuleHPx;
+                    sButton.setLayoutParams(p);
+                }
+            }
+        } catch (Throwable t) {
+            XposedCompat.log(TAG + " applyCapsuleHeight failed: " + t);
+        }
+    }
+
+    private static int capsuleBottomForSlider(Context ctx, int screenH) {
+        if (screenH <= 0 || sLastSliderCy <= 0) {
+            return -1;
+        }
+        int gapPx = dip2px(ctx, CAPSULE_ABOVE_SLIDER_DP);
+        int capsuleH = dip2px(ctx, CAPSULE_H_DP);
+        // 【code 923 几何 4】**垂直居中**于「简介行底边」与「滑条中心」之间 ——
+        // 需求原话：「在一行淡色小字简介和播放进度条中间（垂直距离中间，不再用固定距离）」。
+        //   按钮组中心 y = (简介行底边 + 滑条中心) / 2
+        //   底边屏幕 y   = 中心 + 半高
+        //   bottomMargin = screenH - 底边屏幕 y
+        // ⚠️ 取不到简介行时退回旧口径（底边落在「滑条中心 - gap」）——
+        //    位置不精确可以接受，**因为没位置而跳一下**不可以（1.21.10 的教训）。
+        int centerY;
+        boolean usedMid;
+        // 【code 937 问题2】两个诊断量提到块外：日志要打「去抖后的简介底边」与
+        //   「滑条视图顶边」，否则无法判断按钮上沿有没有压到简介行。
+        int descStable = -1;
+        int sliderTop = -1;
+        // 【code 924】几何 3 的可观测性：code 923 落地后**无法从日志判断走到哪一支**
+        //   （实测真机截图里按钮仍贴着滑条，但日志里 descBottom 一个字都没有）
+        //   -> 这里把三要素全打出来，并**计数**（一次日志查不出「偶发 vs 恒常」）。
+        // 【code 934 bug3】按钮压简介根修：sliderCy 是滑条**中心**（SubtitleViewHook
+        //   cy = loc[1]+h/2，实测 h=54px）。简介底边(1722)到滑条视图顶部(1772)只有
+        //   50px，装不下 95px 整高按钮 -> 旧条件 gap>capsuleH 不成立 -> 走 LEGACY
+        //   整高贴 cy-32dp-半高 -> 按钮占 1610~1704、整个压进简介区（截图实证）。
+        //   新规则：简介行有效时一律垂直居中于「简介底边 <-> 滑条视图顶部」——
+        //   即需求原话「简介和进度条中间」；两侧 view 的内边距区吸收少量重叠。
+        if (sLastDescBottomY > 0) {
+            // 【code 936 bug2】简介底边在真机上于多个候选间**逐帧翻转**
+            //   （00:30 日志实证 1722 <-> 1759，差 37px）-> centreY 跟着每秒抖
+            //   十几次 18px。此处做**消费端**去抖（探测层按铁律只如实上报）：
+            //   近距离抖动一律收敛到「更靠上」的候选（可用带更宽、离进度条更远），
+            //   只有明显位移（> DESC_HYSTERESIS_DP）才认作真的换行并跟随。
+            descStable = sLastDescBottomY;
+            if (sDescBottomStable > 0
+                    && Math.abs(descStable - sDescBottomStable)
+                            <= dip2px(ctx, DESC_HYSTERESIS_DP)) {
+                descStable = Math.min(descStable, sDescBottomStable);
+            }
+            sDescBottomStable = descStable;
+
+            int seekHalf = sLastSliderH > 0 ? sLastSliderH / 2 : dip2px(ctx, 9);
+            sliderTop = sLastSliderCy - seekHalf;
+            // 【code 936 bug2】Ari 明确要求：按钮**恒定 32dp**、无论可用带多窄都强制
+            //   居中于「简介底边 <-> 滑条视图顶边」，**不做任何自适应压缩** —— 935 的
+            //   自适应把 95px 压到 60px（日志实证 capsuleH=60），观感就是「按钮被压扁」。
+            //   实测本页可用带仅 50px（desc=1722 / sliderTop=1772）< 32dp=95px，故剩余
+            //   45px 溢出由上下两侧的 view 内边距区均摊（各约 22px）。
+            capsuleH = dip2px(ctx, CAPSULE_H_DP);
+            sCapsuleHPx = capsuleH;
+            // 【code 937 问题2 根修（Ari 指令）；938 改为 - 20dp】底边强制 = 滑条视图顶边 - 20dp。
+            //   936 的旧口径「简介底边(1722) <-> 滑条顶边(1772) 取中点」⇒ centerY=1747、
+            //   底边 1794 —— 比滑条顶 1772 **还低 23px**，按钮直接压进进度条，
+            //   正是 Ari 反馈的「按钮太低了、完全靠近播放进度条」。
+            //   新口径与简介底边解耦，位置只跟滑条走（也顺手甩掉了 descBottom 逐帧翻转的影响）。
+            centerY = sliderTop - dip2px(ctx, CAPSULE_ABOVE_SLIDER_TOP_DP) - capsuleH / 2;
+            usedMid = true;
+        } else {
+            capsuleH = dip2px(ctx, CAPSULE_H_DP);
+            sCapsuleHPx = capsuleH;
+            centerY = sLastSliderCy - gapPx - capsuleH / 2;
+            usedMid = false;
+        }
+        // 【code 932 bug4】滑条最小净距钳制。实测（18:06 日志）无字幕时 desc=2017 /
+        // slider=2179，MID 居中后按钮底边距滑条中心仅 ~34px -> 按钮怼到进度条顶上。
+        // 规则：按钮底边距滑条中心不得小于 SLIDER_MIN_CLEAR_DP，不够就整体上移。
+        boolean clamped = false;
+        // 【code 934】净距钳制只对 LEGACY 分支生效：MID 已按「滑条视图顶部」对齐，
+        //   再套 minClear(20dp、相对滑条中心) 会把按钮重新顶回简介区
+        //   （932 钳制的副作用，正是本轮「按钮挡简介」的推手之一）。
+        if (!usedMid) {
+            int minClear = dip2px(ctx, SLIDER_MIN_CLEAR_DP);
+            if (centerY + capsuleH / 2 > sLastSliderCy - minClear) {
+                centerY = sLastSliderCy - minClear - capsuleH / 2;
+                clamped = true;
+            }
+        }
+        int bottomMargin = screenH - (centerY + capsuleH / 2);
+        // 【code 927 问题 3】打点门改为**调用即打 + 节流**。
+        //   旧门「结果变了才打」在诊断时无法区分「压根没调用」与「调用了但没变」——
+        //   上一轮真机上这行一次都没出现，被误读成「几何不可用」，实际是几何早就好了、
+        //   只是**没人再调用**（自引用差一拍）。每 60 次汇总一行保证不刷爆日志。
+        sCbCallCount++;
+        if (usedMid != sLastMidUsed || centerY != sLastMidCenterY || sCbCallCount % 60 == 0) {
+            sLastMidUsed = usedMid;
+            sLastMidCenterY = centerY;
+            XposedCompat.log(TAG + " [几何4] capsuleBottom"
+                    + " descBottom=" + sLastDescBottomY
+                    + " descStable=" + descStable
+                    + " sliderCy=" + sLastSliderCy
+                    + " sliderTop=" + sliderTop
+                    + " capsuleH=" + capsuleH
+                    + " centerY=" + centerY
+                    + " branch=" + (usedMid ? "SLIDER_TOP-25dp" : "LEGACY(gap)")
+                    + " density=" + sLockedDensity
+                    + (clamped ? " CLAMPED" : "")
+                    + " bottomMargin=" + bottomMargin
+                    + " calls=" + sCbCallCount);
+        }
+        // 安全钳制：别把按钮推到屏幕外（分屏 / 极矮屏 / 滑条贴顶）。
+        int minBottom = dip2px(ctx, 8);
+        int maxBottom = Math.max(minBottom, screenH - capsuleH - dip2px(ctx, 8));
+        if (bottomMargin < minBottom) {
+            bottomMargin = minBottom;
+        }
+        if (bottomMargin > maxBottom) {
+            bottomMargin = maxBottom;
+        }
+        return bottomMargin;
+    }
+
+    /**
+     * 【code 923 几何 3】按钮组**右缘**对齐主滑条**右缘**。
+     *
+     * 需求原话：「按钮距离屏幕右缘改为和进度条最右端距离屏幕右缘一致」。
+     * decor 是全屏宽，所以 {@code rightMargin = screenW - 滑条右缘x} 即可让两者
+     * 距屏右的距离**逐像素相等**。
+     *
+     * 取不到滑条（列表页 / 转场瞬间）时退回常量 {@link #BUTTON_RIGHT_DP} ——
+     * 与 {@link #capsuleBottomForSlider} 同一套「宁可不精确、不要跳」的取舍。
+     */
+    private static int capsuleRightForSlider(Context ctx, int screenW) {
+        if (screenW > 0 && sLastSliderRightPx > 0 && sLastSliderRightPx < screenW) {
+            int m = screenW - sLastSliderRightPx;
+            //  sanity：滑条右缘不可能贴着屏幕左边，超过 1/3 屏宽一定是量错了。
+            if (m >= 0 && m <= screenW / 3) {
+                return m;
+            }
+        }
+        return dip2px(ctx, BUTTON_RIGHT_DP);
+    }
+
+    /**
+     * 【code 927 问题 3】几何一变就重算按钮位置并落地 —— 与 showButton 调用时机**解耦**。
+     *
+     * 为什么必须独立（真机根因）：
+     *   位置重算原本只挂在 showButton/ensureButton 里，而 showButton 依赖的
+     *   `sLastSliderCy` 又是**同一轮 scan** 才更新的 ⇒ 自引用、永远差一拍：
+     *     ensureButton 时 sLastSliderCy=-1 → 落 286px 兜底位；
+     *     等 sLastSliderCy 变成 1799 时 showButton 已经不跑了 → 位置再也不纠正。
+     *
+     * 本方法由**几何更新点**直接调用：只要几何真的变了（快照比对），就把新位置
+     * 写进 LayoutParams —— 不管按钮当前可见与否（不可见时写位置也无害，
+     * 反而让下次 showButton 一露脸就在正确位置，顺带消掉「闪跳」）。
+     *
+     * @param force 忽略快照无条件重算（ensureButton 建好按钮、或几何首次到手时用）
+     */
+    private static void replaceCapsuleByGeometry(Activity activity, int screenW, int screenH,
+                                                 boolean force) {
+        if (activity == null || sButtonGroup == null || screenH <= 0) {
+            return;
+        }
+        if (sLastSliderCy <= 0) {
+            return;   // 几何还没到手：保持现状（兜底位），等下一次几何更新再来
+        }
+        if (!force
+                && sLastSliderCy == sPlacedGeoSliderCy
+                && sLastDescBottomY == sPlacedGeoDescBottom
+                && sLastSliderRightPx == sPlacedGeoSliderRight) {
+            return;   // 几何没变：不折腾（避免每帧 setLayoutParams 造成布局回环）
+        }
+        try {
+            int btnW = sButtonGroup.getWidth() > 0 ? sButtonGroup.getWidth()
+                    : dip2px(activity, CAPSULE_W_DP * 2 + CAPSULE_GAP_DP);
+            int wantRight = capsuleRightForSlider(activity, screenW);
+            if (wantRight + btnW > screenW) {
+                wantRight = Math.max(0, screenW - btnW - dip2px(activity, 8));
+            }
+            int bySlider = capsuleBottomForSlider(activity, screenH);
+            applyCapsuleHeight();
+            if (bySlider <= 0) {
+                return;
+            }
+            FrameLayout.LayoutParams lp =
+                    (FrameLayout.LayoutParams) sButtonGroup.getLayoutParams();
+            if (lp == null) {
+                return;
+            }
+            int oldRight = lp.rightMargin;
+            int oldBottom = lp.bottomMargin;
+            int oldG = lp.gravity;
+            sCapsuleFollowY = bySlider;
+            sCapsulePlacedByFallback = false;
+            sPlacedGeoSliderCy = sLastSliderCy;
+            sPlacedGeoDescBottom = sLastDescBottomY;
+            sPlacedGeoSliderRight = sLastSliderRightPx;
+            if (force || oldG != (Gravity.BOTTOM | Gravity.END) || oldRight != wantRight
+                    || Math.abs(oldBottom - bySlider) > CAPSULE_FOLLOW_DEADZONE_PX) {
+                lp.gravity = Gravity.BOTTOM | Gravity.END;
+                lp.leftMargin = 0;
+                lp.topMargin = 0;
+                lp.rightMargin = wantRight;
+                lp.bottomMargin = bySlider;
+                sButtonGroup.setLayoutParams(lp);
+                XposedCompat.log(TAG + " [几何6] capsule re-placed by geometry -> bottom="
+                        + bySlider + "px right=" + wantRight
+                        + "px (descBottom=" + sLastDescBottomY
+                        + " sliderCy=" + sLastSliderCy + " force=" + force + ")");
+            }
+        } catch (Throwable t) {
+            XposedCompat.log(TAG + " replaceCapsuleByGeometry failed: " + t);
+        }
+    }
+
     private static void showButton(Activity activity, SubtitleRepository repo,
                                    int screenW, int screenH) {
-        int btnW = sButton.getWidth() > 0 ? sButton.getWidth() : dip2px(activity, BUTTON_W_DP);
-        int btnH = sButton.getHeight() > 0 ? sButton.getHeight() : dip2px(activity, BUTTON_H_DP);
+        int btnW = sButtonGroup.getWidth() > 0 ? sButtonGroup.getWidth()
+                : dip2px(activity, CAPSULE_W_DP * 2 + CAPSULE_GAP_DP);
+        int btnH = sButtonGroup.getHeight() > 0 ? sButtonGroup.getHeight()
+                : dip2px(activity, CAPSULE_H_DP);
 
-        // ── 位置：常量，右下角（v32 起恢复为唯一口径）──
-        // ⚠️ 这里曾在 v31 改成「按主滑条几何实时推导」。已撤销，原因见类头 v32 段：
-        //    播放页可滚动 → 主滑条位置本身是变量 → 按钮被拖着满屏跳 + 触发布局回环。
-        //    位置一旦是常量，下面那句守卫就只在首次摆位时成立，之后零 setLayoutParams。
-        int wantRight = dip2px(activity, BUTTON_RIGHT_DP);
+        // ── 【v57】位置：主滑条上方靠右（需求）──
+        // 类头 v32「位置必须是常量」的结论在**新位置**下不再适用：新位置本身就绑在
+        // 滑条上，位置必然随滑条变。防布局回环的手段改为**迟滞 + 只在真变化时写**，
+        // 而不是「位置写死」—— 见 patch 头部两层设计说明。
+        // 【code 923 几何 3】与 ensureButton 同口径：右缘对齐滑条最右端。
+        int wantRight = capsuleRightForSlider(activity, screenW);
         // 安全钳制：极窄 / 极矮屏（分屏、平板、异常 density）下别把按钮顶出可视区。
-        // 正常机型上这两个分支都不会命中，不改变既定位置。
         if (wantRight + btnW > screenW) {
             wantRight = Math.max(0, screenW - btnW - dip2px(activity, 8));
         }
-        int wantBottom = dip2px(activity, BUTTON_BOTTOM_DP);
+        // 【v57】底边由滑条推导；取不到滑条时先用上次值，再不行退回 v32 的常量安全位。
+        int bySlider = capsuleBottomForSlider(activity, screenH);
+        applyCapsuleHeight();
+        if (bySlider > 0) {
+            sCapsuleFollowY = bySlider;
+        }
+        int wantBottom = sCapsuleFollowY > 0 ? sCapsuleFollowY : dip2px(activity, BUTTON_BOTTOM_DP);
         if (wantBottom + btnH > screenH) {
             wantBottom = Math.max(0, screenH - btnH - dip2px(activity, 8));
         }
 
-        FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) sButton.getLayoutParams();
+        FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) sButtonGroup.getLayoutParams();
         int wantGravity = Gravity.BOTTOM | Gravity.END;
         // 只在真的变化时才 setLayoutParams —— setLayoutParams 必然 requestLayout，
         // 在 onGlobalLayout 里无条件调用会形成永不停止的布局回环（卡顿主因）。
+        // 【v57】滑条位置在页面滚动时变化（实测 y 在 1799~2243 摆），所以这里必然比
+        //        旧版更频繁地命中。用**迟滞阈值**兜住逐帧微抖（1.21.10 的教训：
+        //        逐帧动画会灌爆「相等才跳过」的缓存）。
         if (lp.gravity != wantGravity
                 || lp.leftMargin != 0
                 || lp.topMargin != 0
                 || lp.rightMargin != wantRight
-                || lp.bottomMargin != wantBottom) {
+                || Math.abs(lp.bottomMargin - wantBottom) > CAPSULE_FOLLOW_DEADZONE_PX) {
             lp.gravity = wantGravity;
             lp.leftMargin = 0;
             lp.topMargin = 0;
             lp.rightMargin = wantRight;
             lp.bottomMargin = wantBottom;
-            sButton.setLayoutParams(lp);
+            sButtonGroup.setLayoutParams(lp);
         }
 
-        if (sButton.getVisibility() != View.VISIBLE) {
+        if (sButtonGroup.getVisibility() != View.VISIBLE) {
             // v39：**先把位移同步到「页面当前被拖开的量」，再显示**。
             // hideButton() 会 stopPageFollow(true) → 位移清零。若不同步就显示，
             // 按钮会先在静止位露脸、几十毫秒后再跳到几百 px 外 ——
             // 实测 23:34:07 显示后 62ms 才补上 448px、23:35:33 显示后 62ms 补 345px，
             // 那一瞬间就是用户看到的「位移闪跳」。
             syncFollowOffsetOnShow();
-            sButton.setVisibility(View.VISIBLE);
+            sButtonGroup.setVisibility(View.VISIBLE);
             updateButtonText(repo);
-            XposedBridge.log(TAG + " button shown (player page)" + latencySuffix());
+            XposedCompat.log(TAG + " button shown (player page)" + latencySuffix());
             // 循环在 setVisibility 之前会被 maybeStartPageFollow 的可见性检查挡掉，
             // 所以放在后面：按钮一露脸就跟帧，不留空窗。
             maybeStartPageFollow();
@@ -2424,6 +3460,7 @@ public class ActivityButtonHook {
         if (Looper.myLooper() != Looper.getMainLooper()) {
             return;
         }
+        ensureHostBias(); // 【code 923 bug1】先把可能被清掉的宿主偏置补回来
         if (!sVisualSeen || sVisualBias == FOLLOW_NO_BASELINE) {
             return; // 通道还没被证实可用 —— 保持 0，别拿没校准过的读数去挪
         }
@@ -2452,27 +3489,72 @@ public class ActivityButtonHook {
         // v35：离开播放页 → 跟随状态必须整体复位（位移清零 + 基线作废），
         // 否则下次回到播放页时会带着上一页的位移量出现。
         stopPageFollow(true);
-        if (sButton.getVisibility() != View.GONE) {
-            sButton.setVisibility(View.GONE);
-            XposedBridge.log(TAG + " button hidden (" + reason + ")" + latencySuffix());
+        if (sButtonGroup != null && sButtonGroup.getVisibility() != View.GONE) {
+            sButtonGroup.setVisibility(View.GONE);
+            XposedCompat.log(TAG + " capsule group hidden (" + reason + ")" + latencySuffix());
         }
     }
 
-    private static TextView createButton(Context ctx, SubtitleRepository repo) {
-        TextView tv = new TextView(ctx);
-        tv.setId(BUTTON_ID);
-        tv.setTextSize(12);
-        tv.setTextColor(0xFFFFFFFF);
-        tv.setGravity(Gravity.CENTER);
-        tv.setPadding(dip2px(ctx, 8), 0, dip2px(ctx, 8), 0);
-        tv.setTypeface(null, Typeface.BOLD);
-        tv.setClickable(true);
-        tv.setFocusable(true);
-        tv.setBackground(createButtonDrawable(false));
+    /**
+     * 【v57】创建**胶囊按钮组**：一个横向 LinearLayout 包着两个独立胶囊。
+     *
+     * 与旧 createButton 的差别：
+     *   · 返回的是容器（旧版返回单个 TextView）；
+     *   · 两个按钮**各自点击**，没有长按（需求：「均通过点击触发」「取消长按」）；
+     *   · 圆角从 8px 圆角矩形改成 h/2 全圆角（MD3 胶囊的形态特征）；
+     *   · 容器 id 用 BUTTON_ID，两个子按钮各用独立 id 便于 findViewById 找到。
+     *
+     * 返回值即容器；{@link #sButton}（悬浮窗钮）与 {@link #sStatusBarButton}（状态栏钮）
+     * 由本方法内部赋值，调用方无需自己去捞。
+     */
+    private static LinearLayout createButtonGroup(Context ctx, SubtitleRepository repo) {
+        LinearLayout group = new LinearLayout(ctx);
+        sDensityPx = stableDensity(ctx); // 【code 939】走锁定值，避免转场伪 density
+        group.setId(BUTTON_ID);
+        group.setOrientation(LinearLayout.HORIZONTAL);
+        group.setGravity(Gravity.CENTER_VERTICAL);
+        // 容器不设背景、不设 padding —— 视觉全交给两个胶囊自己。
+        // ⚠️ 容器必须 clickable=false + 不拦截触摸，否则两个子按钮收不到事件。
+        group.setClickable(false);
 
-        tv.setOnClickListener(v -> {
-            if (!repo.hasSubtitles()) {
-                XposedBridge.log(TAG + " no subtitles available");
+        // ── 左：状态栏字幕 ──
+        sStatusBarButton = createCapsule(ctx, CAPSULE_ID_STATUSBAR);
+        // 【code 932 bug2】恢复单击开关（931 改双击是理解错了 Ari 的反馈，她明确要求
+        // 浮窗按钮保持单击；「双击关」只属于旧的状态栏字幕行交互，而那功能 932 也整体移除了）。
+        sStatusBarButton.setOnClickListener(v -> {
+            // 【v57】点击直接翻转状态栏字幕开关（旧版是长按 1s，现已取消）。
+            // ⚠️ 无字幕时本按钮已被 GONE，正常点不到；这里再做一次防御性判空，
+            //    防止「GONE 的瞬间正好有一次点击落在上面」。
+            if (!StatusBarSubtitleBridge.canToggle(repo)) {
+                XposedCompat.log(TAG + " statusbar toggle ignored: no subtitles");
+                return;
+            }
+            boolean on = StatusBarSubtitleBridge.toggleAppEnabled(ctx);
+            StatusBarSubtitleBridge.resendCurrentFromRepo(ctx, repo); // 翻转后立即重推，状态栏即时刷新
+            XposedCompat.log(TAG + " status bar subtitle " + (on ? "ON" : "OFF") + " (click)");
+            // toggleAppEnabled 内部会 notifyEnabledChanged() -> 已注册的监听会刷新按钮，
+            // 这里再主动落一次笔作为冗余保险（与旧版长按路径一致的做法）。
+            uiHandler.post(() -> applyButtonText(repo, true));
+        });
+
+        LinearLayout.LayoutParams lpStatus = new LinearLayout.LayoutParams(
+                dip2px(ctx, CAPSULE_W_DP), dip2px(ctx, CAPSULE_H_DP));
+        lpStatus.rightMargin = dip2px(ctx, CAPSULE_GAP_DP);
+        group.addView(sStatusBarButton, lpStatus);
+
+        // ── 右：悬浮窗字幕（沿用 sButton，让既有 57 处引用不改语义）──
+        sButton = createCapsule(ctx, CAPSULE_ID_FLOATING);
+        sButton.setOnClickListener(v -> {
+            // 【1.21.16 问题 1】口径统一到 shouldShowNoSubtitles()：它同时覆盖
+            // 「真没 cues」「换轨待确认」「软裁决（cues 还在但本音轨没等到 JSON）」。
+            // 旧写法只看 hasSubtitles()（= cues 非空），软裁决下会**放行**一次
+            // 毫无意义的 toggle —— 而硬裁决下 cues 被清，又变成静默吞点击，
+            // 用户只能看到按钮死了却不知道为什么。
+            if (repo.shouldShowNoSubtitles()) {
+                XposedCompat.log(TAG + " no subtitles available"
+                        + " (softNoSub=" + repo.isSoftNoSubtitles()
+                        + ", suspended=" + repo.isSuspended()
+                        + ", hasCues=" + repo.hasSubtitles() + ")");
                 return;
             }
             // 注意：这里不再用 Settings.canDrawOverlays() 拦截。
@@ -2482,57 +3564,355 @@ public class ActivityButtonHook {
             repo.toggleFloatingWindow();
             updateButtonDrawable(repo);
         });
+
+        LinearLayout.LayoutParams lpFloat = new LinearLayout.LayoutParams(
+                dip2px(ctx, CAPSULE_W_DP), dip2px(ctx, CAPSULE_H_DP));
+        group.addView(sButton, lpFloat);
+
+        // 【v57】长按逻辑整体删除 —— 需求确认「取消长按，只保留点击」。
+        // 旧版这里是 tv.setOnTouchListener + 1s postDelayed，两个副作用：
+        //   ① 长按会被系统当作「长按」而产生触感反馈，与新交互无关；
+        //   ② sLongPressFired 需要在 ACTION_UP 里回吞 click，状态机容易在
+        //      ACTION_CANCEL（手指滑出）时留下脏值。删掉后两个问题一起消失。
+        return group;
+    }
+
+    /**
+     * 【v57】创建一个胶囊按钮（MD3 filled button 的胶囊形态）。
+     *
+     * 关键视觉属性（与设计稿逐项对应）：
+     *   · 底色由「开/关」决定：{@link #CAPSULE_BG_OFF}（#212042）/ {@link #CAPSULE_BG_ON}（#584179）；
+     *   · **全圆角** = 高/2 —— 这是胶囊与「圆角矩形」的分界，旧版 8px 圆角必须换掉；
+     *   · 无描边（旧版有 1px 半透明白描边，新设计是纯填充，去掉更贴近 MD3 filled）；
+     *   · 文字 13sp / 白色 / 居中 / **强制粗体**。
+     *     【code 922 问题 4】这里原先按 MD3 filled button 的规范写「不假粗体」，
+     *     但实机 13sp 在 90dp 宽的胶囊里笔画偏细、小字号下辨识度不足，
+     *     需求明确要求强制粗体 -> 改用 {@code Typeface.DEFAULT_BOLD}。
+     */
+    /**
+     * 【v57】从容器里把两个胶囊的引用捞回来（幂等）。
+     *
+     * 调用点：{@link #ensureButton}（容器已在树上时的复用分支）。
+     * 为什么必须做：见调用点注释 —— 不捞就会拿到 null 或悬空引用，
+     * 且**症状是静默的**（按钮不更新、无异常）。静默失败是最难查的一类。
+     */
+    private static void syncCapsuleRefsFromGroup() {
+        if (sButtonGroup == null) {
+            return;
+        }
+        if (sButton == null) {
+            sButton = sButtonGroup.findViewById(CAPSULE_ID_FLOATING);
+        }
+        if (sStatusBarButton == null) {
+            sStatusBarButton = sButtonGroup.findViewById(CAPSULE_ID_STATUSBAR);
+        }
+    }
+
+    private static TextView createCapsule(Context ctx, int id) {
+        TextView tv = new TextView(ctx);
+        tv.setId(id);
+        tv.setTextSize(CAPSULE_TEXT_SP);
+        tv.setTextColor(0xFFFFFFFF);
+        tv.setGravity(Gravity.CENTER);
+        // 【code 922 问题 4】需求「按钮内文字强制使用粗体显示」——
+        // NORMAL -> BOLD。用 DEFAULT_BOLD 而不是 (null, BOLD)：前者不依赖当前 typeface
+        // 的样式位，且**不会被任何后续 setTypeface(null, ...) 覆盖掉粗体位**
+        // （更新按钮文字的各条路径都只 setText，不碰 typeface）。
+        tv.setTypeface(Typeface.DEFAULT_BOLD);
+        tv.setClickable(true);
+        tv.setFocusable(true);
+        // 保证最小可点区域符合无障碍建议（48dp 高不满足时靠 touch delegate 会复杂，
+        // 这里 35dp 高度 + 90dp 宽度，实际可点面积足够，不再额外处理）。
+        tv.setBackground(createCapsuleDrawable(false));
         return tv;
     }
 
-    private static GradientDrawable createButtonDrawable(boolean active) {
+    /**
+     * 【1.21.13 问题 2】按钮底色的**唯一**口径。
+     *
+     * 之前底色与文字各算各的（底色直接读 {@link StatusBarSubtitleBridge#sAppEnabled}，
+     * 文字读仓库），才留下「文字已变成无字幕、底色还是绿色」的错位。
+     * 现在文字、alpha、底色三者同出一源：{@link #applyButtonText} 用本函数算 bgMode，
+     * {@link #updateButtonDrawable} 也用它 —— 谁都不可能再算歪。
+     *
+     * ── v54（1.21.14 问题 1）：绿色还要**看当下有没有字幕** ──
+     *
+     * 1.21.13 把「谁会重画」修好了，但绿色**什么时候**消失还挂在开关真源上：
+     * 文字走 {@code noSub}（含 {@link #BUTTON_NO_SUB_DELAY_MS} 预压缩）→ ~0.5s 变「无字幕」；
+     * 绿色却要等 {@code NO_SUBTITLE_GRACE_MS}(3000ms) 裁决完、{@code forceDisabledWhenNoSubtitles()}
+     * 把 {@code sAppEnabled} 翻成 false 才没（日志实证 16:09:24.662 换轨 SUSPEND →
+     * 16:09:27.664 裁决 = 3002ms）。同一块按钮上两条口径差 2.5s ——
+     * 用户看到的就是「字很及时、色慢三秒」。
+     *
+     * 当时只调了**显示**口径：没有字幕可显示时，不管开关开没开都不算绿；
+     * 而 {@code sAppEnabled} 的持久状态照旧等 3000ms 数据裁决 —— 两条线互不干扰。
+     *
+     * ── v56（1.21.15 问题 1）：force-off 整个删掉，底色口径只剩一条 ──
+     *
+     * 1.21.14 保留 force-off，等于承认「开关会被数据裁决改写」。可那条路径本身就是
+     * 问题 1 的根因：切轨时把用户长按开的开关自己关掉，且无法自动恢复。
+     * 现在 {@code sAppEnabled} 是**纯用户意图**（只由长按翻转），本函数不必再跟任何
+     * 别的口径争时间：没字幕可显示就不算绿，有字幕且用户开着就绿 —— 只看「当下有没有内容」。
+     */
+    private static boolean statusBarButtonOn(SubtitleRepository repo, boolean noSub) {
+        // 无字幕时状态栏钮本来就不显示，这里返回 false 只是为了让签名稳定
+        // （避免「不可见但仍参与签名」的钮在无字幕期间还随开关抖动）。
+        return !noSub && StatusBarSubtitleBridge.sAppEnabled;
+    }
+
+    /**
+     * 【v57】悬浮窗钮是否呈「开」态。
+     *
+     * ⚠️ 无字幕时需求是「悬浮窗字幕按键显示无字幕」—— 它的**文字**变成「无字幕」，
+     *    底色按关态处理（设计稿的「无字幕状态」就是一个深色胶囊）。
+     *    所以这里 `!noSub` 的约束保留：无字幕 → 不算开。
+     */
+    private static boolean floatingButtonOn(SubtitleRepository repo, boolean noSub) {
+        return !noSub && repo.isFloatingWindowOpen();
+    }
+
+    /**
+     * 【v57】胶囊 drawable —— MD3 filled button 的胶囊形态。
+     *
+     * 与旧 {@code createButtonDrawable} 的三处差异（都是设计稿要求的明显变化）：
+     *   ① 圆角：{@code setCornerRadius(8)} → {@code setCornerRadius(h/2)}（全圆角 = 胶囊）；
+     *   ② 描边：旧版有 1px 半透明白描边 → 新版**去掉**（设计稿是纯填充）；
+     *   ③ 配色：旧版三色（黑/紫/绿）→ 新版两色（#212042 关 / #584179 开）。
+     *      ⚠️ 绿色 #1EB980 彻底废弃 —— 新设计里「开着」统一是紫色，
+     *      状态栏与悬浮窗不再靠颜色区分（靠**左右位置**和**文字**区分）。
+     *
+     * @param on true = 开态（紫），false = 关态（深紫黑）
+     */
+    private static GradientDrawable createCapsuleDrawable(boolean on) {
         GradientDrawable drawable = new GradientDrawable();
         drawable.setShape(GradientDrawable.RECTANGLE);
-        drawable.setColor(active ? BUTTON_BG_ACTIVE : BUTTON_BG_NORMAL);
-        drawable.setCornerRadius(8);
-        drawable.setStroke(1, 0x80FFFFFF);
+        drawable.setColor(on ? CAPSULE_BG_ON : CAPSULE_BG_OFF);
+        // 【code 923 几何 2】圆角改为**固定 15dp**。
+        // 旧写法 999f 靠「超出部分自动钳到 h/2」实现全圆角 —— 圆角会**跟着高度变**
+        // （35dp 高 → 17.5dp；改到 30dp 高就悄悄变 15dp）。现在规格明确是 15dp，写死。
+        // density 由 dip2px / createButtonGroup 维护进 sDensityPx（本函数没有 Context 参数）。
+        float d = sDensityPx > 0f ? sDensityPx : 3f;
+        drawable.setCornerRadius(CAPSULE_RADIUS_DP * d);
         return drawable;
     }
 
+    /**
+     * 按钮文字/底色的更新入口（仓库观察者回调，可能来自任意线程 -> 一律切到主线程落笔）。
+     */
     private static void updateButtonText(SubtitleRepository repo) {
-        if (sButton == null) {
+        if (sButtonGroup == null) {
             return;
         }
-        final String text;
-        final float alpha;
-        if (!repo.hasSubtitles()) {
-            text = "无字幕";
-            alpha = 0.6f;
-        } else if (repo.isFloatingWindowOpen()) {
-            text = "悬浮开";
-            alpha = 1.0f;
-        } else {
-            text = "悬浮关";
-            alpha = 1.0f;
-        }
-        if (text.equals(sLastBtnText) && sButton.getAlpha() == alpha) {
-            return; // 没变化就不折腾（避免每次通知都重建 drawable / 触发重绘）
-        }
-        sLastBtnText = text;
-        uiHandler.post(() -> {
-            if (sButton == null) {
-                return;
-            }
-            sButton.setText(text);
-            sButton.setAlpha(alpha);
-            updateButtonDrawable(repo);
-        });
+        uiHandler.post(() -> applyButtonText(repo, true));
     }
 
+    /**
+     * 真正的落笔。**只在主线程调用**。
+     *
+     * ── v53（1.21.12 问题 2）：修「切到无字幕要等 3 秒」──
+     *
+     * 原来这里只看 {@link SubtitleRepository#hasSubtitles()}，而它在换轨待确认窗口
+     * （`NO_SUBTITLE_GRACE_MS` = 3000ms）里照样返回 true（cues 还没清）→ 按钮一直显示
+     * 「悬浮开」，直到 3 秒裁决完才变「无字幕」。而**同一时刻**悬浮窗面板和状态栏字幕
+     * 早就按「无字幕」显示了（它们读 `getCues()/getCurrentSubtitles()`，pending 时返回空）
+     * —— 只有按钮在自说自话。这是三处 UI 不一致，不是「防闪烁」。
+     *
+     * 现在：`isSuspended()`（= 换轨待确认）也算「无字幕」，但**压一个短延时**
+     * {@link #BUTTON_NO_SUB_DELAY_MS} 再表态 —— 实测新音轨的字幕 JSON 115~345ms 就到，
+     * 等这一小段就能让「其实有字幕」的音轨全程不闪，而真没字幕的音轨 ~0.5s 就变。
+     *
+     * @param allowDelay 允许为「切进无字幕」排队一个短延时。延时到点后的重入**必须**传 false，
+     *                   否则会自己给自己再排一次、永远落不了笔。
+     */
+    private static void applyButtonText(SubtitleRepository repo, boolean allowDelay) {
+        if (sButtonGroup == null || sButton == null) {
+            return;
+        }
+        final boolean noSub = repo.shouldShowNoSubtitles();
+
+        // ── 【v57】两个按钮各自的文字 / 底色 / 可见性 ──
+        //   悬浮窗钮：始终显示，文字在「悬浮窗 开 / 悬浮窗 关 / 无字幕」三态间切换。
+        //   状态栏钮：无字幕时**整个消失**（需求原话「状态栏字幕按键消失」）。
+        final String floatText;
+        if (noSub) {
+            floatText = "无字幕";
+        } else if (repo.isFloatingWindowOpen()) {
+            floatText = "悬浮窗 开";
+        } else {
+            floatText = "悬浮窗 关";
+        }
+        final boolean floatOn = floatingButtonOn(repo, noSub);
+        final String statusText = StatusBarSubtitleBridge.sAppEnabled ? "状态栏 开" : "状态栏 关";
+        final boolean statusOn = statusBarButtonOn(repo, noSub);
+        final boolean statusVisible = !noSub;
+
+        // 签名 = 全部视觉属性（两钮的文字/底色 + 状态栏钮的可见性 + 悬浮窗钮的 alpha）。
+        // 【1.21.13/1.21.14 的教训】判等必须覆盖该控件的**全部**输入，漏任何一项
+        // 都会留下「文字变了底色没变」这类错位。合成一个串最不容易漏。
+        final float alpha = noSub ? 0.6f : 1.0f;
+        final String sig = floatText + '\u0000' + floatOn + '\u0000'
+                + statusText + '\u0000' + statusOn + '\u0000' + statusVisible
+                + '\u0000' + alpha;
+        if (sig.equals(sLastBtnSig)) {
+            sBtnNoSubPending = false;
+            sBtnNoSubGen++;                    // 状态已经一致 -> 作废排队中的延时切换
+            return;                            // 没变化就不折腾（避免每次通知都重建 drawable / 触发重绘）
+        }
+        if (allowDelay && noSub && sLastBtnSig != null && sLastBtnSig.indexOf("无字幕") < 0) {
+            if (sBtnNoSubPending) {
+                return;                        // 已经在等，别重复排队
+            }
+            sBtnNoSubPending = true;
+            final int gen = ++sBtnNoSubGen;
+            uiHandler.postDelayed(() -> {
+                if (gen != sBtnNoSubGen) {
+                    return;                    // 期间状态又变了（比如字幕 JSON 到了）-> 本次排队作废
+                }
+                sBtnNoSubPending = false;
+                applyButtonText(repo, false);  // 重新按最新状态落笔
+            }, BUTTON_NO_SUB_DELAY_MS);
+            return;
+        }
+        sBtnNoSubPending = false;
+        sBtnNoSubGen++;                        // 其它任何转换立即生效，并作废排队中的切换
+        // 【1.21.14 问题 1】状态变化留痕：出问题时能直接用「换轨 SUSPEND ->
+        // capsule state」两行的时间差对出「显示口径到底跟没跟上文字」。
+        // 【v57】留痕内容从「单个 bgMode」扩成「两个按钮各自的文字 + 底色 + 可见性」，
+        //        因为现在有两个独立控件，只记一个再也说明不了问题。
+        XposedCompat.log(TAG + " capsule state: float=" + floatText
+                + "/" + (floatOn ? "on" : "off")
+                + " status=" + statusText + "/" + (statusOn ? "on" : "off")
+                + (statusVisible ? "/visible" : "/gone")
+                + " (noSub=" + noSub + ", statusBarOn="
+                + StatusBarSubtitleBridge.sAppEnabled + ")");
+        sLastBtnSig = sig;
+
+        // ── 悬浮窗钮（右）──
+        sButton.setText(floatText);
+        sButton.setAlpha(alpha);
+        sButton.setBackground(createCapsuleDrawable(floatOn));
+
+        // ── 状态栏钮（左）──
+        // 【v57】无字幕时**整个消失**（需求原话「状态栏字幕按键消失」）。
+        // 用 GONE 而不是 INVISIBLE：GONE 会把宽度也让出去，剩下的悬浮窗钮会
+        // 自动贴到容器右端（因为 LinearLayout 是 wrap_content + 外层靠右对齐），
+        // 视觉上不会留下一个空洞。
+        if (sStatusBarButton != null) {
+            sStatusBarButton.setText(statusText);
+            sStatusBarButton.setBackground(createCapsuleDrawable(statusOn));
+            int want = statusVisible ? View.VISIBLE : View.GONE;
+            if (sStatusBarButton.getVisibility() != want) {
+                sStatusBarButton.setVisibility(want);
+            }
+        }
+        // 【1.21.15 问题 1】这里原本还会调 StatusBarSubtitleBridge
+        // .forceDisabledWhenNoSubtitles()，把「无字幕」升级成「把用户的开关关掉」。已删除 ——
+        // 无字幕这件事只该影响**显示**（文字 + 底色，上面几行已经落笔），不该改写用户意图。
+        // 【1.21.16 问题 1】底色必须与文字**同一次判定**共用 noSub：
+        // 旧版底下那个 updateButtonDrawable 会**自己重算**一次 noSub，而文字那条路径
+        // 受 allowDelay 约束、要压 BUTTON_NO_SUB_DELAY_MS 才落笔 —— 于是底色先跑：
+        // 日志实测 11:32:37.793 SUSPEND → 11:32:38.296 底色就变暗（503ms），
+        // 而真正的裁决在 11:32:47.794（10s 后）。底色比事实早了 9.5 秒。
+        updateButtonDrawable(repo, noSub);
+    }
+
+    /** 便捷重载：调用方没算 noSub 时，按当前状态自取一次。 */
     private static void updateButtonDrawable(SubtitleRepository repo) {
+        updateButtonDrawable(repo, repo.shouldShowNoSubtitles());
+    }
+
+    /**
+     * 【v57】只重画两个胶囊的**底色与可见性**（不动文字）。
+     *
+     * 保留这个函数是因为状态栏开关的监听链路（{@code setEnabledListener}）只需要
+     * 「开关变了 → 底色跟着变」，跟文字无关。走 {@link #applyButtonText} 会走一遍
+     * 全套判等与延时逻辑，在「开关变了但文字没变」的场景下反而绕。
+     *
+     * ⚠️ 两处口径必须与 {@link #applyButtonText} 完全一致 —— 同一个事实（开关状态）
+     *    被两条路径读取时，最容易出的就是「文字这条更新了、底色那条没更新」
+     *    或者反过来（1.21.12 问题 2 就是这么来的）。所以这里**复用**同样的
+     *    {@link #floatingButtonOn} / {@link #statusBarButtonOn}，不另算一套。
+     *
+     * @param noSub 与本轮文字**同一次**判定得到的口径，保证文字与底色同粒度。
+     */
+    private static void updateButtonDrawable(SubtitleRepository repo, boolean noSub) {
         if (sButton == null) {
             return;
         }
-        boolean active = repo.hasSubtitles() && repo.isFloatingWindowOpen();
-        sButton.setBackground(createButtonDrawable(active));
+        sButton.setBackground(createCapsuleDrawable(floatingButtonOn(repo, noSub)));
+        if (sStatusBarButton != null) {
+            sStatusBarButton.setBackground(createCapsuleDrawable(statusBarButtonOn(repo, noSub)));
+            int want = noSub ? View.GONE : View.VISIBLE;
+            if (sStatusBarButton.getVisibility() != want) {
+                sStatusBarButton.setVisibility(want);
+            }
+        }
+        // 注意：这里**不**写 sLastBtnSig —— 签名由 applyButtonText 统一维护。
+        // 若在这里改签名，applyButtonText 的判等就会被绕乱（它以为已经落过笔了）。
+    }
+
+    /**
+     * 【code 939 bug2】取一个**不会抖**的 density —— 见 {@link #sLockedDensity} 的长注释。
+     * 读数与锁定值不一致且像素尺寸没变时，一律沿用锁定值（转场伪值）。
+     */
+    private static float stableDensity(Context ctx) {
+        float d = 0f;
+        int pxKey = 0;
+        try {
+            DisplayMetrics dm = ctx.getResources().getDisplayMetrics();
+            d = dm.density;
+            pxKey = dm.widthPixels * 31 + dm.heightPixels;
+        } catch (Throwable t) {
+            return sLockedDensity > 0f ? sLockedDensity : 3f;
+        }
+        if (d <= 0f) {
+            return sLockedDensity > 0f ? sLockedDensity : 3f;
+        }
+        // 首次锁定 / 像素屏幕尺寸真的变了（旋转、分屏、换屏）
+        if (sLockedDensity <= 0f || pxKey != sLockedPxKey) {
+            if (sLockedDensity > 0f && Math.abs(d - sLockedDensity) > 0.0001f) {
+                XposedCompat.log(TAG + " density re-locked (screen changed): "
+                        + sLockedDensity + " -> " + d + " pxKey=" + pxKey);
+            }
+            sLockedDensity = d;
+            sLockedPxKey = pxKey;
+            sDensityDiffSinceMs = 0L;
+            sDensityDiffCount = 0;
+            return d;
+        }
+        if (Math.abs(d - sLockedDensity) <= 0.0001f) {
+            sDensityDiffSinceMs = 0L;
+            sDensityDiffCount = 0;
+            return sLockedDensity;
+        }
+        // 像素尺寸没变但 density 变了 —— 真机实证这是「打开播放页转场瞬间」的伪值
+        long now = SystemClock.uptimeMillis();
+        if (sDensityDiffSinceMs == 0L) {
+            sDensityDiffSinceMs = now;
+        }
+        sDensityDiffCount++;
+        if (now - sDensityDiffSinceMs >= DENSITY_RELOCK_MS
+                && sDensityDiffCount >= DENSITY_RELOCK_SAMPLES) {
+            XposedCompat.log(TAG + " density re-locked (sustained diff): "
+                    + sLockedDensity + " -> " + d + " samples=" + sDensityDiffCount
+                    + " overMs=" + (now - sDensityDiffSinceMs));
+            sLockedDensity = d;
+            sDensityDiffSinceMs = 0L;
+            sDensityDiffCount = 0;
+            return d;
+        }
+        if (sDensityDiffCount == 1) {
+            XposedCompat.log(TAG + " density spike ignored: read=" + d
+                    + " locked=" + sLockedDensity + " pxKey=" + pxKey);
+        }
+        return sLockedDensity;
     }
 
     private static int dip2px(Context ctx, float dp) {
-        return (int) (dp * ctx.getResources().getDisplayMetrics().density + 0.5f);
+        float d = stableDensity(ctx);
+        if (d > 0f) {
+            sDensityPx = d; // 【code 923】顺手维护，createCapsuleDrawable 算圆角要用
+        }
+        return (int) (dp * d + 0.5f);
     }
 }

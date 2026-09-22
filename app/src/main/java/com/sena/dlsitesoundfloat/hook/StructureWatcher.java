@@ -3,9 +3,11 @@ package com.sena.dlsitesoundfloat.hook;
 import android.view.View;
 import android.view.ViewGroup;
 
-import de.robv.android.xposed.XC_MethodHook;
-import de.robv.android.xposed.XposedBridge;
-import de.robv.android.xposed.XposedHelpers;
+import com.sena.dlsitesoundfloat.util.XposedCompat;
+
+import java.lang.reflect.Method;
+
+import io.github.libxposed.api.XposedInterface;
 
 /**
  * 宿主视图树「结构事件」监听（v34 新增）—— 让开关按钮的显隐做到准零延迟。
@@ -64,7 +66,7 @@ public class StructureWatcher {
         hookView("setTranslationY", float.class);
         hookView("setAlpha", float.class);
 
-        XposedBridge.log(TAG + " structure watcher ready (" + sHookedCount + " hooks)"
+        XposedCompat.log(TAG + " structure watcher ready (" + sHookedCount + " hooks)"
                 + " -> instant scan on host view-tree changes");
     }
 
@@ -79,24 +81,22 @@ public class StructureWatcher {
     private static void hookOn(Class<?> owner, final String method, final String reason,
                                Class<?>... params) {
         try {
-            XC_MethodHook callback = new XC_MethodHook() {
+            // 迁移对照：旧 findAndHookMethod(owner, method, 参数类型…, 回调) 的 varargs 约定
+            // （回调放最后）在新 API 里不再需要 —— hook(Executable) 直接吃一个已解析的 Method。
+            Method m = XposedCompat.findMethodExact(owner, method, params);
+            XposedCompat.hookMethod(m, new XposedCompat.VoidHook() {
                 @Override
-                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                protected void afterVoid(XposedInterface.Chain chain) {
                     try {
                         ActivityButtonHook.pokeStructureChanged(reason);
                     } catch (Throwable ignored) {
                         // 钩子体绝不能把异常抛回宿主
                     }
                 }
-            };
-            // findAndHookMethod 的 varargs 约定：参数类型… + **回调放最后**。
-            Object[] typesAndCallback = new Object[params.length + 1];
-            System.arraycopy(params, 0, typesAndCallback, 0, params.length);
-            typesAndCallback[params.length] = callback;
-            XposedHelpers.findAndHookMethod(owner, method, typesAndCallback);
+            });
             sHookedCount++;
         } catch (Throwable e) {
-            XposedBridge.log(TAG + " hook " + owner.getSimpleName() + "." + method
+            XposedCompat.log(TAG + " hook " + owner.getSimpleName() + "." + method
                     + " failed: " + e.getMessage());
         }
     }
