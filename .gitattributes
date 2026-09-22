@@ -17,5 +17,9 @@ gradlew text eol=lf
 #   会让「验证 LICENSE 是否被篡改」这类 sha256 比对平白多出一个变量，故钉死。
 LICENSE text eol=lf
 
+# 本文件自身也钉 LF：不然 core.autocrlf=true 会在下次 checkout 时把它变成 CRLF，
+#   于是「管行尾的文件自己行尾不受管」—— 虽不影响功能（attr 解析器会剥尾随 \r），但会一直报警告
+.gitattributes text eol=lf
+
 # Windows 批处理必须保持 CRLF
 *.bat text eol=crlf
