@@ -1,3 +1,21 @@
+/*
+ * DLsiteSound Floating Subtitle - Xposed module for DLsite Sound
+ * Copyright (C) 2026 ariinyume
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * This program is free software: you can redistribute it and/or modify it under
+ * the terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ * FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program. If not, see <https://www.gnu.org/licenses/>.
+ */
 package com.sena.dlsitesoundfloat.view;
 
 import android.animation.ValueAnimator;
@@ -7,6 +25,8 @@ import android.graphics.RenderEffect;
 import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.text.TextUtils;
 import android.util.TypedValue;
 import android.view.Gravity;
@@ -104,6 +124,15 @@ import com.sena.dlsitesoundfloat.util.XposedCompat;
  *   现在滚动量一次写死、动画只走「上一句块中心 → 这一句块中心」的几何距离
  *   （写在 container 的 translationY 上），并且这一整套在**绘制前**（pre-draw）
  *   装好，保证第一帧的起点与上一帧画面严丝合缝。
+ *
+ * v41（code 944）：✕ 的生命周期由「点一下显示 / 再点一下隐藏」改成
+ *   「点一下显示 + {@link #CLOSE_BTN_AUTO_HIDE_MS} 内没人点就自动隐藏」
+ *   （Ari 需求原文：点击悬浮窗内出现 ✕ 关闭按钮，5s 内没点关闭则 ✕ 消失）。
+ *
+ * v42（code 945）：✕ 的显隐恢复成「开关」，并与自动隐藏**并存** —— 点一下出现；
+ *   在自动隐藏到期之前**再点一次面板空白处**（✕ 自身以外的区域）即刻收回；
+ *   两次点击之间一直没人动，则照旧 {@link #CLOSE_BTN_AUTO_HIDE_MS} 后自动收回。
+ *   （Ari 需求原文：再点按钮外的其他悬浮窗区域则 ✕ 消失，与 5s 后消失并存。）
  */
 public class FloatingSubtitleView extends FrameLayout {
     private static final String TAG = "[DLsiteSoundFloat:View]";
@@ -165,11 +194,34 @@ public class FloatingSubtitleView extends FrameLayout {
     private static final int CLOSE_BTN_DP = 30;
     /** ✕ 按钮距窗口上/右边缘的距离（dp）。v15：3 → 10dp。 */
     private static final int CLOSE_BTN_MARGIN_DP = 10;
+    /**
+     * 【code 944】✕ 的自动隐藏延时（ms）；【code 945】起与「再点一次即收回」并存。
+     *
+     * 需求（Ari，2026-09-23）：点一下悬浮窗面板 → ✕ 出现；**5s 内没点它就一直藏回去**。
+     * 【code 945 补】再点一次面板上 ✕ 之外的区域 → **立刻**收回（见 onPanelTapped）。
+     * 即「有第二下点击就马上收，没有就等满 5 秒」，两条收法互不打架，
+     * 所以 ✕ 不会长期占着面板右上角。
+     */
+    private static final long CLOSE_BTN_AUTO_HIDE_MS = 5000L;
 
     private NonInterceptScrollView scrollView;
     private LinearLayout container;
     private TextView hint;
     private CloseButtonView closeBtn;
+    /** 【code 944】✕ 自动隐藏用的主线程 Handler（视图随窗口重建，Handler 也跟着废弃）。 */
+    private final Handler closeBtnHandler = new Handler(Looper.getMainLooper());
+    /** 【code 944】自动隐藏任务 —— 到点把 ✕ 收回 GONE（已隐藏则不重复打日志）。 */
+    private final Runnable closeBtnHideTask = new Runnable() {
+        @Override
+        public void run() {
+            if (closeBtn == null || closeBtn.getVisibility() != VISIBLE) {
+                return;
+            }
+            closeBtn.setVisibility(GONE);
+            XposedCompat.log(TAG + " close button auto-hidden after "
+                    + CLOSE_BTN_AUTO_HIDE_MS + "ms");
+        }
+    };
 
     // 渲染缓存：内容没变就跳过重建
     private String lastRenderKey = null;
@@ -237,17 +289,48 @@ public class FloatingSubtitleView extends FrameLayout {
     }
 
     /**
-     * 切换右上角关闭按钮的显示/隐藏（由窗口层的「点击面板」手势调用）。
-     * 带日志：下次若「点了没反应」，从日志就能判断是「点击没送到视图」还是「送到了但没生效」。
+     * 面板被点一下：✕ 没显示就显示它并开始 {@link #CLOSE_BTN_AUTO_HIDE_MS} 倒计时；
+     * ✕ 已显示则**这一下就把它收回去**。
+     *
+     * 需求（Ari，2026-09-23）两条并存：
+     *   ① 【code 944】「点击悬浮窗内出现 ✕ 关闭按钮，如果 5s 内用户没有点击关闭，
+     *      则 ✕ 关闭按钮消失。」
+     *   ② 【code 945】「再次点击按钮外的其他悬浮窗区域，则 ✕ 关闭按钮消失；
+     *      这个与 5s 后消失功能并存。」
+     *
+     * 于是这里是「再点即收」与「超时自动收」两条路径**并存**：点了第二下就是明确要收，
+     * 立刻收；两次点击之间没人动，才交给 {@link #closeBtnHideTask} 等满 5s。
+     *
+     * ⚠️ 能走进本方法的一定是「✕ 以外的悬浮窗区域」：{@link CloseButtonView} 自带点击监听，
+     *    落在它身上的触摸会被它自己消费，不会冒泡到窗口层的 GestureListener。
+     * ⚠️ 由窗口层的「点击面板」手势调用（见 FloatingWindowManager.GestureListener）。
      */
-    public void toggleCloseButton() {
+    public void onPanelTapped() {
         if (closeBtn == null) {
-            XposedCompat.log(TAG + " toggleCloseButton: closeBtn == null (view not init?)");
+            XposedCompat.log(TAG + " onPanelTapped: closeBtn == null (view not init?)");
             return;
         }
-        boolean show = closeBtn.getVisibility() != VISIBLE;
-        closeBtn.setVisibility(show ? VISIBLE : GONE);
-        XposedCompat.log(TAG + " panel tapped -> close button " + (show ? "VISIBLE" : "GONE"));
+        // 两条路径（再点即收 / 超时自动收）共用一个计时器，先撤干净再分叉。
+        closeBtnHandler.removeCallbacks(closeBtnHideTask);
+        if (closeBtn.getVisibility() == VISIBLE) {
+            closeBtn.setVisibility(GONE);
+            XposedCompat.log(TAG + " panel tapped again -> close button hidden");
+            return;
+        }
+        closeBtn.setVisibility(VISIBLE);
+        closeBtnHandler.postDelayed(closeBtnHideTask, CLOSE_BTN_AUTO_HIDE_MS);
+        XposedCompat.log(TAG + " panel tapped -> close button VISIBLE (auto-hide "
+                + CLOSE_BTN_AUTO_HIDE_MS + "ms)");
+    }
+
+    /**
+     * 【code 944】窗口被摘除（关闭悬浮窗 / 换轨重建）时清掉排队中的自动隐藏任务 ——
+     * 否则那条消息会握着本视图及其 Handler 多活最多 5s。
+     */
+    @Override
+    protected void onDetachedFromWindow() {
+        closeBtnHandler.removeCallbacks(closeBtnHideTask);
+        super.onDetachedFromWindow();
     }
 
     /**
@@ -315,6 +398,10 @@ public class FloatingSubtitleView extends FrameLayout {
         closeBtn.setVisibility(GONE);
         closeBtn.setOnClickListener(v -> {
             XposedCompat.log(TAG + " close button CLICKED -> setFloatingWindowOpen(false)");
+            // 【code 944】点过就走：撤掉排队中的自动隐藏，并立刻把 ✕ 收起来 ——
+            // 否则关窗/重建期间那条 5s 消息还会回来动一个已经作废的视图。
+            closeBtnHandler.removeCallbacks(closeBtnHideTask);
+            closeBtn.setVisibility(GONE);
             // 关闭悬浮窗：置 false 后，repo 观察者会驱动 FloatingWindowManager 隐藏窗口，
             // 同时播放页按钮状态同步更新为「悬浮关」。
             SubtitleRepository.getInstance().setFloatingWindowOpen(false);

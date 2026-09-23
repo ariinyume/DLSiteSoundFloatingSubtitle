@@ -34,7 +34,7 @@ plugins {
 //                 如 9 月 20 日发版 → 0920；10 月 3 日 → 1003。
 //                 ⚠️ 不是 20000 这种「语义版本 ×1000」的老规则。
 //                 同日多次发版时后一位可用 0921/0922 递增（保持单调即可）。
-def appVersionTag = '2.0.1'
+def appVersionTag = '2.0.2'
 // ⚠️ 写成 int 字面量 925（不要写 0925 —— Groovy 可能按八进制/前导零解析）：
 //    versionCode 的**数值**是 925，管理器里显示 925，可读语义看 appVersionCodeLabel。
 //    【0921.1】2.0.1 的**9/21 第一版**（code 923 → 924，versionName 不变）：
@@ -54,9 +54,37 @@ def appVersionTag = '2.0.1'
 //    共享 sLastTapMs，一次 DOWN 被算两遍）；仅保留 root hook。
 //    bug3 按钮掉到播放控件下：handleSlider 稳定性判据（929 改丢）恢复「基准跟上一帧
 //    原始坐标 + 容差放宽到 12px」，消除 925 式死锁 → sLastSliderCy 重新收敛 → 中点落位。
-def appVersionCode = 940
-def appVersionCodeLabel = '0922.5'
-def appVersionName = '2.0.1'
+//    【0923.1】code 943：给全部 19 个 .java 补 GPL-3.0 文件头（Copyright (C) 2026
+//    ariinyume + SPDX-License-Identifier: GPL-3.0-or-later）；942 的「切轨提前收窗」
+//    阈值由 2s 放宽到 6s。
+//    【0923.2】code 944：切轨提前收窗阈值由 6s 收到 4s；✕ 关闭按钮改为
+//    「点面板出现 + 5s 无操作自动隐藏」；状态栏字幕开关按钮的
+//    「未授权 SystemUI 作用域则不显示」闸门（code 941）真正打进交付包，
+//    并加 0.4s / 1.2s 两拍快速补探。
+//    【0923.3】code 945：✕ 关闭按钮在「点面板出现 + 5s 无操作自动隐藏」之外，
+//    再点一次面板空白处（✕ 以外）立即收回，两种收法并存；状态栏通知数徽标的数字
+//    改为**镂空数字**（saveLayer + BlendMode.CLEAR 从圆底里挖掉），数字区域直接
+//    透出状态栏自己的底色，不再用 #1A1A1A / #F2F2F2 近似色填充。
+//    【0923.5】code 947：修「状态栏字幕打开时徽标里看不到通知数量」。946 的 EVEN_ODD
+//    洞在真机上根本没出现（实测圆盘 33×33 完全实心、内切 23×23 零个暗像素）；
+//    根因是每帧的 Path.rewind() 会把 FillType 清回 WINDING（reset() 才会保留，
+//    Android 源码里 reset() 专门存取 FillType，rewind() 没有这层保护），于是圆与字形
+//    同向取并集 = 实心圆。改用 reset() 并每帧显式 setFillType 兜底，自证日志追加
+//    fill= 与 glyph= 两项，一眼可验。
+//    【0923.4】code 946：修「状态栏通知数徽标整块不显示」（945 的回归）。徽标绘制
+//    弃用 saveLayer + BlendMode.CLEAR（实测在这台机器的 SystemUI 里整块画不出来，
+//    而让位空隙却是真的 = 圆底与数字一起消失），改为**一条 Path + EVEN_ODD** 挖洞：
+//    圆与字形同属一条 path，重叠处不填色即为洞。另加 onMeasure 尺寸兜底与
+//    「徽标几何自证」日志（徽标到底有没有尺寸/可见，一行看穿）。
+//    【2.0.2】code 947（versionName 2.0.1 → 2.0.2；versionCode 与 label 不变）：
+//    947 的「一条 Path + EVEN_ODD 挖洞」修好了 946 的「圆盘出现但看不到数字」
+//    （根因：每帧 Path.rewind() 把 FillType 清回 WINDING，reset() 才会保留），
+//    本版同时把这几项一并纳入正式发版：未授权 SystemUI 作用域则不显示状态栏字幕
+//    开关按钮（跨进程握手探测）、切到无字幕音轨 4s 内提前收窗、点面板出现的
+//    ✕ 关闭按钮「5s 无操作自动隐藏 + 再点面板空白处立即收回」。
+def appVersionCode = 947
+def appVersionCodeLabel = '0923.5'
+def appVersionName = '2.0.2'
 
 android {
     namespace 'com.sena.dlsitesoundfloat'

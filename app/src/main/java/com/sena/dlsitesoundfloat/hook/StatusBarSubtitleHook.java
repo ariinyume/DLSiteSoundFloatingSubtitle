@@ -1,3 +1,21 @@
+/*
+ * DLsiteSound Floating Subtitle - Xposed module for DLsite Sound
+ * Copyright (C) 2026 ariinyume
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * This program is free software: you can redistribute it and/or modify it under
+ * the terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ * FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program. If not, see <https://www.gnu.org/licenses/>.
+ */
 package com.sena.dlsitesoundfloat.hook;
 
 import android.animation.Animator;
@@ -10,7 +28,6 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.res.ColorStateList;
 import android.graphics.Typeface;
-import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
@@ -28,6 +45,7 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import com.sena.dlsitesoundfloat.BuildConfig;
+import com.sena.dlsitesoundfloat.view.NotificationBadgeView;
 import com.sena.dlsitesoundfloat.util.StatusBarSubtitleBridge;
 import com.sena.dlsitesoundfloat.util.XposedCompat;
 
@@ -217,7 +235,11 @@ public class StatusBarSubtitleHook {
     private static View sRoot;
     private static ViewGroup sHost;
     private static FrameLayout sContainer;
-    private static TextView sBadge;
+    /**
+     * 通知数徽标。【code 945】类型由 TextView 换成 {@link NotificationBadgeView}：
+     * 数字不再用颜色“涂”出来，而是从圆底里**镂空**挖出来（见该类注释）。
+     */
+    private static NotificationBadgeView sBadge;
     private static TextView sLineView;
     private static ValueAnimator sAnimator;
     private static ViewTreeObserver.OnGlobalLayoutListener sLayoutListener;
@@ -253,8 +275,8 @@ public class StatusBarSubtitleHook {
      *   → #f6f6f6 → #fafafa → #fdfdfd → #ffffff
      * 每一帧都会回调 {@link #onClockColorChanged}，而它**无条件**做两件事：
      *   ① {@code sLineView.setTextColor(color)}；
-     *   ② {@link #applyBadgeStyle}（内部 4 次属性写入：GradientDrawable.setColor
-     *      + setTextColor + setTextSize + setTypeface）。
+     *   ② {@link #applyBadgeStyle}（内部 3 次属性写入：setBadgeDiscColor
+     *      + setTextSize + setTypeface；【code 945】起不再写 setTextColor，数字已改镂空）。
      * 于是字幕与徽标在 80ms 内被重绘十几遍 —— 用户看到的就是「字幕偶尔抖一下」。
      *
      * 日志佐证：一次 11 分钟会话里这种「连发 run」出现 **19 次**，
@@ -313,6 +335,9 @@ public class StatusBarSubtitleHook {
     private static String sShownLine = null;
     private static long sDurationMs = 0L;
     private static int sBadgeCount = -1;
+
+    /** 【code 946】徽标几何自证日志的上一行（变了才打，避免每次布局刷屏）。 */
+    private static String sBadgeGeomPrev = null;
     private static int sLastColorArgb = Integer.MIN_VALUE;
     private static boolean sFontSynced = false;
     private static View sFontSource;
@@ -984,6 +1009,7 @@ public class StatusBarSubtitleHook {
                         //   清在这里（而不是 applyBadgeInset 里自己清）是为了保证：
                         //   「置脏 → 至少等过一帧 layout」这个时序成立。
                         sLayoutDirty = false;
+                        logBadgeGeometry("layout");   // 【code 946】徽标几何自证
                         if (sSuppressed) {
                             enforceSuppression();
                         }
@@ -1006,16 +1032,11 @@ public class StatusBarSubtitleHook {
         sContainer.setClipChildren(true);
         sContainer.setVisibility(View.GONE);
 
-        sBadge = new TextView(ctx);
-        sBadge.setGravity(Gravity.CENTER);
-        sBadge.setSingleLine(true);
-        sBadge.setIncludeFontPadding(false);
-        sBadge.setTypeface(Typeface.DEFAULT_BOLD);
+        // 【code 945】圆底 + **镂空数字**都由 NotificationBadgeView 自绘
+        //（saveLayer + BlendMode.CLEAR，与 CloseButtonView 的 ✕ 同一套做法）；
+        // 这里只负责建视图、给固定尺寸，不再挂 GradientDrawable 圆底。
+        sBadge = new NotificationBadgeView(ctx);
         sBadge.setVisibility(View.GONE);
-        GradientDrawable circle = new GradientDrawable();
-        circle.setShape(GradientDrawable.OVAL);
-        circle.setColor(0xFFFFFFFF);
-        sBadge.setBackground(circle);
         FrameLayout.LayoutParams blp = new FrameLayout.LayoutParams(
                 dp(ctx, BADGE_SIZE_DP), dp(ctx, BADGE_SIZE_DP),
                 Gravity.START | Gravity.CENTER_VERTICAL);
@@ -1378,6 +1399,8 @@ public class StatusBarSubtitleHook {
         IntentFilter f = new IntentFilter();
         f.addAction(StatusBarSubtitleBridge.ACTION_LINE);
         f.addAction(StatusBarSubtitleBridge.ACTION_ENABLED);
+        // 【code 941】作用域探测：本接收器**存在**这件事本身就是「已授权」的证据。
+        f.addAction(StatusBarSubtitleBridge.ACTION_SCOPE_PING);
         BroadcastReceiver r = new BroadcastReceiver() {
             @Override
             public void onReceive(Context c, Intent i) {
@@ -1385,6 +1408,12 @@ public class StatusBarSubtitleHook {
                     return;
                 }
                 try {
+                    if (StatusBarSubtitleBridge.ACTION_SCOPE_PING.equals(i.getAction())) {
+                        // 【code 941】能收到 PING = 本进程（SystemUI）已被注入本模块
+                        // = 用户勾选了 SystemUI 作用域。回一条 PONG 让 App 侧确认。
+                        answerScopePing(c);
+                        return;
+                    }
                     if (StatusBarSubtitleBridge.ACTION_ENABLED.equals(i.getAction())) {
                         sEnabled = i.getBooleanExtra(StatusBarSubtitleBridge.EXTRA_ENABLED, false);
                         if (!sEnabled) {
@@ -1417,6 +1446,39 @@ public class StatusBarSubtitleHook {
             XposedCompat.log(TAG + " receiver registered (RECEIVER_EXPORTED)");
         } catch (Throwable t) {
             XposedCompat.log(TAG + " registerReceiver failed: " + t);
+        }
+    }
+
+    /** 【code 941】探测应答的日志是否已打过（心跳每 3s 一次，不能刷屏）。 */
+    private static boolean sPingAnsweredOnce = false;
+
+    /**
+     * 【code 941】应答 App 侧的作用域探测（见 {@link StatusBarSubtitleBridge#ACTION_SCOPE_PING}）。
+     *
+     * 「本方法被执行过」本身就是证据：只有**被注入到 SystemUI 进程的模块**才会注册
+     * {@link StatusBarSubtitleBridge#ACTION_SCOPE_PING} 的接收器（在 {@link #registerReceiver}
+     * 里注册）。所以「App 侧收到 PONG」⇔「用户勾选了 SystemUI 作用域，且 SystemUI 里
+     * 跑着本模块的代码」。
+     *
+     * PONG 里带上本进程的构建号：App 侧若发现与自己的构建号不一致，就打一行 WARN ——
+     * 那说明 **SystemUI 里还是上一版 dex（装完没重启 SystemUI）**，是排查
+     * 「新功能怎么没生效」最快的一条线索。
+     */
+    private static void answerScopePing(Context ctx) {
+        if (ctx == null) {
+            return;
+        }
+        try {
+            Intent pong = new Intent(StatusBarSubtitleBridge.ACTION_SCOPE_PONG);
+            pong.putExtra(StatusBarSubtitleBridge.EXTRA_PONG_BUILD, BuildConfig.VERSION_CODE);
+            ctx.sendBroadcast(pong);
+            if (!sPingAnsweredOnce) {
+                sPingAnsweredOnce = true;
+                XposedCompat.log(TAG + " scope ping answered -> pong sent"
+                        + " (systemui build=" + BuildConfig.VERSION_CODE + ")");
+            }
+        } catch (Throwable t) {
+            XposedCompat.log(TAG + " answerScopePing failed: " + t);
         }
     }
 
@@ -1601,13 +1663,11 @@ public class StatusBarSubtitleHook {
             alpha = 0xFF;                       // 时钟色没带 alpha（多数 ROM 直接给不透明色）
         }
         int fill = rgb | (alpha << 24);
-        // isLight() 只看 RGB，所以这里传 fill 与旧行为完全一致（不会因 alpha 变化而翻转黑白字）
-        int digit = isLight(fill) ? 0xFF1A1A1A : 0xFFF2F2F2;
         try {
-            if (sBadge.getBackground() instanceof GradientDrawable) {
-                ((GradientDrawable) sBadge.getBackground().mutate()).setColor(fill);
-            }
-            sBadge.setTextColor(digit);
+            // 【code 945】只写圆底色。数字**不再着色** —— 它由 NotificationBadgeView
+            // 用 CLEAR 从圆底里挖出来，数字区域直接透出状态栏自己画的底，
+            // 比旧的 #1A1A1A / #F2F2F2 近似色更准，也不再依赖 isLight() 的明暗猜测。
+            sBadge.setBadgeDiscColor(fill);
             sBadge.setTextSize(TypedValue.COMPLEX_UNIT_SP, BADGE_TEXT_SP);
             sBadge.setTypeface(Typeface.DEFAULT_BOLD);
         } catch (Throwable ignored) {
@@ -1749,6 +1809,43 @@ public class StatusBarSubtitleHook {
         sHandler.removeCallbacks(TICK);
     }
 
+    /**
+     * 【code 946】徽标几何自证：状态**变了才**打一行。
+     *
+     * 起因：945 那次「徽标整块不显示」时，日志里只有 `notification badge = 1`
+     * 这条**记账**（模块以为它显示了），却没有任何一行能回答「它到底有没有尺寸、
+     * 有没有被置 GONE」。这条日志就是补上那一格 —— 一行看穿 ctn/badge/line 三方状态。
+     */
+    private static void logBadgeGeometry(String when) {
+        try {
+            StringBuilder sb = new StringBuilder(192);
+            sb.append("ctn[vis=").append(visOf(sContainer)).append(' ').append(wh(sContainer)).append(']')
+                    .append(" badge[vis=").append(visOf(sBadge));
+            if (sBadge != null) {
+                sb.append(" l=").append(sBadge.getLeft()).append(" t=").append(sBadge.getTop());
+            }
+            sb.append(' ').append(wh(sBadge))
+                    .append(" text=").append(sBadge == null ? "-" : sBadge.getText()).append(']')
+                    .append(" line[vis=").append(visOf(sLineView)).append(' ').append(wh(sLineView))
+                    .append(']');
+            String cur = sb.toString();
+            if (cur.equals(sBadgeGeomPrev)) {
+                return;
+            }
+            sBadgeGeomPrev = cur;
+            XposedCompat.log(TAG + " badge geom [" + when + "] " + cur);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static int visOf(View v) {
+        return v == null ? -1 : v.getVisibility();
+    }
+
+    private static String wh(View v) {
+        return v == null ? "w=-1 h=-1" : ("w=" + v.getWidth() + " h=" + v.getHeight());
+    }
+
     private static void updateBadge() {
         if (sBadge == null || sContainer == null || sContainer.getVisibility() != View.VISIBLE) {
             return;
@@ -1761,13 +1858,17 @@ public class StatusBarSubtitleHook {
         if (count <= 0) {
             sBadge.setVisibility(View.GONE);
             applyBadgeInset(false);   // 【1.21.11 问题 2】没通知 -> 字幕顶到最左，不留徽标位
+            // 【code 946】这条分支原先**没有日志** —— 徽标被静默藏起来时无从查证，补上。
+            XposedCompat.log(TAG + " notification badge = 0 -> badge hidden");
+            logBadgeGeometry("badge=0");
             return;
         }
         applyBadgeStyle(sLastColorArgb == Integer.MIN_VALUE ? 0xFFFFFFFF : sLastColorArgb);
-        sBadge.setText(count > 99 ? "99+" : String.valueOf(count));
+        sBadge.setBadgeText(count > 99 ? "99+" : String.valueOf(count));
         sBadge.setVisibility(View.VISIBLE);
         applyBadgeInset(true);        // 有通知 -> 字幕退到徽标右侧
         XposedCompat.log(TAG + " notification badge = " + count);
+        logBadgeGeometry("badge=" + count);   // 【code 946】几何自证
     }
 
     /**

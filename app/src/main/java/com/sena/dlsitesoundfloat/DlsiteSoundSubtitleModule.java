@@ -1,3 +1,21 @@
+/*
+ * DLsiteSound Floating Subtitle - Xposed module for DLsite Sound
+ * Copyright (C) 2026 ariinyume
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * This program is free software: you can redistribute it and/or modify it under
+ * the terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ * FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program. If not, see <https://www.gnu.org/licenses/>.
+ */
 package com.sena.dlsitesoundfloat;
 
 import android.content.Context;
@@ -136,7 +154,7 @@ public class DlsiteSoundSubtitleModule extends XposedModule {
         XposedCompat.log("[DLsiteSoundFloat] Module loaded for " + pkg);
         // 版本标识：每次排查「功能怎么没生效」时，先看这行确认装的是不是最新 APK。
         // ⚠️ 保留版本号、只改括号描述会产生「同日同名包」，装机前务必核这一行。
-        XposedCompat.log("[DLsiteSoundFloat] ==== BUILD 2.0.1 / code 940 （work_diag_65 Ari 指令：状态栏字幕显示区域被缩到超级短 根修）。【bug1 流体云不存在时字幕只显示半截 根修】旧判据只看子视图自身 getVisibility 等于 VISIBLE，容器被摘掉或 GONE 后其子视图仍报 VISIBLE，死容器照样给出 left 等于 454，宽度被压到 341 至 380 即半截；改为容器与子视图一律用 isShown 加上宽高大于零，宽限由 60s 收到 2s，并新增 seeding state 状态翻转日志自证。【bug2 按钮太低 根修】旧口径取简介底边与滑条视图顶边中点，中心 1747 底边 1794，比滑条顶 1772 还低 23px 故压进度条；改为按钮底边强制落在滑条顶边往上 25dp 即 1698，按钮恒定 32dp 不压缩，日志新增 descStable 与 sliderTop 两个诊断量。【bug2 打开播放界面按钮上下抖动 根修】实测转场瞬间 ctx 的密度读数会从常态 2.9688 跳到 3.5 或 3.875（即 476 与 560 与 620dpi，正是 OPPO 屏幕缩放档位表），而按钮底边与右距都直接吃它故按钮上下瞬移 19 至 32px 且左右同偏，斜着抖；改为密度一次性锁定，仅在像素屏幕尺寸变化或持续 20 秒以上不一致时才重新锁定，并打 density spike ignored 诊断行。【bug1 状态栏字幕显示区域被缩到超级短 根修】行左界实测值的采信门旧口径拿自己当锚，sLineLeftAcc 初值为负一故首采样无条件过门，而 showLine 在隐藏时钟通知图标之后一毫秒就采样，那次重排还没跑，读到含通知图标占位的旧值 251 并永久锁存，之后真值 110 因超出容差被永久拒收，字幕宽少 138px 即被压成超级短；改为首采样也以常量 38dp 即 113px 为锚加正负 20dp 容差，单帧失真值直接拒收，并新增连续三拍稳定偏离才重锁的自愈，同时治本，隐藏或还原时钟通知图标真的改了可见性时置布局脏，使紧随其后的采样被 onGlobalLayout 拦掉，日志新增 line left rejected 与 line left relocked 两行诊断。【承 936 gap 4dp / 935 左界实测 / 934 滚动迟滞与速度下限 / 933 等宽补起滚 / 925 稳定性移回消费端】 基于 2.0.1，含 1.21.1~1.21.16 全部内容） ====");
+        XposedCompat.log("[DLsiteSoundFloat] ==== BUILD 2.0.2 / code 947 （work_diag_74 Ari 报「状态栏字幕打开时徽标里看不到通知数量」：946 的 EVEN_ODD 洞在真机上没出现，实测圆盘 33×33 完全实心、内切 23×23 零个暗像素；根因是每帧调用的 Path.rewind() 会把 FillType 清回 WINDING（Android 的 reset() 专门存取 FillType，rewind() 没有这层保护），于是圆与字形同向取并集成实心圆。本版改用 reset() 并每帧显式再 setFillType 一次兜底，自证日志追加 fill= 与 glyph= 两项直接可验）。==== BUILD 2.0.1 / code 946 （work_diag_72 Ari 报「通知图标直接不显示了」：945 用 saveLayer+BlendMode.CLEAR 画的镂空徽标在这台机器上整块画不出来，实测截图像素证明圆底与数字一起消失；本版改成一条 Path+EVEN_ODD 挖洞（不用图层不用混合模式），并给 onMeasure 加尺寸兜底、给徽标加几何自证日志）。==== BUILD 2.0.1 / code 945 （work_diag_71 Ari 指令：点悬浮窗面板出现的 ✕ 关闭按钮，再点一次按钮外的其他悬浮窗区域立刻收回，并与 5 秒无操作自动隐藏并存；状态栏通知数徽标里的数字改为镂空数字，用 CLEAR 从圆底挖出，数字区域直接透出状态栏自己的底色，不再用近似色填充）。==== BUILD 2.0.1 / code 944 （work_diag_70 Ari 指令：切轨提前收窗阈值由 6 秒收到 4 秒；点悬浮窗面板出现的 ✕ 关闭按钮改为 5 秒内没人点就自动隐藏；未授权 com.android.systemui 作用域时不显示状态栏字幕开关按钮，该闸门本轮才真正打进交付包，并加 0.4 秒与 1.2 秒两拍快速补探）。==== BUILD 2.0.1 / code 943 （work_diag_69：全部 19 个 java 源文件补 GPL-3.0 文件头；提前收窗阈值 2 秒放宽到 6 秒）。==== BUILD 2.0.1 / code 942 （work_diag_68 Ari 指令：切到无字幕音轨时悬浮窗 2 秒内无字幕 JSON 即提前自动关闭，不再挂着无字幕占位等满 10 秒裁决窗；字幕晚到会自动开回）。【bug1 流体云不存在时字幕只显示半截 根修】旧判据只看子视图自身 getVisibility 等于 VISIBLE，容器被摘掉或 GONE 后其子视图仍报 VISIBLE，死容器照样给出 left 等于 454，宽度被压到 341 至 380 即半截；改为容器与子视图一律用 isShown 加上宽高大于零，宽限由 60s 收到 2s，并新增 seeding state 状态翻转日志自证。【bug2 按钮太低 根修】旧口径取简介底边与滑条视图顶边中点，中心 1747 底边 1794，比滑条顶 1772 还低 23px 故压进度条；改为按钮底边强制落在滑条顶边往上 25dp 即 1698，按钮恒定 32dp 不压缩，日志新增 descStable 与 sliderTop 两个诊断量。【bug2 打开播放界面按钮上下抖动 根修】实测转场瞬间 ctx 的密度读数会从常态 2.9688 跳到 3.5 或 3.875（即 476 与 560 与 620dpi，正是 OPPO 屏幕缩放档位表），而按钮底边与右距都直接吃它故按钮上下瞬移 19 至 32px 且左右同偏，斜着抖；改为密度一次性锁定，仅在像素屏幕尺寸变化或持续 20 秒以上不一致时才重新锁定，并打 density spike ignored 诊断行。【bug1 状态栏字幕显示区域被缩到超级短 根修】行左界实测值的采信门旧口径拿自己当锚，sLineLeftAcc 初值为负一故首采样无条件过门，而 showLine 在隐藏时钟通知图标之后一毫秒就采样，那次重排还没跑，读到含通知图标占位的旧值 251 并永久锁存，之后真值 110 因超出容差被永久拒收，字幕宽少 138px 即被压成超级短；改为首采样也以常量 38dp 即 113px 为锚加正负 20dp 容差，单帧失真值直接拒收，并新增连续三拍稳定偏离才重锁的自愈，同时治本，隐藏或还原时钟通知图标真的改了可见性时置布局脏，使紧随其后的采样被 onGlobalLayout 拦掉，日志新增 line left rejected 与 line left relocked 两行诊断。【新增 SystemUI 作用域授权探测】状态栏字幕开关按钮改为仅在 SystemUI 作用域已确认授权时显示，判据用跨进程握手，App 每三秒发一次 PING，被注入 SystemUI 的模块回 PONG，八秒内没收到即视为未授权并隐藏该按钮，PONG 携带 SystemUI 侧构建号，与 App 不一致时打警告提示重启 SystemUI。【承 936 gap 4dp / 935 左界实测 / 934 滚动迟滞与速度下限 / 933 等宽补起滚 / 925 稳定性移回消费端】 基于 2.0.1，含 1.21.1~1.21.16 全部内容） ====");
         XposedCompat.log("[DLsiteSoundFloat] build applicationId=" + BuildConfig.APPLICATION_ID
                 + " versionName=" + BuildConfig.VERSION_NAME);
 

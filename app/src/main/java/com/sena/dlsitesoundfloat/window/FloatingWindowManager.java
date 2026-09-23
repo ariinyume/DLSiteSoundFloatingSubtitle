@@ -1,3 +1,21 @@
+/*
+ * DLsiteSound Floating Subtitle - Xposed module for DLsite Sound
+ * Copyright (C) 2026 ariinyume
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * This program is free software: you can redistribute it and/or modify it under
+ * the terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ * FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program. If not, see <https://www.gnu.org/licenses/>.
+ */
 package com.sena.dlsitesoundfloat.window;
 
 import android.content.Context;
@@ -379,9 +397,10 @@ public class FloatingWindowManager {
                     }
                     case MotionEvent.ACTION_UP: {
                         // 未拖动、且不是按在右下角缩放手柄上 → 视为「点击面板任意处」：
-                        // 切换右上角关闭按钮（✕）的显隐。
+                        // 显示右上角关闭按钮（✕）；【code 944】之后 5s 内没人点它，
+                        // 视图侧会自动把它藏回去。
                         if (!moved && !resizing) {
-                            view.toggleCloseButton();
+                            view.onPanelTapped();
                         } else {
                             XposedCompat.log(TAG + " touch UP moved=" + moved
                                     + " resizing=" + resizing + " -> no tap toggle");

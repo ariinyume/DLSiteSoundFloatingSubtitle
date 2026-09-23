@@ -1,3 +1,21 @@
+/*
+ * DLsiteSound Floating Subtitle - Xposed module for DLsite Sound
+ * Copyright (C) 2026 ariinyume
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * This program is free software: you can redistribute it and/or modify it under
+ * the terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ * FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program. If not, see <https://www.gnu.org/licenses/>.
+ */
 package com.sena.dlsitesoundfloat.hook;
 
 import android.app.Activity;
@@ -19,6 +37,7 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import com.sena.dlsitesoundfloat.BuildConfig;
 import com.sena.dlsitesoundfloat.data.SubtitleRepository;
 import com.sena.dlsitesoundfloat.util.StatusBarSubtitleBridge;
 import com.sena.dlsitesoundfloat.util.XposedCompat;
@@ -2375,6 +2394,191 @@ public class ActivityButtonHook {
         }
     }
 
+    // ==================================================================
+    // 【code 941】SystemUI 作用域授权探测
+    //
+    // 需求：用户**没有**在 LSPosed 里勾选 com.android.systemui 作用域时，
+    //       播放页不显示「状态栏 开/关」那个胶囊。
+    //
+    // 为什么要「探测」而不是直接读配置：LSPosed 的作用域配置在 /data/adb 下，
+    // 宿主 App 没有 root 读不到。但「勾了作用域」有一个**可观测的后果** ——
+    // 模块会被注入 SystemUI 进程，于是那边有人能应答广播。于是用握手：
+    //   App 发 PING -> 被注入的 SystemUI 回 PONG -> App 侧「已授权」。
+    // 没勾选时没有接收方，PING 静默消失，永远收不到 PONG。
+    //
+    // ⚠️ 本判据把「勾了但装完没重启 SystemUI」也算作未授权（那时 SystemUI 里跑的
+    //    还是没有这段代码的旧 dex）—— 这是**有意**的：那种状态下按钮同样点不动
+    //    （广播没人收），显示出来只会让人以为坏了。App 侧看到构建号不一致会打一行
+    //    WARN 提示重启 SystemUI。
+    // ==================================================================
+
+    /** 【code 941】心跳间隔。取 3s：比 SystemUI 重启（约 1~2s）长一点，别在重启窗口里误判。 */
+    private static final long SCOPE_PING_INTERVAL_MS = 3000L;
+    /**
+     * 【code 944】首次探测的**快速补探**时刻（ms，相对 registerScopeWatch）。
+     *
+     * 为什么需要：只发一次即刻 PING 的话，若那一拍正好赶上 SystemUI 侧接收器
+     * 还没注册好（SystemUI 刚重启），就白白等满一个心跳 3s —— 进播放页会先看到
+     * 一个缺了左胶囊的按钮组，几秒后才补上。补两拍把确认时间压到接近即时。
+     * 未授权时这两拍也只是静默无回包，零副作用。
+     */
+    private static final long SCOPE_KICK_1_MS = 400L;
+    private static final long SCOPE_KICK_2_MS = 1200L;
+    /**
+     * 【code 944】快速补探任务：只发 PING，不参与心跳链
+     * （心跳链由 {@link #sScopePingRunnable} 独占，别把两条链搅在一起）。
+     */
+    private static final Runnable sScopeKickRunnable = new Runnable() {
+        @Override
+        public void run() {
+            try {
+                Context c = sScopePingCtx;
+                if (c != null) {
+                    StatusBarSubtitleBridge.sendScopePing(c);
+                }
+            } catch (Throwable t) {
+                XposedCompat.log(TAG + " scope kick failed: " + t);
+            }
+        }
+    };
+    /** 【code 941】PONG 接收器。注册在**应用级 Context** 上，与 Activity 生命周期无关。 */
+    private static android.content.BroadcastReceiver sScopePongReceiver;
+    /** 【code 941】探测是否已启动（幂等；每次进播放页的 onResume 都会走到调用点）。 */
+    private static boolean sScopeWatchStarted = false;
+    /** 【code 941】发心跳用的 Context（应用级：onPause 后 Activity 会被清空，不能拿它当锚）。 */
+    private static Context sScopePingCtx;
+    /** 【code 941】最近一次**落笔时**的授权态 —— 只用来「翻转才打日志 / 才重画」。 */
+    private static boolean sLastScopeAuthorized = false;
+    /** 【code 941】是否已打过「首次状态」日志（见 refreshScopeState）—— 保证至少有线索。 */
+    private static boolean sScopeEverReported = false;
+
+    /**
+     * 【code 941】作用域心跳：发 PING，然后看授权态有没有翻转。
+     *
+     * 为什么必须有心跳（而不是开一次探一次就完）：
+     *   ① 首次探测可能赶在 SystemUI 重启窗口里（接收器还没就绪）-> 要能自己重试；
+     *   ② 用户可能中途在 LSPosed 里**取消**勾选（重启 SystemUI 后生效）-> 要能回到未授权。
+     * 两者都靠「心跳 + 新鲜期」（{@link StatusBarSubtitleBridge#SCOPE_FRESH_MS}）覆盖。
+     */
+    private static final Runnable sScopePingRunnable = new Runnable() {
+        @Override
+        public void run() {
+            try {
+                Context c = sScopePingCtx;
+                if (c != null) {
+                    StatusBarSubtitleBridge.sendScopePing(c);
+                }
+                refreshScopeState("heartbeat");
+            } catch (Throwable t) {
+                XposedCompat.log(TAG + " scope heartbeat failed: " + t);
+            }
+            // 永不断链：即使上面抛异常也继续下一拍。
+            uiHandler.postDelayed(this, SCOPE_PING_INTERVAL_MS);
+        }
+    };
+
+    /**
+     * 【code 941】授权态**翻转时**才动手：打一行日志 + 重画两个胶囊。
+     * 状态栏钮的可见性由 {@link #statusBarButtonVisible} 决定，重画即生效。
+     */
+    private static void refreshScopeState(String why) {
+        boolean now = StatusBarSubtitleBridge.isSystemUiScopeAuthorized();
+        if (now == sLastScopeAuthorized) {
+            if (!sScopeEverReported) {
+                // 首次报告：**必须**留一行 —— 否则「没有 PONG 所以按钮不显示」这条会
+                // 在日志里完全静默，事后排查只能靠猜。
+                sScopeEverReported = true;
+                XposedCompat.log(TAG + " systemui scope: no pong yet -> status bar button"
+                        + " stays hidden (com.android.systemui scope not granted,"
+                        + " or SystemUI was not restarted after install)");
+            }
+            return;
+        }
+        sScopeEverReported = true;
+        sLastScopeAuthorized = now;
+        int build = StatusBarSubtitleBridge.getScopePongBuild();
+        XposedCompat.log(TAG + " systemui scope -> " + (now ? "authorized" : "revoked")
+                + " (" + why + ", pongBuild=" + build
+                + ", appBuild=" + BuildConfig.VERSION_CODE + ")");
+        if (now && build > 0 && build != BuildConfig.VERSION_CODE) {
+            XposedCompat.log(TAG + " WARN systemui process runs an older build ("
+                    + build + " != " + BuildConfig.VERSION_CODE
+                    + ") -> restart SystemUI to load this build");
+        }
+        final SubtitleRepository repo = SubtitleRepository.getInstance();
+        if (repo != null) {
+            uiHandler.post(() -> applyButtonText(repo, true));
+        }
+    }
+
+    /**
+     * 【code 941】启动作用域探测（幂等）。
+     *
+     * 用**应用级 Context**：本探测的生命周期是「整个 App 进程」，不该跟着
+     * onResume/onPause 断链 —— 否则切后台再回来时 PONG 已过期，状态栏钮会先消失
+     * 几秒再回来（可见的闪烁）。
+     */
+    private static void registerScopeWatch(Context activityCtx) {
+        if (sScopeWatchStarted) {
+            return;
+        }
+        sScopeWatchStarted = true;
+        try {
+            Context appCtx = activityCtx != null ? activityCtx.getApplicationContext() : null;
+            if (appCtx == null) {
+                appCtx = activityCtx;
+            }
+            if (appCtx == null) {
+                sScopeWatchStarted = false;
+                return;
+            }
+            sScopePingCtx = appCtx;
+            sScopePongReceiver = new android.content.BroadcastReceiver() {
+                @Override
+                public void onReceive(Context c, android.content.Intent it) {
+                    if (it == null
+                            || !StatusBarSubtitleBridge.ACTION_SCOPE_PONG
+                                    .equals(it.getAction())) {
+                        return;
+                    }
+                    try {
+                        int build = it.getIntExtra(
+                                StatusBarSubtitleBridge.EXTRA_PONG_BUILD, -1);
+                        StatusBarSubtitleBridge.onScopePong(build);
+                        // 首次确认要**立刻**刷新（别等下一拍心跳），否则进播放页会先看到
+                        // 一个没有状态栏钮的按钮组、几十~几百毫秒后才补上。
+                        refreshScopeState("pong");
+                    } catch (Throwable t) {
+                        XposedCompat.log(TAG + " scope pong failed: " + t);
+                    }
+                }
+            };
+            android.content.IntentFilter f =
+                    new android.content.IntentFilter(StatusBarSubtitleBridge.ACTION_SCOPE_PONG);
+            try {
+                // SystemUI 与本 App **不同 UID** ⇒ 收它的广播必须声明 EXPORTED，
+                // 否则 Android 13+ 注册直接抛 SecurityException（与 SystemUI 侧收
+                // ACTION_LINE 是同一类问题，见 StatusBarSubtitleHook#registerReceiver）。
+                appCtx.registerReceiver(sScopePongReceiver, f, Context.RECEIVER_EXPORTED);
+            } catch (Throwable t) {
+                appCtx.registerReceiver(sScopePongReceiver, f);
+            }
+            StatusBarSubtitleBridge.sendScopePing(appCtx);   // 先探一次，别干等 3s
+            // 【code 944】再补两拍：覆盖「SystemUI 侧接收器晚一步就绪」这个窗口。
+            uiHandler.postDelayed(sScopeKickRunnable, SCOPE_KICK_1_MS);
+            uiHandler.postDelayed(sScopeKickRunnable, SCOPE_KICK_2_MS);
+            uiHandler.removeCallbacks(sScopePingRunnable);
+            uiHandler.postDelayed(sScopePingRunnable, SCOPE_PING_INTERVAL_MS);
+            XposedCompat.log(TAG + " systemui scope watch started (ping "
+                    + SCOPE_PING_INTERVAL_MS + "ms, fresh "
+                    + StatusBarSubtitleBridge.SCOPE_FRESH_MS + "ms)");
+        } catch (Throwable t) {
+            // 注册失败就允许下次进播放页重试（否则一个异常会把探测永久废掉）。
+            sScopeWatchStarted = false;
+            XposedCompat.log(TAG + " registerScopeWatch failed: " + t);
+        }
+    }
+
     public static void hook(ClassLoader cl, SubtitleRepository repo) {
         try {
             Class<?> activityClass = XposedCompat.findClass("android.app.Activity", cl);
@@ -2465,6 +2669,8 @@ public class ActivityButtonHook {
                     // 【code 924】双击关闭请求的接收器：按钮组首次创建时注册一次。
         //   放在这里而不是 hook(cl, repo)：hook() 拿不到 Activity，而注册需要它。
         registerDismissReceiver(activity, repo);
+        // 【code 941】启动 SystemUI 作用域探测（幂等）—— 未授权时状态栏钮不显示。
+        registerScopeWatch(activity);
         int btnMaxW = dip2px(activity, CAPSULE_W_DP * 2 + CAPSULE_GAP_DP);
                     int btnDefH = dip2px(activity, CAPSULE_H_DP);
                     int btnScreenW = activity.getResources().getDisplayMetrics().widthPixels;
@@ -3661,6 +3867,27 @@ public class ActivityButtonHook {
     }
 
     /**
+     * 【code 941】状态栏钮是否该**显示**。
+     *
+     * 判据 =「当下有字幕可显示」**且**「SystemUI 作用域已确认授权」。
+     *
+     * 后者为什么必须：没勾选 SystemUI 作用域时，状态栏那条链路
+     * （{@link StatusBarSubtitleBridge#ACTION_LINE}）**没有接收方** —— 按钮点下去
+     * 只翻转一个没人听的开关，用户看到的是「按了没反应」。与其给一个假按钮，
+     * 不如不显示（需求原文：「如果检测到用户没有给插件勾选 com.android.systemui
+     * 作用域授权，则播放界面不显示状态栏字幕开关按钮」）。
+     *
+     * ⚠️ 与 {@link #statusBarButtonOn}（底色 = 开/关）是**两件事**，不要合并：
+     *    那个管「什么颜色」，这个管「在不在」。
+     * ⚠️ {@link #applyButtonText} 与 {@link #updateButtonDrawable(SubtitleRepository, boolean)}
+     *    **必须都走本函数** —— 两条路径各算一套正是 1.21.12 / 1.21.16 反复踩的坑
+     *    （「文字变了底色没变」「底色比事实早 9.5 秒」都是这么来的）。
+     */
+    private static boolean statusBarButtonVisible(SubtitleRepository repo, boolean noSub) {
+        return !noSub && StatusBarSubtitleBridge.isSystemUiScopeAuthorized();
+    }
+
+    /**
      * 【v57】悬浮窗钮是否呈「开」态。
      *
      * ⚠️ 无字幕时需求是「悬浮窗字幕按键显示无字幕」—— 它的**文字**变成「无字幕」，
@@ -3744,7 +3971,8 @@ public class ActivityButtonHook {
         final boolean floatOn = floatingButtonOn(repo, noSub);
         final String statusText = StatusBarSubtitleBridge.sAppEnabled ? "状态栏 开" : "状态栏 关";
         final boolean statusOn = statusBarButtonOn(repo, noSub);
-        final boolean statusVisible = !noSub;
+        // 【code 941】可见性多一条「SystemUI 作用域已授权」—— 见 statusBarButtonVisible。
+        final boolean statusVisible = statusBarButtonVisible(repo, noSub);
 
         // 签名 = 全部视觉属性（两钮的文字/底色 + 状态栏钮的可见性 + 悬浮窗钮的 alpha）。
         // 【1.21.13/1.21.14 的教训】判等必须覆盖该控件的**全部**输入，漏任何一项
@@ -3842,7 +4070,8 @@ public class ActivityButtonHook {
         sButton.setBackground(createCapsuleDrawable(floatingButtonOn(repo, noSub)));
         if (sStatusBarButton != null) {
             sStatusBarButton.setBackground(createCapsuleDrawable(statusBarButtonOn(repo, noSub)));
-            int want = noSub ? View.GONE : View.VISIBLE;
+            // 【code 941】与 applyButtonText 同口径（含作用域授权判据），不得各算一套。
+            int want = statusBarButtonVisible(repo, noSub) ? View.VISIBLE : View.GONE;
             if (sStatusBarButton.getVisibility() != want) {
                 sStatusBarButton.setVisibility(want);
             }

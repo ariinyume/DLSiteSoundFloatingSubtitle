@@ -2,8 +2,8 @@
 
 > 一个 LSPosed / Xposed 模块，在 DLsiteSound（DLsite 音频 App）的**播放页**上挂一个与播放进度同步的**悬浮字幕窗**；同时支持将字幕镜像到**系统状态栏**（在 SystemUI 进程内注入）。
 
-- 当前版本：**2.0.1**（`DLsiteFloat-2.0.1-debug.apk`，包名 `com.sena.dlsitesoundfloat`）
-- 📦 下载 APK：[Releases · v2.0.1](https://github.com/ariinyume/DLSiteSoundFloatingSubtitle/releases/tag/v2.0.1)
+- 当前版本：**2.0.2**（`DLsiteFloat-2.0.2-debug.apk`，包名 `com.sena.dlsitesoundfloat`）
+- 📦 下载 APK：[Releases · v2.0.2](https://github.com/ariinyume/DLSiteSoundFloatingSubtitle/releases/tag/v2.0.2)
 - 🕘 历史版本：[Releases · v1.21.0](https://github.com/ariinyume/DLSiteSoundFloatingSubtitle/releases/tag/v1.21.0)
 - 📝 开发进度：[DLsiteFloat插件开发进度管理](https://my.feishu.cn/wiki/CQoMwY4nFilzLkkrzG4cy44fnoh)
 
@@ -24,6 +24,11 @@
   - **遮挡时钟 / 通知图标区**：显示期间隐藏状态栏时钟与通知图标区，通知换成数字徽标；结束时原样还原。
   - **流体云避让**：字幕右界动态卡在流体云（`seeding_card_container`）左边；流体云不在时按固定左界（38dp）铺满。宽度带 24px 迟滞，避免流体云进出时宽度来回跳。
   - **暂停宽限 2s**：暂停后短暂保留再隐藏并还原时钟 / 通知图标，恢复播放自动回来。
+- 🆕 **2.0.2：徽标镂空 + 交互修复**：
+  - **状态栏数字徽标改镂空**：让位期间的通知数不再用近似色填充，而是**一条 `Path` + `EVEN_ODD`** 从圆底把数字**挖掉**，数字区域直接透出状态栏自己的底色（换主题也不会「数字和底色对不上」）。
+  - **未授权 `com.android.systemui` 作用域时不显示状态栏字幕开关**：用跨进程握手确认 SystemUI 是否已被注入（App 每 3s 发 PING、SystemUI 回 PONG，8s 内无回应即视为未授权），未授权时左侧那颗`状态栏 开 / 状态栏 关`按钮不显示。
+  - **切到无字幕音轨 4s 内提前收窗**：不再挂着「无字幕」占位等满 10s 裁决窗（字幕晚些到达会自动开回）。
+  - **✕ 关闭按钮两种收法**：点一次面板出现 ✕，**5s 内没人点自动隐藏**；期间**再点面板空白处立即收回**。
 - **进程内悬浮窗**：窗口直接挂在 DLsiteSound 进程内（`WindowManager` + `TYPE_APPLICATION_OVERLAY`），与各个 Hook 共享同一个 `SubtitleRepository` 实例，**无需任何跨进程 IPC、无需独立 Service**。
 - **悬浮窗可拖动 / 可缩放**：面板任意处按住拖动移动；右下角手柄拖动缩放（默认 85% 屏宽 × 200dp，最小 140×72dp，**纵向最长不超过半屏**）。
 - **按播放进度对齐字幕**：以播放器（`ExoPlayer` / expo 音频）真实播放进度为主轴对齐字幕行。
@@ -89,7 +94,7 @@
   1. 你的设备型号 / Android 版本 / ROM（尤其是否 ColorOS / 澎湃 / 原生 / 类原生 等）
   2. 使用的 DLsiteSound 的版本号
   3. 复现步骤 + LSPosed 日志（`DLsiteSoundFloat` 过滤）+ 必要时 `dlsitefloat_net.log`+ 录屏 / 截屏（请给敏感信息打码或进行截除）
-- **提交前请先确认**：装的是不是最新 APK（看 LSPosed 日志里 `==== BUILD 2.0.1 / code ...` 那一行）
+- **提交前请先确认**：装的是不是最新 APK（看 LSPosed 日志里 `==== BUILD 2.0.2 / code ...` 那一行）
 - 仓库地址：<https://github.com/ariinyume/DLSiteSoundFloatingSubtitle>
 - 提交 Issue：<https://github.com/ariinyume/DLSiteSoundFloatingSubtitle/issues>
 

@@ -1,3 +1,21 @@
+/*
+ * DLsiteSound Floating Subtitle - Xposed module for DLsite Sound
+ * Copyright (C) 2026 ariinyume
+ *
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * This program is free software: you can redistribute it and/or modify it under
+ * the terms of the GNU General Public License as published by the Free Software
+ * Foundation, either version 3 of the License, or (at your option) any later
+ * version.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ * FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program. If not, see <https://www.gnu.org/licenses/>.
+ */
 package com.sena.dlsitesoundfloat.data;
 
 import android.content.Context;
@@ -36,6 +54,19 @@ public class SubtitleRepository {
      * cues 本来就是空（用户一直待在无字幕音轨上）则维持 3000ms 结案，零代价。
      */
     private static final long NO_SUBTITLE_GRACE_MS_CACHED = 10000L;
+    /**
+     * 【code 942】「提前收窗」：进入待确认后等这么久还没等到字幕 JSON，就先把悬浮窗关掉
+     * （provisional —— 只关窗，不裁决）。
+     *
+     * 动机（2026-09-22 实测）：从有字幕音轨切到无字幕音轨时，裁决窗长达 10s
+     * （NO_SUBTITLE_GRACE_MS_CACHED），期间悬浮窗一直挂着显示「无字幕」占位
+     * （录屏 21:29:51 至 21:30:00 整 10 秒），被当成「没有自动关闭」。
+     * 不能靠缩短裁决窗：实测有字幕轨的 JSON 到达延迟双峰（小于 0.7s 或约 5.5s，历史 12s+），
+     * 缩窗会误杀慢 JSON 的真字幕轨。所以把「关窗」从「裁决」里拆出来：
+     * 4s 无 JSON 就先关窗（code 942 原为 2s，code 943 放宽到 6s，code 944 收到 4s）；之后 JSON 到了，loadFromJsonArrayInternal 里现成的
+     * autoClosedForNoSubtitle 恢复路径会把窗口开回来。裁决（数据侧）仍按原 grace 走。
+     */
+    private static final long NO_SUBTITLE_EARLY_CLOSE_MS = 4000L;
     /** 【1.21.15】判「无字幕」后若在这么久内又来字幕 JSON，就把它当假阴性记一笔。 */
     private static final long FALSE_NEGATIVE_REPORT_MS = 60000L;
     /**
@@ -508,6 +539,36 @@ public class SubtitleRepository {
         notifyObservers();
         if (suspended) {
             mainHandler.postDelayed(() -> resolvePendingTrack(token), grace);
+            // 【code 942】提前收窗：比裁决窗更早把悬浮窗关掉（字幕 JSON 晚到会自动开回来）。
+            mainHandler.postDelayed(() -> provisionalEarlyClose(token),
+                    Math.min(NO_SUBTITLE_EARLY_CLOSE_MS, grace));
+        }
+    }
+
+    /**
+     * 【code 942】提前收窗：待确认期间 NO_SUBTITLE_EARLY_CLOSE_MS 内没有字幕 JSON 到达，
+     * 就先把悬浮窗关掉 —— 不下「无字幕」结论、不动 cues，只关窗。
+     *
+     * 关窗后：JSON 到了 -> autoClosedForNoSubtitle 让 loadFromJsonArrayInternal 自动开回窗口；
+     * 等到裁决窗到点 -> resolvePendingTrack 正常裁决（窗口已关，裁决只补数据侧结论）；
+     * 裁决发现是假换轨 -> SPURIOUS 分支负责开回窗口（见 resolvePendingTrack）。
+     * 用户在窗口期内手动动过窗口（setFloatingWindowOpen 会清 autoClosedForNoSubtitle），
+     * 且 floatingWindowOpen 已变 -> 本方法卫语句下安全 no-op。
+     */
+    private void provisionalEarlyClose(long token) {
+        boolean closed = false;
+        synchronized (lock) {
+            if (token != pendingToken || !pendingTrackDecision || !floatingWindowOpen) {
+                return; // 已裁决 / 又换轨 / 字幕已到 / 窗口已不在
+            }
+            floatingWindowOpen = false;
+            autoClosedForNoSubtitle = true;
+            closed = true;
+        }
+        if (closed) {
+            XposedCompat.log("[DLsiteSoundFloat] no subtitle json yet"
+                    + " -> auto-closed floating window early (will reopen if json arrives)");
+            notifyObservers();
         }
     }
 
@@ -516,6 +577,7 @@ public class SubtitleRepository {
         boolean noSubtitles = false;
         boolean spurious = false;
         boolean closed = false;
+        boolean reopenedAfterSpurious = false; // 【code 942】假换轨回收提前收窗
         int cueCount = 0;
         int subCount = 0;
         int samples = 0;
@@ -598,6 +660,15 @@ public class SubtitleRepository {
             } else {
                 subCount = cues.size();
             }
+            // 【code 942】提前收窗收错了（其实没换轨）-> 立刻开回来，并撤销这份记忆：
+            // 否则窗口会被错杀到下一次字幕加载，且那时可能把用户已手动关掉的窗口擅自打开。
+            // 安全性：setFloatingWindowOpen 手动开关会清 autoClosedForNoSubtitle，
+            // 故此处为 true 当且仅当「是本模块自动关的」（提前收窗或旧裁决路径）。
+            if (spurious && autoClosedForNoSubtitle) {
+                autoClosedForNoSubtitle = false;
+                floatingWindowOpen = true;
+                reopenedAfterSpurious = true;
+            }
         }
         if (spurious) {
             XposedCompat.log("[DLsiteSoundFloat] track decision: SPURIOUS track change"
@@ -611,6 +682,10 @@ public class SubtitleRepository {
         } else {
             XposedCompat.log("[DLsiteSoundFloat] track decision: subtitle json arrived"
                     + " -> keep cues=" + subCount);
+        }
+        if (reopenedAfterSpurious) {
+            XposedCompat.log("[DLsiteSoundFloat] track change was spurious"
+                    + " -> reopen floating window (early-closed earlier)");
         }
         notifyObservers();
     }
