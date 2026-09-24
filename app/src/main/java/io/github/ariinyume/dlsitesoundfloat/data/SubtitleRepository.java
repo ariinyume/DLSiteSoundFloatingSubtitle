@@ -16,7 +16,7 @@
  * You should have received a copy of the GNU General Public License along with
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
-package com.sena.dlsitesoundfloat.data;
+package io.github.ariinyume.dlsitesoundfloat.data;
 
 import android.content.Context;
 import android.os.Handler;
@@ -32,7 +32,7 @@ import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 
-import com.sena.dlsitesoundfloat.util.XposedCompat;
+import io.github.ariinyume.dlsitesoundfloat.util.XposedCompat;
 
 public class SubtitleRepository {
     private static SubtitleRepository instance;
@@ -695,7 +695,7 @@ public class SubtitleRepository {
     // ======================================================================
 
     /**
-     * 由 {@link com.sena.dlsitesoundfloat.hook.PlayerPositionHook} 采集到的 ExoPlayer 播放状态。
+     * 由 {@link io.github.ariinyume.dlsitesoundfloat.hook.PlayerPositionHook} 采集到的 ExoPlayer 播放状态。
      *
      * 需求：**音频播放结束后，悬浮窗要自动关闭**。
      *
@@ -751,7 +751,7 @@ public class SubtitleRepository {
      */
     private volatile int playingState = -1;
 
-    /** 由 {@link com.sena.dlsitesoundfloat.hook.PlayerPositionHook} 采集到的播放意愿。 */
+    /** 由 {@link io.github.ariinyume.dlsitesoundfloat.hook.PlayerPositionHook} 采集到的播放意愿。 */
     public void setPlaying(boolean playing) {
         int v = playing ? 1 : 0;
         if (v == playingState) {

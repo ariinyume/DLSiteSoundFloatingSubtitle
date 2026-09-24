@@ -16,12 +16,18 @@
  * You should have received a copy of the GNU General Public License along with
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
-package com.sena.dlsitesoundfloat.util;
+package io.github.ariinyume.dlsitesoundfloat.data;
 
-import android.content.Context;
+import java.util.List;
 
-public class Utils {
-    public static int dip2px(Context ctx, float dp) {
-        return (int) (dp * ctx.getResources().getDisplayMetrics().density + 0.5f);
+public class SubtitleCue {
+    public double startTime;
+    public double endTime;
+    public List<String> subtitles;
+
+    public SubtitleCue(double startTime, double endTime, List<String> subtitles) {
+        this.startTime = startTime;
+        this.endTime = endTime;
+        this.subtitles = subtitles;
     }
 }

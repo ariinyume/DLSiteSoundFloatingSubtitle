@@ -16,12 +16,12 @@
  * You should have received a copy of the GNU General Public License along with
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
-package com.sena.dlsitesoundfloat.util;
+package io.github.ariinyume.dlsitesoundfloat.util;
 
 import android.content.Context;
 import android.os.Environment;
 
-import com.sena.dlsitesoundfloat.data.SubtitleRepository;
+import io.github.ariinyume.dlsitesoundfloat.data.SubtitleRepository;
 
 import java.io.File;
 import java.io.FileWriter;

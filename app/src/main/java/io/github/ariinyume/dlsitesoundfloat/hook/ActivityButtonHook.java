@@ -16,7 +16,7 @@
  * You should have received a copy of the GNU General Public License along with
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
-package com.sena.dlsitesoundfloat.hook;
+package io.github.ariinyume.dlsitesoundfloat.hook;
 
 import android.app.Activity;
 import android.content.Context;
@@ -37,10 +37,10 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-import com.sena.dlsitesoundfloat.BuildConfig;
-import com.sena.dlsitesoundfloat.data.SubtitleRepository;
-import com.sena.dlsitesoundfloat.util.StatusBarSubtitleBridge;
-import com.sena.dlsitesoundfloat.util.XposedCompat;
+import io.github.ariinyume.dlsitesoundfloat.BuildConfig;
+import io.github.ariinyume.dlsitesoundfloat.data.SubtitleRepository;
+import io.github.ariinyume.dlsitesoundfloat.util.StatusBarSubtitleBridge;
+import io.github.ariinyume.dlsitesoundfloat.util.XposedCompat;
 
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Method;
@@ -502,7 +502,7 @@ public class ActivityButtonHook {
     /**
      * 【1.21.12 问题 2】按钮从「有字幕」切到「无字幕」之前，先压这么久的延时。
      *
-     * 换轨后仓库会进「待确认」窗口（{@link com.sena.dlsitesoundfloat.data.SubtitleRepository}
+     * 换轨后仓库会进「待确认」窗口（{@link io.github.ariinyume.dlsitesoundfloat.data.SubtitleRepository}
      * 的 `NO_SUBTITLE_GRACE_MS` = 3000ms）：字幕先挂起不显示，等新音轨的字幕 JSON；
      * 等到窗口结束还没到才裁决「本音轨无字幕」（清 cues + 关悬浮窗）。
      *

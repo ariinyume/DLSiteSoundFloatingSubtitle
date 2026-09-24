@@ -16,15 +16,15 @@
  * You should have received a copy of the GNU General Public License along with
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
-package com.sena.dlsitesoundfloat.util;
+package io.github.ariinyume.dlsitesoundfloat.util;
 
 import android.content.Context;
 import android.content.Intent;
 import android.os.SystemClock;
 import android.text.TextUtils;
 
-import com.sena.dlsitesoundfloat.data.SubtitleCue;
-import com.sena.dlsitesoundfloat.data.SubtitleRepository;
+import io.github.ariinyume.dlsitesoundfloat.data.SubtitleCue;
+import io.github.ariinyume.dlsitesoundfloat.data.SubtitleRepository;
 
 import java.util.List;
 
@@ -53,9 +53,9 @@ import java.util.List;
  */
 public final class StatusBarSubtitleBridge {
     public static final String ACTION_LINE =
-            "com.sena.dlsitesoundfloat.action.STATUSBAR_SUBTITLE_LINE";
+            "io.github.ariinyume.dlsitesoundfloat.action.STATUSBAR_SUBTITLE_LINE";
     public static final String ACTION_ENABLED =
-            "com.sena.dlsitesoundfloat.action.STATUSBAR_SUBTITLE_ENABLED";
+            "io.github.ariinyume.dlsitesoundfloat.action.STATUSBAR_SUBTITLE_ENABLED";
     /**
      * 【code 924】反向通道：**SystemUI -> App** 的「请求关闭状态栏字幕」。
      *
@@ -69,7 +69,7 @@ public final class StatusBarSubtitleBridge {
      *   与胶囊按钮点击共用同一条执行路径。
      */
     public static final String ACTION_DISMISS_REQUEST =
-            "com.sena.dlsitesoundfloat.action.STATUSBAR_SUBTITLE_DISMISS_REQUEST";
+            "io.github.ariinyume.dlsitesoundfloat.action.STATUSBAR_SUBTITLE_DISMISS_REQUEST";
     /**
      * 【code 941】作用域探测：**App -> SystemUI** 的探测广播。
      *
@@ -81,7 +81,7 @@ public final class StatusBarSubtitleBridge {
      * 发一条 PING，被注入的 SystemUI 会回 {@link #ACTION_SCOPE_PONG}；没被注入则永远收不到。
      */
     public static final String ACTION_SCOPE_PING =
-            "com.sena.dlsitesoundfloat.action.STATUSBAR_SCOPE_PING";
+            "io.github.ariinyume.dlsitesoundfloat.action.STATUSBAR_SCOPE_PING";
     /**
      * 【code 941】作用域探测应答：**SystemUI -> App**。
      *
@@ -90,7 +90,7 @@ public final class StatusBarSubtitleBridge {
      *    无实质风险，不值得为此引入签名校验的复杂度。
      */
     public static final String ACTION_SCOPE_PONG =
-            "com.sena.dlsitesoundfloat.action.STATUSBAR_SCOPE_PONG";
+            "io.github.ariinyume.dlsitesoundfloat.action.STATUSBAR_SCOPE_PONG";
     /** 关闭原因（仅用于日志/取证）。 */
     public static final String EXTRA_DISMISS_REASON = "reason";
     public static final String EXTRA_LINE = "line";

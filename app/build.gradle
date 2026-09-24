@@ -5,14 +5,14 @@ plugins {
 // ============================================================================
 //  版本 / 包名 规则（v28；2.0.0 起走 libxposed 现代 API）
 //
-//  单包：包名 com.sena.dlsitesoundfloat。
+//  单包：包名 io.github.ariinyume.dlsitesoundfloat。
 //
 //  LSPosed 模块列表里显示的三要素：
 //    · 模块名  ← res/values/strings.xml 的 app_name（DLsiteFloat）
 //    · 简介    ← AndroidManifest 的 android:description（@string/app_description）
 //    · 图标    ← @mipmap/ic_launcher（res/mipmap-*/ic_launcher.png，圆角 80px）
 //
-//  ⚠️ namespace 与 applicationId 同为 com.sena.dlsitesoundfloat：
+//  ⚠️ namespace 与 applicationId 同为 io.github.ariinyume.dlsitesoundfloat：
 //     java 包名与 META-INF/xposed/java_init.list 里的入口类全名都跟 namespace 走。
 //
 //  ── 2.0.0：传统 Xposed API → libxposed 现代 API（API 102）──
@@ -34,7 +34,7 @@ plugins {
 //                 如 9 月 20 日发版 → 0920；10 月 3 日 → 1003。
 //                 ⚠️ 不是 20000 这种「语义版本 ×1000」的老规则。
 //                 同日多次发版时后一位可用 0921/0922 递增（保持单调即可）。
-def appVersionTag = '2.0.3'
+def appVersionTag = '2.1.0'
 // ⚠️ 写成 int 字面量 925（不要写 0925 —— Groovy 可能按八进制/前导零解析）：
 //    versionCode 的**数值**是 925，管理器里显示 925，可读语义看 appVersionCodeLabel。
 //    【0921.1】2.0.1 的**9/21 第一版**（code 923 → 924，versionName 不变）：
@@ -94,16 +94,16 @@ def appVersionTag = '2.0.3'
 //    修法：归零档 need 取 0、采样门槛由 2 降到 1（首次检测即收起）；为防 fling 中锚点
 //    被滚出屏幕时误收，新增前置门「页面已静止 ≥80ms」（真离场实测 still=209~729ms，
 //    全部远超此门）。诊断日志新增 goneStill= 直接可验。
-def appVersionCode = 949
-def appVersionCodeLabel = '0924.2'
-def appVersionName = '2.0.3'
+def appVersionCode = 950
+def appVersionCodeLabel = '0924.3'
+def appVersionName = '2.1.0'
 
 android {
-    namespace 'com.sena.dlsitesoundfloat'
+    namespace 'io.github.ariinyume.dlsitesoundfloat'
     compileSdk 34
 
     defaultConfig {
-        applicationId "com.sena.dlsitesoundfloat"
+        applicationId "io.github.ariinyume.dlsitesoundfloat"
         minSdk 24
         targetSdk 34
         versionCode appVersionCode

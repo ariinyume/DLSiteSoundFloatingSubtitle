@@ -16,7 +16,7 @@
  * You should have received a copy of the GNU General Public License along with
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
-package com.sena.dlsitesoundfloat.window;
+package io.github.ariinyume.dlsitesoundfloat.window;
 
 import android.content.Context;
 import android.content.Intent;
@@ -31,10 +31,10 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 
-import com.sena.dlsitesoundfloat.data.SubtitleRepository;
-import com.sena.dlsitesoundfloat.view.FloatingSubtitleView;
+import io.github.ariinyume.dlsitesoundfloat.data.SubtitleRepository;
+import io.github.ariinyume.dlsitesoundfloat.view.FloatingSubtitleView;
 
-import com.sena.dlsitesoundfloat.util.XposedCompat;
+import io.github.ariinyume.dlsitesoundfloat.util.XposedCompat;
 
 /**
  * 进程内悬浮窗管理器（单例）。

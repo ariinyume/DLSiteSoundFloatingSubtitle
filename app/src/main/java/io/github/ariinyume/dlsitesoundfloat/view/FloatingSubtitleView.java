@@ -16,7 +16,7 @@
  * You should have received a copy of the GNU General Public License along with
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
-package com.sena.dlsitesoundfloat.view;
+package io.github.ariinyume.dlsitesoundfloat.view;
 
 import android.animation.ValueAnimator;
 import android.content.Context;
@@ -39,12 +39,12 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
-import com.sena.dlsitesoundfloat.data.SubtitleCue;
-import com.sena.dlsitesoundfloat.data.SubtitleRepository;
+import io.github.ariinyume.dlsitesoundfloat.data.SubtitleCue;
+import io.github.ariinyume.dlsitesoundfloat.data.SubtitleRepository;
 
 import java.util.List;
 
-import com.sena.dlsitesoundfloat.util.XposedCompat;
+import io.github.ariinyume.dlsitesoundfloat.util.XposedCompat;
 
 /**
  * 悬浮窗内的字幕视图。

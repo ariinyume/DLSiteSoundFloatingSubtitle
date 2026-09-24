@@ -16,7 +16,7 @@
  * You should have received a copy of the GNU General Public License along with
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
-package com.sena.dlsitesoundfloat.view;
+package io.github.ariinyume.dlsitesoundfloat.view;
 
 import android.content.Context;
 import android.graphics.Canvas;
@@ -27,7 +27,7 @@ import android.view.Gravity;
 import android.view.ViewGroup;
 import android.widget.TextView;
 
-import com.sena.dlsitesoundfloat.util.XposedCompat;
+import io.github.ariinyume.dlsitesoundfloat.util.XposedCompat;
 
 /**
  * 状态栏左侧的「通知数徽标」—— 圆底 + **镂空数字**。

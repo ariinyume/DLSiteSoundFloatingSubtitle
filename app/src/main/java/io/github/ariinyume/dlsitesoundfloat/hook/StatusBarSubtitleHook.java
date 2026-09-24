@@ -16,7 +16,7 @@
  * You should have received a copy of the GNU General Public License along with
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
-package com.sena.dlsitesoundfloat.hook;
+package io.github.ariinyume.dlsitesoundfloat.hook;
 
 import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
@@ -44,10 +44,10 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
-import com.sena.dlsitesoundfloat.BuildConfig;
-import com.sena.dlsitesoundfloat.view.NotificationBadgeView;
-import com.sena.dlsitesoundfloat.util.StatusBarSubtitleBridge;
-import com.sena.dlsitesoundfloat.util.XposedCompat;
+import io.github.ariinyume.dlsitesoundfloat.BuildConfig;
+import io.github.ariinyume.dlsitesoundfloat.view.NotificationBadgeView;
+import io.github.ariinyume.dlsitesoundfloat.util.StatusBarSubtitleBridge;
+import io.github.ariinyume.dlsitesoundfloat.util.XposedCompat;
 
 import java.lang.reflect.Method;
 import java.util.ArrayDeque;

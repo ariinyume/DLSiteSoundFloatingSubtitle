@@ -16,7 +16,7 @@
  * You should have received a copy of the GNU General Public License along with
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
-package com.sena.dlsitesoundfloat.hook;
+package io.github.ariinyume.dlsitesoundfloat.hook;
 
 import android.graphics.Rect;
 import android.view.View;
@@ -24,7 +24,7 @@ import android.view.ViewGroup;
 import android.view.ViewParent;
 import android.widget.TextView;
 
-import com.sena.dlsitesoundfloat.data.SubtitleRepository;
+import io.github.ariinyume.dlsitesoundfloat.data.SubtitleRepository;
 
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Field;
@@ -35,7 +35,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
-import com.sena.dlsitesoundfloat.util.XposedCompat;
+import io.github.ariinyume.dlsitesoundfloat.util.XposedCompat;
 
 /**
  * 视图树扫描器（React Native 兼容）。

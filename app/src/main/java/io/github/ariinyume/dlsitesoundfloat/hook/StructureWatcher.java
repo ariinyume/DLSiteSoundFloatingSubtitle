@@ -16,12 +16,12 @@
  * You should have received a copy of the GNU General Public License along with
  * this program. If not, see <https://www.gnu.org/licenses/>.
  */
-package com.sena.dlsitesoundfloat.hook;
+package io.github.ariinyume.dlsitesoundfloat.hook;
 
 import android.view.View;
 import android.view.ViewGroup;
 
-import com.sena.dlsitesoundfloat.util.XposedCompat;
+import io.github.ariinyume.dlsitesoundfloat.util.XposedCompat;
 
 import java.lang.reflect.Method;
 
