@@ -626,6 +626,47 @@ public class ActivityButtonHook {
     private static final long ANCHOR_DEAD_WITH_EVIDENCE_MS = 200L;
 
     /**
+     * 【code 948】锚点**面积归零**（屏幕上不剩一个像素）时的确认窗。
+     *
+     * 为什么需要这一档（真机取证 work_diag_76）：
+     *   「点简介回作品页」时播放页是**瞬切**的（无过渡动画），进度条与标题同时消失，
+     *   而按钮却晚了 **~0.75s** 才收起。视频逐帧像素：播放页特征区在 t≈1.05s 归零、
+     *   胶囊按钮区到 t≈1.80s 才归零；日志侧对应的是
+     *   {@code anchor dead for 0ms (area=0% evidence=false need=600ms)} → 600ms 后才 hide。
+     *   即：延迟全部来自 {@link #ANCHOR_DEAD_MIN_MS} 这条防假死确认窗。
+     *
+     * 为什么可以收这么短（不动 600ms 默认档）：
+     *   600ms 要防的是「切页过渡期锚点假死」——实测那种假死的表现是容器**部分可见**
+     *   （拖动场景实测面积 30~45%，离 0 还差得远，见 {@link #PAGE_HOLD_MIN_AREA}）。
+     *   面积真的归零只有两种情形：① 整页被卸载；② 页面被拖到完全看不见且已经停住
+     *   （拖动中走 {@link #isPageHeld} 抑制门，根本到不了这里）。两种都该同步收起按钮。
+     *
+     * 【code 949 真机复测】120ms 仍然太长 —— work_diag_78 的 30fps 视频逐帧像素：
+     *   「页面消失 → 胶囊消失」= +133/+100/+200/+200/+67ms；日志侧 hide 延迟 120~167ms。
+     *   首次采样其实与「页面消失」同帧（廉价探针由锚点活/死翻转触发），但 need=120ms
+     *   迫使它**再等一个 120ms 探针周期**才能越过门槛 —— 于是永远吃满一整个周期。
+     *   ⇒ 归零档改为 need=0：首次采样即收起（预期 ≤1 帧，视觉上与进度条同时消失）。
+     *   防误收改由下面的 ANCHOR_DEAD_GONE_STILL_MS 前置门承担（need=0 会让
+     *   {@link #sLastPageMotionMs} 那条「页面还在动就别收」的门失效，因为 deadFor>=0 恒真）。
+     */
+    private static final long ANCHOR_DEAD_GONE_MS = 0L;
+
+    /**
+     * 【code 949】归零档的**前置门**：页面必须已经静止这么久，才允许「面积归零 ⇒ 立刻收起」。
+     *
+     * 为什么需要：need 从 120ms 降到 0 之后 {@code deadFor >= 0} 恒真，
+     *   {@link #sLastPageMotionMs} 那条门（{@code since = max(死亡起点, 最后运动)}）就形同虚设了。
+     *   而 fling / 惯性滚动中锚点被滚出屏幕，正是 area=0% 最常见的来源 ——
+     *   那时候绝不该把按钮收掉（手指松开后页面还会回弹，收掉再亮就是「闪一下」）。
+     *
+     * 取值依据（真机 work_diag_78，9 次真实离场）：首次判死时日志里的
+     *   {@code still=} 实测为 209/211/227/249/442/496/573/628/630/683/699/707/729ms，
+     *   最小值 209ms —— 全部远超此门；而惯性滚动中该值只有几十 ms。
+     *   80ms（<1 个探针周期）既放行全部真实离场，又挡住滚动中的瞬时归零。
+     */
+    private static final long ANCHOR_DEAD_GONE_STILL_MS = 80L;
+
+    /**
      * 兜底宽限：**从未取到过锚点**时用（{@code findPlayerAnchor} 返回 null 的机型/页面结构）。
      * 锚点缺失时无法区分「滑条被回收但仍在本页」与「已离开本页」，只能靠时间放宽一点。
      */
@@ -3116,10 +3157,15 @@ public class ActivityButtonHook {
                         break;
                     }
                     boolean anchorAlive = isPlayerAnchorAlive();
+                    // 【code 948】面积比在这里一次算好：原版只在「存活状态翻转」时才算一次，
+                    //   下面判死路径拿不到它 —— 而它正是本轮「按钮滞后 0.75s」的解法所需
+                    //   （见 ANCHOR_DEAD_GONE_MS 的完整推导）。
+                    float anchorRatio = anchorAreaRatio(screenW, screenH);
+                    boolean anchorGone = anchorRatio <= 0f;
                     if (sLastAnchorAlive == null || sLastAnchorAlive != anchorAlive) {
                         sLastAnchorAlive = anchorAlive;
                         XposedCompat.log(TAG + " player anchor alive=" + anchorAlive
-                                + " (area=" + Math.round(anchorAreaRatio(screenW, screenH) * 100) + "%)");
+                                + " (area=" + Math.round(anchorRatio * 100) + "%)");
                     }
                     if (anchorAlive) {
                         // 页面级容器还在屏幕上 → 仍在播放页（主滑条只是被 RN 回收 / 控制条隐藏）。
@@ -3180,7 +3226,19 @@ public class ActivityButtonHook {
                         }
                         sAnchorDeadSamples++;
                         boolean evidence = isFreshOtherEvidence(now);
-                        long need = evidence ? ANCHOR_DEAD_WITH_EVIDENCE_MS : ANCHOR_DEAD_MIN_MS;
+                        // 【code 949】归零档前置门：面积**严格归零** 且**页面已静止**。
+                        //   948 只要求面积归零（need=120ms），真机复测仍残留 100~200ms ——
+                        //   因为首次采样与「页面消失」同帧，而 120ms 的 need 逼它再等一个探针周期。
+                        //   补上「页面已静止」这条门之后 need 才能取 0：首次采样即收起，
+                        //   而 fling / 拖动中（页面仍在动）依旧被这条门与 isPageHeld 挡住。
+                        boolean goneStill = anchorGone
+                                && (sLastPageMotionMs == 0L
+                                    || now - sLastPageMotionMs >= ANCHOR_DEAD_GONE_STILL_MS);
+                        // 【code 948/949】三档确认窗：正面证据 200ms < **归零且已静止 0ms** < 默认 600ms。
+                        //   归零档取最短 —— 它是最强的一条信号（屏幕上真的一个像素都不剩），
+                        //   而 600ms 那条防假死窗对它毫无意义（假死时容器仍部分可见）。
+                        long need = evidence ? ANCHOR_DEAD_WITH_EVIDENCE_MS
+                                : (goneStill ? ANCHOR_DEAD_GONE_MS : ANCHOR_DEAD_MIN_MS);
                         long since = sAnchorDeadSinceMs;
                         if (evidence && sLastOtherSeenMs != 0L && sLastOtherSeenMs < since) {
                             since = sLastOtherSeenMs;
@@ -3210,6 +3268,7 @@ public class ActivityButtonHook {
                             XposedCompat.log(TAG + " anchor dead for " + deadFor + "ms"
                                     + " (area=" + Math.round(anchorAreaRatio(screenW, screenH) * 100) + "%"
                                     + " evidence=" + evidence + " need=" + need + "ms"
+                                    + " gone=" + anchorGone + " goneStill=" + goneStill
                                     + " samples=" + sAnchorDeadSamples
                                     + " still=" + (sLastPageMotionMs == 0L ? -1
                                             : (now - sLastPageMotionMs)) + "ms)");
@@ -3231,11 +3290,15 @@ public class ActivityButtonHook {
                             }
                             break;
                         }
-                        if (deadFor >= need && sAnchorDeadSamples >= ANCHOR_DEAD_MIN_SAMPLES) {
+                        // 【code 949】归零且已静止时只认 1 次采样（首次检测即收起）；
+                        //   其余两档维持「连续 2 次采样」去抖不变。
+                        int needSamples = goneStill ? 1 : ANCHOR_DEAD_MIN_SAMPLES;
+                        if (deadFor >= need && sAnchorDeadSamples >= needSamples) {
                             if (Boolean.TRUE.equals(sLastDecision)) {
                                 XposedCompat.log(TAG + " no player evidence for "
                                         + (sLastPlayerSeenMs == 0L ? -1 : (now - sLastPlayerSeenMs))
                                         + "ms (anchor dead " + deadFor + "ms evidence=" + evidence
+                                        + " gone=" + anchorGone
                                         // v38：门失守时**快照的值**必须看得见，否则下一轮
                                         // 只能靠猜「到底是判据②失效还是③超期 / detach」。
                                         + " | snap=" + sHeldOffset + "px/"

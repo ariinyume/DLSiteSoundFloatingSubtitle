@@ -34,7 +34,7 @@ plugins {
 //                 如 9 月 20 日发版 → 0920；10 月 3 日 → 1003。
 //                 ⚠️ 不是 20000 这种「语义版本 ×1000」的老规则。
 //                 同日多次发版时后一位可用 0921/0922 递增（保持单调即可）。
-def appVersionTag = '2.0.2'
+def appVersionTag = '2.0.3'
 // ⚠️ 写成 int 字面量 925（不要写 0925 —— Groovy 可能按八进制/前导零解析）：
 //    versionCode 的**数值**是 925，管理器里显示 925，可读语义看 appVersionCodeLabel。
 //    【0921.1】2.0.1 的**9/21 第一版**（code 923 → 924，versionName 不变）：
@@ -82,9 +82,21 @@ def appVersionTag = '2.0.2'
 //    本版同时把这几项一并纳入正式发版：未授权 SystemUI 作用域则不显示状态栏字幕
 //    开关按钮（跨进程握手探测）、切到无字幕音轨 4s 内提前收窗、点面板出现的
 //    ✕ 关闭按钮「5s 无操作自动隐藏 + 再点面板空白处立即收回」。
-def appVersionCode = 947
-def appVersionCodeLabel = '0923.5'
-def appVersionName = '2.0.2'
+//    【0924.1】code 948：修「点简介回作品页时按钮比播放页/进度条晚约 0.75s 才消失」。
+//    视频逐帧像素取证：播放页特征区 t≈1.05s 归零、胶囊按钮区 t≈1.80s 才归零；日志对应
+//    `anchor dead for 0ms (area=0% evidence=false need=600ms)` → 600ms 后才 hide。
+//    修法：锚点**面积归零**时确认窗由 600ms 收到 120ms（三档：证据 200ms / 归零 120ms /
+//    默认 600ms）。不改默认档 —— 假死的表现是容器部分可见（30~45%），归零只有「整页被
+//    卸载」或「拖到完全看不见且已停住」两种。诊断日志新增 gone= 直接可验。
+//    【0924.2】code 949：修 948 残留的 100~200ms 滞后。30fps 视频逐帧像素复测：
+//    「页面消失 → 胶囊消失」= +133/+100/+200/+200/+67ms，与日志的 120ms 档完全吻合 ——
+//    首次采样虽与页面消失同帧，但 need=120ms 迫使它再等一个 120ms 探针周期，永远吃满。
+//    修法：归零档 need 取 0、采样门槛由 2 降到 1（首次检测即收起）；为防 fling 中锚点
+//    被滚出屏幕时误收，新增前置门「页面已静止 ≥80ms」（真离场实测 still=209~729ms，
+//    全部远超此门）。诊断日志新增 goneStill= 直接可验。
+def appVersionCode = 949
+def appVersionCodeLabel = '0924.2'
+def appVersionName = '2.0.3'
 
 android {
     namespace 'com.sena.dlsitesoundfloat'
