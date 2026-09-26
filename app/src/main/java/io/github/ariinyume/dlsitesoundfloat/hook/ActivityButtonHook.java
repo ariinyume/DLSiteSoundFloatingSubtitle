@@ -20,12 +20,15 @@ package io.github.ariinyume.dlsitesoundfloat.hook;
 
 import android.app.Activity;
 import android.content.Context;
+import android.content.res.Resources;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.text.TextPaint;
 import android.util.DisplayMetrics;
+import android.util.TypedValue;
 import android.view.Choreographer;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -39,6 +42,7 @@ import android.widget.TextView;
 
 import io.github.ariinyume.dlsitesoundfloat.BuildConfig;
 import io.github.ariinyume.dlsitesoundfloat.data.SubtitleRepository;
+import io.github.ariinyume.dlsitesoundfloat.util.I18n;
 import io.github.ariinyume.dlsitesoundfloat.util.StatusBarSubtitleBridge;
 import io.github.ariinyume.dlsitesoundfloat.util.XposedCompat;
 
@@ -398,8 +402,13 @@ public class ActivityButtonHook {
      * 尺寸收紧后单钮更贴近 MD3 filled button 的紧凑比例（90/35 = 2.571），
      * 而间距加宽到 10dp 让两个胶囊的「独立感」更明确 —— 96x36 + 8dp 时
      * 两钮几乎连成一条长胶囊，用户反馈分辨不出是两个独立按钮。
+     *
+     * 【code 954】单钮宽 75 -> **85dp**（Ari 2026-09-26 指令「单个胶囊宽改为85dp」，
+     *   版本号不变）。宽高比 85:32 ≈ 2.66，仍在一个饱满的 MD3 胶囊区间内；
+     *   组宽随之 160dp -> **180dp**（容器是 wrap_content，两个子视图的
+     *   {@link #CAPSULE_W_DP} 就是唯一真源，改这一处即可，别再改别处）。
      */
-    private static final int CAPSULE_W_DP = 75;
+    private static final int CAPSULE_W_DP = 85;
     private static final int CAPSULE_H_DP = 32;
     /** 【code 935 bug2】胶囊高度下限（dp）：可用带不足时按钮缩到这个值就不再缩。 */
     private static final int CAPSULE_MIN_H_DP = 20;
@@ -411,6 +420,8 @@ public class ActivityButtonHook {
     private static int sDescBottomStable = -1;
     /** 两个胶囊之间的间距（dp）。【code 922 问题 3】8 -> 10。 */
     private static final int CAPSULE_GAP_DP = 10;
+    /** 【code 955】胶囊内文字左右各留的安全边（合计 dp）：保证文字**完全**落在胶囊里。 */
+    private static final int CAPSULE_TEXT_SIDE_PAD_DP = 8;
     /**
      * 【code 923 几何 2】胶囊圆角（dp）—— **固定 15dp**。
      *
@@ -420,8 +431,50 @@ public class ActivityButtonHook {
      * 需求现在明确要 15dp，那就写死，并在 dex 层验得到（见 createCapsuleDrawable）。
      */
     private static final int CAPSULE_RADIUS_DP = 16;
-    /** 胶囊文字大小（sp）。 */
+    /** 胶囊文字大小（sp，**设计值**）。真正落笔用的是首次锁定的固定 px，见 {@link #sCapsuleTextPx}。 */
     private static final float CAPSULE_TEXT_SP = 13f;
+    /** 【code 955】适配兜底下限（sp 设计值）：可用宽度装不下时最多缩到这里，不再更小。 */
+    private static final float CAPSULE_TEXT_MIN_SP = 10f;
+
+    /**
+     * 【code 955】胶囊**自身度量**的密度 —— 首次用到时锁一次，**永不再锁**。
+     *
+     * ── 为什么必须再加一层（code 939 的 {@link #stableDensity} 还不够）──
+     * 真机日志（Ari 2026-09-26 15:34~15:36，work_diag_82）里这台机器的**宿主 App 密度读数
+     * 会长期在 OPPO 屏幕缩放档位之间来回跳**：
+     * <pre>
+     *   15:34:19 [几何4] … capsuleH=95  … density=2.9750001
+     *   15:34:23 density re-locked (sustained diff): 2.9750001 -> 3.875
+     *   15:34:23 [几何4] … capsuleH=124 … density=3.875        ← 胶囊高度 95 -> 124px
+     *   15:35:49 density re-locked (sustained diff): 2.9750001 -> 3.5
+     *   15:35:49 [几何4] … capsuleH=112 … density=3.5          ← 又变 112px
+     *   15:36:15 density re-locked (sustained diff): 3.5 -> 2.9750001
+     * </pre>
+     * 即：{@link #DENSITY_RELOCK_MS}=20s + {@link #DENSITY_RELOCK_SAMPLES}=100 次的「持续不一致
+     * 就重锁」会把**每个缩放档位**都当成新常态锁一遍 ⇒ 按钮高度在 95/112/124px 之间来回变
+     * （宽、圆角、文字、以及距滑条的偏移一起吃同一套 dip2px）—— 用户看到的就是
+     * 「按钮大小随显示大小变化」。
+     *
+     * ── 本版口径 ──
+     * 胶囊的**一切度量**（宽/高/间距/圆角/文字/各段偏移）只用本值算，且：
+     *   · 优先取**系统**密度（{@code Resources.getSystem()}）—— 它不受宿主 App 窗口级
+     *     配置覆盖影响，正是上面那串抖动的源头；
+     *   · 取到就**锁死**，此后无论 {@link #stableDensity} 怎么重锁都不再跟随；
+     *   · 用户后续改系统「显示大小」也不会再改变胶囊 px（进程若重启则按新值重新锁一次）。
+     * 位置里唯一还会跟着走的是「滑条在屏幕上的真实 y / 右缘」——那是宿主布局的实测值，
+     * 本来就该跟。
+     */
+    private static float sCapsuleMetricsDensity = 0f;
+
+    /**
+     * 【code 955】胶囊文字的**固定 px 字号**（首次算好后锁死）。
+     *
+     * 由 {@link #CAPSULE_TEXT_SP}（设计值）乘**首次锁定的 sp→px 换算**得到，并做一次
+     * 「在 85dp 宽里放得下」的适配兜底（见 {@link #fitCapsuleTextPx}）。之后：
+     *   · 不再吃 {@code scaledDensity} ⇒ 用户改「字体大小」不会让文字溢出胶囊；
+     *   · 不再吃重锁后的 density ⇒ 上面那串抖动也不会让文字忽大忽小。
+     */
+    private static float sCapsuleTextPx = 0f;
 
     /**
      * 【1.21.13 问题 2】按钮底色的三种模式。文字 / alpha / 底色三者必须**同一个口径、
@@ -673,6 +726,28 @@ public class ActivityButtonHook {
     private static final long NO_ANCHOR_GRACE_MS = 900L;
 
     /**
+     * 【code 953】「整棵树扫成空」时**不立即收起**，改为先补一趟快检的间隔（ms）。
+     *
+     * 取值：≥3 个 vsync（50ms）—— 实测那种退化测量的寿命是**一两帧**（窗口/RN 重排
+     * 落定前的中间态），60ms 足够跨过去；同时远小于 948/949 实测的真离场滞后
+     * （133/100/200/200/67ms），所以真离开播放页时用户也看不出来。
+     */
+    private static final long HIDE_RECHECK_DELAY_MS = 60L;
+
+    /**
+     * 【code 953】「上一趟还是播放页证据」的有效期（ms）—— 超过它就**不怀疑**这趟空扫描。
+     *
+     * 为什么是 2000：按钮可见时扫描节奏是 200~600ms（{@link #HEARTBEAT_FAST_MS} /
+     * {@link #HEARTBEAT_MS}），所以「上一趟还是 PLAYER」时 sLastPlayerSeenMs 距现在
+     * 通常 ≤700ms（真机实测 694ms）；而真离开播放页后它只会越来越旧。2000ms 把
+     * 「刚还在播放页」与「早就不在播放页」分干净，不会把正常收起推迟。
+     */
+    private static final long HIDE_RECHECK_EVIDENCE_MS = 2000L;
+
+    /** 【code 953】本回合是否已经补检过一次（非 0 = 已补检，不再推迟收起）。 */
+    private static long sHideRecheckMs = 0L;
+
+    /**
      * 锚点**仍存活**但一直处于 UNKNOWN 的兜底时限。
      * 用于兜住「锚点恰好选得过高层（一直可见）」的异常情况 ——
      * 宁可多显示一会儿，也不能让按钮在非播放页永远藏不掉。
@@ -743,6 +818,52 @@ public class ActivityButtonHook {
 
     /** 页面位移小于这个值就当没动（px），避免亚像素抖动把跟帧循环永远拖着跑。 */
     private static final int FOLLOW_DEADZONE_PX = 6;
+
+    /**
+     * 【code 951】标定基线 / 偏置前，参考点必须**连续稳住**这么久（墙钟，ms）。
+     *
+     * ── 为什么必须补这道闸（Ari 2026-09-25 反馈：「偶尔按键会到页面上不合理的位置，
+     *    挡住音声的封面」）──
+     *
+     * 真机铁证（用户随附日志 2026-09-25 09:33:41）：**打开播放页的那一次**标定
+     * 恰好落在页面入场转场**中途的一个短暂停顿窗**里 ——
+     * <pre>
+     *   41.075 verdict=PLAYER main=y=2233 yRatio=80% alpha=0.96   ← 页面还在淡入 + 上滑
+     *   41.155 [几何4] sliderCy=2233 bottomMargin=640            ← 页面此刻「没动」
+     *   41.155 page follow bias calibrated: 431px (ref=play-button)  ← ★ 把转场位移当成了宿主偏置
+     *   41.294 page follow channel: transform-sum active (first motion -431px, bias=431)
+     *   41.527 verdict=PLAYER main=y=1799 yRatio=64% alpha=1.00  ← 转场收尾（还差 434px 没走完）
+     *   41.730 [几何4] sliderCy=1799 bottomMargin=1074
+     * </pre>
+     * 标定值 431px 与「此刻还没走完的位移」完全同量级（2233−1799=434）—— 它就是转场本身。
+     * 于是 `vis = ΣtranslationY − 431` 在页面**真正静止**时恒为 **−431px**，
+     * 跟帧循环把这个值原样写到按钮的 `translationY` 上 ⇒ 两个胶囊被整体抬高 431px，
+     * 从「滑条上方」跑到**标题 / 封面下缘**上去了 —— 正是用户看到的现象。
+     *
+     * ⚠️ 这个状态**极难自愈**：偏置只标定一次（`sVisualBias != NO_BASELINE` 就不再进），
+     * 而 `captureFollowBaseline()` 又被 `sFollowAppliedY != 0` 挡在门外 ⇒ 一旦标错，
+     * 整个进程生命周期内按钮都偏那么多（`sHostBias` 备份还会把它跨按钮重建带过去）。
+     * 这就是「偶尔」的成因：只在「进场标定那一刻页面碰巧停了一下」的会话里出现。
+     *
+     * 原有门②「连续两次扫描读到同一个 y」挡不住它 —— 那两次扫描间隔实测只有 **80ms**
+     * （转场会灌一堆结构事件，扫描被踢得很密）。所以再加一道**墙钟**门：
+     * 候选位置必须连续稳住 {@code BASE_SETTLE_MS} 才算「页面到位」。
+     * 400ms 的依据：实测那个停顿窗只有 80~160ms，而入场动画整段 ≈0.5s；
+     * 取 400 既能滤掉全部转场停顿，又不会让「到位后跟手就绪」晚到肉眼看得出。
+     */
+    private static final long BASE_SETTLE_MS = 400L;
+
+    /**
+     * 【code 951】把「原始 transform 累加值」当成**宿主静态偏置**的上限（dp）。
+     *
+     * 偏置的物理来源只有系统 insets / 宿主布局补偿，量级是 0 ~ 几十 px
+     * （本机两次正常标定实测都是 **0px**；出问题那次的 431px = 145dp 显然是转场）。
+     * 超过这个量级的累加值一律**不采信为偏置** —— 那是「页面还在动」。
+     *
+     * ⚠️ 本闸**只拦偏置（transform 通道）**，不拦基线：万一某个 ROM 真有这么大的静态偏置，
+     * 退化成「基线 + 屏幕 y」那条通道照样能跟手（它是偏置无关的），不会功能全废。
+     */
+    private static final int BIAS_MAX_STATIC_DP = 64;
 
     /**
      * 跟帧循环的**静止帧数**上限（≈ 1s @60fps）：连续这么多帧参考点没动，
@@ -1072,6 +1193,23 @@ public class ActivityButtonHook {
     private static int sSampleY = FOLLOW_NO_BASELINE;
     /** 基线候选：连续两次读到同一个位置才落定基线（见 {@link #captureFollowBaseline()}）。 */
     private static int sBaseCandY = FOLLOW_NO_BASELINE;
+    /**
+     * 【code 951】基线候选**首次稳定**的时刻（uptimeMillis）；0 = 本轮还没开始计时。
+     *
+     * 与 {@link #sBaseCandY} 配对：候选一变就重新起算，连续稳住 {@link #BASE_SETTLE_MS}
+     * 才允许落定 —— 单靠「两次扫描读数相同」挡不住转场中途的短暂停顿（见 BASE_SETTLE_MS）。
+     */
+    private static long sBaseCandMs = 0L;
+    /** 【code 951】基线采集被推迟时的日志节流（uptimeMillis）——只在推迟期间打，不刷屏。 */
+    private static long sBaseDeferLogMs = 0L;
+    /**
+     * 【code 951】「偏置作废」自愈的候选位置 / 计时（见 {@link #healStaleBiasIfAtRest}）。
+     *
+     * 与 {@link #sBaseCandY} 分开存：那条链在 `sFollowAppliedY != 0` 时整条被挡在门外，
+     * 而自愈恰恰要处理「位移非 0」的那种状态。
+     */
+    private static int sHealCandY = FOLLOW_NO_BASELINE;
+    private static long sHealCandMs = 0L;
 
     /** {@link #scanPlayButton} 的临时结果（只用于单次挑选，主线程独占）。 */
     private static int sPickCenterX = 0;
@@ -1494,6 +1632,9 @@ public class ActivityButtonHook {
         int oldBase = sFollowBaseY;
         sFollowBaseY = sTmpLoc[1] - sFollowAppliedY;
         sBaseCandY = FOLLOW_NO_BASELINE;
+        sBaseCandMs = 0L;      // 【code 951】换了参考点 → 稳定窗从头起算
+        sHealCandY = FOLLOW_NO_BASELINE;
+        sHealCandMs = 0L;
         sSampleY = FOLLOW_NO_BASELINE;
         XposedCompat.log(TAG + " page follow rebase: ref -> "
                 + (isPlayBtn ? "play-button" : "anchor")
@@ -1818,6 +1959,16 @@ public class ActivityButtonHook {
      * ⚠️ v36 复盘：**三道门里最关键的③在 v35 里是坏的**（读错字段，永远不生效），
      * 而①②又刚好都能通过 —— 于是「基线被反复覆盖」这个 ③ 专门要防的场景原样发生了。
      * 教训：**诊断字段写进日志之前，先确认它读的是「当前生效的那一份状态」**。
+     *
+     * 【code 951】再加两道（本版）：
+     *   ④ **页面最近没动过** —— 判据接到位移采样的时间轴（{@code sLastPageMotionMs}）上，
+     *      而不是扫描节奏上。转场中途的停顿窗会让两次扫描读数相同（实测只隔 80ms），
+     *      但位移一旦从 431 走到 0，那条时间轴必然被续期，这一闸直接否掉标定；
+     *   ⑤ **候选位置连续稳住 {@link #BASE_SETTLE_MS}** —— 墙钟口径，与扫描节奏解耦。
+     * 两道门防的都是同一个真机事故：**打开播放页那一次标定踩进入场转场**，
+     * 把「还没走完的 431px 位移」当成宿主静态偏置记了下来 → 按钮被永久抬高 431px
+     * （= Ari 报的「按键跑到页面上不合理的位置，挡住音声的封面」）。
+     * 完整取证见 {@link #BASE_SETTLE_MS} 与 {@link #healStaleBiasIfAtRest}。
      */
     private static void captureFollowBaseline() {
         // v44：门① 从「循环没在跑」改成「循环自己报告页面已静止」。
@@ -1831,8 +1982,24 @@ public class ActivityButtonHook {
         }
         int vis = pageVisualOffset();
         int y = readReferenceY();
+        long now = SystemClock.uptimeMillis();
         if (y == FOLLOW_NO_BASELINE) {
             sBaseCandY = FOLLOW_NO_BASELINE;
+            sBaseCandMs = 0L;
+            return;
+        }
+        // ── 【code 951 门①.5】页面**最近没动过**（本轮主修之一）──
+        //
+        // 「位置两次读数相同」不等于「页面到位了」：入场转场中途会有短暂的停顿窗
+        // （实测 80~160ms），窗内读两次 y 完全一样。但只要把它接到**位移采样的时间轴**上
+        // 就骗不过去 —— 页面从 431px 走到 0 那一刻 {@link #notePageMotion()} 一定会续期
+        // {@link #sLastPageMotionMs}，于是「安静不足 PAGE_MOTION_HOLD_MS」直接否掉标定。
+        // （本闸用的是**位移**的时间轴，而不是扫描节奏的时间轴 —— 后者会被转场的
+        //   密集结构事件踢到 80ms 一次，根本量不出「停了多久」。）
+        if (sLastPageMotionMs == 0L || now - sLastPageMotionMs < PAGE_MOTION_HOLD_MS) {
+            sBaseCandY = FOLLOW_NO_BASELINE; // 这一次不算数，等页面真的安静下来从头采
+            sBaseCandMs = 0L;
+            logBaseDeferred(now, "page still moving", y, vis);
             return;
         }
         // 门③（v37 重写）：已有基线、当前位置离它很远时 —— 页面到底「真的回到布局静止位」了吗？
@@ -1848,12 +2015,26 @@ public class ActivityButtonHook {
                     && Math.abs(vis) < FOLLOW_DEADZONE_PX;
             if (!atLayoutRest) {
                 sBaseCandY = y;
+                sBaseCandMs = now;
+                logBaseDeferred(now, "off baseline & not at layout rest", y, vis);
                 return;
             }
         }
-        // 门②：位置还在变 → 先记候选，等下一次扫描确认。
+        // 门②：位置还在变 → 先记候选（并**重新起算**稳定窗），等下一次扫描确认。
         if (sBaseCandY == FOLLOW_NO_BASELINE || Math.abs(y - sBaseCandY) > FOLLOW_DEADZONE_PX) {
             sBaseCandY = y;
+            sBaseCandMs = now;
+            return;
+        }
+        // ── 【code 951 门②.5】候选一致还不够 —— 必须**连续稳住一整段墙钟**（见 BASE_SETTLE_MS）──
+        // 上一版这里只要求「两次扫描读数相同」，而转场里的两次扫描可以只隔 80ms
+        // （结构事件把扫描踢得很密）⇒ 转场停顿窗原样过关，431px 的转场位移被标成宿主偏置。
+        if (sBaseCandMs == 0L) {
+            sBaseCandMs = now;
+            return;
+        }
+        if (now - sBaseCandMs < BASE_SETTLE_MS) {
+            logBaseDeferred(now, "settle window " + (now - sBaseCandMs) + "ms", y, vis);
             return;
         }
         sBaseCandY = y;
@@ -1865,19 +2046,130 @@ public class ActivityButtonHook {
             sFollowBaseY = FOLLOW_NO_BASELINE;
         }
         // v37：**同一时刻**标定 transform 通道的常驻偏置。
-        // 走到这里 = 跟帧循环停着 + 位移为 0 + 连续两次读数一致 → 页面确实在静止位，
-        // 此时累加出来的 sum 就是那条常驻偏置（通常为 0，但不假设它一定为 0）。
+        // 走到这里 = 跟帧循环停着 + 位移为 0 + 页面安静 + 位置连续稳住 BASE_SETTLE_MS
+        // → 页面确实在静止位，此时累加出来的 sum 就是那条常驻偏置（通常为 0）。
+        // 【code 951】还要过**量级**闸：见 BIAS_MAX_STATIC_DP —— 偏置只有「系统 insets /
+        //   宿主布局补偿」一个来源，不可能有几百 px。过不了就**不采信**它（transform 通道
+        //   继续不启用 → followOffset 自动走基线通道，照样跟手），而不是把一个转场位移
+        //   当成常数把按钮永久顶到封面上去。基线本身照落，不受影响。
         if (sVisualBias == FOLLOW_NO_BASELINE && vis != FOLLOW_NO_BASELINE) {
-            sVisualBias = sVisualOffset;
-            XposedCompat.log(TAG + " page follow bias calibrated: " + sVisualBias
-                    + "px (ref=" + (sFollowRefIsPlayBtn ? "play-button" : "anchor") + ")");
+            int biasMax = biasMaxStaticPx();
+            if (Math.abs(sVisualOffset) <= biasMax) {
+                sVisualBias = sVisualOffset;
+                XposedCompat.log(TAG + " page follow bias calibrated: " + sVisualBias
+                        + "px (ref=" + (sFollowRefIsPlayBtn ? "play-button" : "anchor") + ")");
+            } else {
+                XposedCompat.log(TAG + " [code 951] bias NOT adopted: sum=" + sVisualOffset
+                        + "px > " + biasMax + "px (= " + BIAS_MAX_STATIC_DP
+                        + "dp) -> looks like a page-transition offset, not a host inset;"
+                        + " staying on the baseline channel");
+            }
         }
         // 【code 923 bug1】标定成功 → 立刻另存一份到「宿主偏置备份」。
         // 之后不管谁把 sVisualBias 清了，ensureHostBias() 都能把它填回去。
-        sHostBias = sVisualBias;
-        sHostBiasValid = true;
+        if (sVisualBias != FOLLOW_NO_BASELINE) {
+            sHostBias = sVisualBias;
+            sHostBiasValid = true;
+        }
         sSampleY = FOLLOW_NO_BASELINE;      // 基线更新 → 便宜采样的历史值作废
         sMotionSampleY = FOLLOW_NO_BASELINE;
+        sHealCandY = FOLLOW_NO_BASELINE;    // 【code 951】刚标定完，自愈候选从头采
+        sHealCandMs = 0L;
+    }
+
+    /**
+     * 【code 951】基线采集被推迟时的诊断（节流 1.5s，只在真的推得动的时候打）。
+     *
+     * 为什么值得留一行：这道闸是本轮「按钮跑到封面上」的主修点，而它生效时**什么都没发生**
+     * （没有标定、没有位移），日志里原本一个字都看不到 —— 下一轮复现时只能靠猜
+     * 「是闸在挡、还是采集根本没被调用」。带上 y / sum / 安静时长，一眼能分辨。
+     */
+    private static void logBaseDeferred(long now, String why, int y, int vis) {
+        if (now - sBaseDeferLogMs < 1500L) {
+            return;
+        }
+        sBaseDeferLogMs = now;
+        XposedCompat.log(TAG + " [code 951] baseline deferred: " + why
+                + " | y=" + y + " sum=" + sVisualOffset + " vis=" + vis
+                + " quiet=" + (sLastPageMotionMs == 0L ? -1 : (now - sLastPageMotionMs)) + "ms");
+    }
+
+    /**
+     * 【code 951】「偏置作废」自愈 —— 页面**确实在布局静止位**却还挂着非零位移时，把偏置重标。
+     *
+     * ── 为什么必须有它 ──
+     * 偏置只标定一次（{@code sVisualBias != NO_BASELINE} 就不再进），而
+     * {@link #captureFollowBaseline()} 又被 {@code sFollowAppliedY != 0} 挡在门外
+     * ⇒ 一旦某次标定踩进转场（见 {@link #BASE_SETTLE_MS} 的真机取证），按钮会**永久**
+     * 偏那么多：进入阈值之后没有任何一条路径能纠正它。上面那几道闸是「不再踩进去」，
+     * 本方法是「万一踩进去了也能自己爬出来」—— 二者缺一不可。
+     *
+     * ── 判据（为什么它不会误伤「手指按住页面停在半路」）──
+     * 触发条件同时要求：
+     *   ① `sVisualOffset ≈ 0`：参考点祖先链的 transform 累加值为 0 = 页面**就在布局静止位**。
+     *      被手指拖开的页面这里必然非 0（拖多少就是多少），所以天然不会误触；
+     *   ② 页面安静 ≥ {@link #PAGE_MOTION_HOLD_MS} 且参考点 y 连续稳住 {@link #BASE_SETTLE_MS}；
+     *   ③ 当前位移 ≠ 0。
+     * ①②同时成立时，「位移非 0」在几何上就是错的 —— 静止位下布局位置（由滑条几何推导）
+     * 才是正确位置，位移必须是 0。此时把偏置重标成当前读到的那份常数（≈0）、基线对齐到
+     * 当前 y、位移归零，按钮就自己回到「滑条上方」了。
+     */
+    private static void healStaleBiasIfAtRest(long now) {
+        if (sVisualBias == FOLLOW_NO_BASELINE || sFollowAppliedY == 0) {
+            sHealCandY = FOLLOW_NO_BASELINE;
+            sHealCandMs = 0L;
+            return;
+        }
+        if (sVisualOffset == FOLLOW_NO_BASELINE
+                || Math.abs(sVisualOffset) > FOLLOW_DEADZONE_PX) {
+            sHealCandY = FOLLOW_NO_BASELINE; // 页面真的被拖开着 —— 那是正常跟随，不许动
+            sHealCandMs = 0L;
+            return;
+        }
+        if (sLastPageMotionMs == 0L || now - sLastPageMotionMs < PAGE_MOTION_HOLD_MS) {
+            sHealCandMs = 0L;
+            return;
+        }
+        int y = readReferenceY();
+        if (y == FOLLOW_NO_BASELINE) {
+            sHealCandY = FOLLOW_NO_BASELINE;
+            sHealCandMs = 0L;
+            return;
+        }
+        if (sHealCandY == FOLLOW_NO_BASELINE || Math.abs(y - sHealCandY) > FOLLOW_DEADZONE_PX) {
+            sHealCandY = y;
+            sHealCandMs = now;
+            return;
+        }
+        if (sHealCandMs == 0L) {
+            sHealCandMs = now;
+            return;
+        }
+        if (now - sHealCandMs < BASE_SETTLE_MS) {
+            return;
+        }
+        int oldBias = sVisualBias;
+        int oldOffset = sFollowAppliedY;
+        sVisualBias = sVisualOffset;        // = 页面静止位下读到的宿主常数（通常为 0）
+        sHostBias = sVisualBias;
+        sHostBiasValid = true;
+        sFollowBaseY = y;                   // 基线同步对齐，两条通道在这一刻等价
+        sBaseCandY = FOLLOW_NO_BASELINE;
+        sBaseCandMs = 0L;
+        sHealCandY = FOLLOW_NO_BASELINE;
+        sHealCandMs = 0L;
+        sSampleY = FOLLOW_NO_BASELINE;
+        sMotionSampleY = FOLLOW_NO_BASELINE;
+        applyFollowOffset(0);
+        XposedCompat.log(TAG + " [code 951] stale bias healed: bias " + oldBias + "px -> "
+                + sVisualBias + "px, offset " + oldOffset + "px -> 0 (page at layout rest, y="
+                + y + ")");
+    }
+
+    /** 【code 951】宿主静态偏置的合理量级上限（px）—— 走锁定 density，避免转场伪 density。 */
+    private static int biasMaxStaticPx() {
+        float d = sLockedDensity > 0f ? sLockedDensity : 3f;
+        return (int) (BIAS_MAX_STATIC_DP * d + 0.5f);
     }
 
     /**
@@ -2083,6 +2375,9 @@ public class ActivityButtonHook {
         sFollowAppliedY = 0;
         sFollowBaseY = FOLLOW_NO_BASELINE;
         sBaseCandY = FOLLOW_NO_BASELINE;
+        sBaseCandMs = 0L;      // 【code 951】参考系作废 → 稳定窗 / 自愈候选一并作废
+        sHealCandY = FOLLOW_NO_BASELINE;
+        sHealCandMs = 0L;
         sVisualOffset = FOLLOW_NO_BASELINE;
         if (!keepHostBias) {
             sVisualBias = FOLLOW_NO_BASELINE;
@@ -2799,12 +3094,38 @@ public class ActivityButtonHook {
                     // 所以只要**位移通道不可用，就不抢先显形** —— 交给紧随其后的检测
                     // （scheduleDetect 在 80/240/520ms 各补一次）在位置算得准之后再 show。
                     // 这样「闪现」的两种来源（阈值抖动 + 先露脸再跳）一并消失。
+                    //
+                    // 【code 952】新按钮**一律先 GONE** —— 可见性完全交给紧随其后的检测。
+                    //
+                    // ── 为什么把 v43 的「信任上次结论」彻底废掉（Ari 2026-09-26 反馈：
+                    //    「按钮偶尔还是会在非播放页出现」）──
+                    // 真机日志（work_diag_80，2026-09-26，两次 trusted 重建）：
+                    // <pre>
+                    //   12:57:41.532 button created, init visibility=0
+                    //               (trustLastPlayer=true lastPlayerSeenAgo=1310ms)
+                    //   12:57:41.533 player anchor alive=false (area=0%)
+                    //   12:57:41.533 verdict=UNKNOWN | main=none ... anchor=none
+                    //   12:57:41.773 no player evidence for 2612ms ... -> hide   ← 241ms 后才收起
+                    //   （13:02:22 同一形态：lastPlayerSeenAgo=1377ms → 231ms 后才收起）
+                    // </pre>
+                    // 两次「信任」都把按钮**提前 230~240ms** 亮了出来，而那一瞬间屏幕上
+                    // **根本不是播放页**（首次检测就是 UNKNOWN、连一条滑条证据都没有）——
+                    // 用户看到的就是「两个紫色胶囊在别的页面上闪一下」。
+                    // 而同一台机器上真正该信任的场景（12:57:36.545 / 50.610，lastPlayerSeenAgo
+                    // = 128/127ms）本来就在**同一帧**被首次检测确认成 PLAYER ⇒ 改成先 GONE 之后，
+                    // 播放页上照样同一帧亮起、肉眼无差；差别只落在「猜错了」的两次：现在根本不亮。
+                    // （判据本身也站不住：sPausePlayerSeenMs 与 sPauseAtMs 的差值只说明
+                    //  「切后台前 1.5s 内见过播放页」，与「切回来时屏幕上是什么」毫无因果关系。）
                     boolean canSyncOffset = sVisualSeen && sVisualBias != FOLLOW_NO_BASELINE;
                     trustLastPlayer = sPauseAtMs != 0L && sPausePlayerSeenMs != 0L
                             && (sPauseAtMs - sPausePlayerSeenMs) <= RESUME_TRUST_MS
-                            && canSyncOffset;
-                    sButtonGroup.setVisibility(trustLastPlayer ? View.VISIBLE : View.GONE);
-                    sLastDecision = trustLastPlayer; // 不信任时不能让它冒充「已确认」
+                            && canSyncOffset; // 【code 952】只留作诊断：日志里的 wouldTrust 就是它
+                    // 配套：必须让 addView 触发的那次 onGlobalLayout 扫描**不被节流吃掉**
+                    // （{@link #DETECT_MIN_INTERVAL_MS} = 150ms，而上一轮扫描往往就在几十 ms 前）。
+                    // 放行的代价是一次整树扫描，换来的是「播放页上按钮仍在同一帧出现」。
+                    sForceNextDetect = true;
+                    sButtonGroup.setVisibility(View.GONE);
+                    sLastDecision = Boolean.FALSE; // 未确认前不许冒充「已确认」，否则抑制门会跟着放行
                     decor.addView(sButtonGroup);
                     freshButton = true;
                     sLastBtnSig = null; // 新按钮组创建后，强制 updateButtonText 重新落笔
@@ -2814,6 +3135,7 @@ public class ActivityButtonHook {
                     sLastAnchorAlive = null;  // 锚点状态未知，允许重新打一行
                     resetAnchorTracking();
                     sLastProbeAlive = null;
+                    sHideRecheckMs = 0L; // 【code 953】新按钮 = 新回合，补检额度清零
                     // v35：新按钮一律从「零位移 + 无基线」开始（旧按钮的位移不该继承）。
                     // v37：基线/参考点整体作废 —— 新按钮是个全新的参考系。
                     // 【code 922 问题 2】但**宿主偏置要留下**：它是宿主布局的常数，
@@ -2845,9 +3167,12 @@ public class ActivityButtonHook {
                 armHeartbeat();
                 armAnchorWatch();
                 if (freshButton) {
+                    // 【code 952】init visibility 恒为 8(GONE)；wouldTrust 只作诊断
+                    //   —— 想复核「这一轮该不该信旧结论」时看它，别再拿它驱动可见性。
                     XposedCompat.log(TAG + " button created, init visibility="
                             + sButtonGroup.getVisibility()
-                            + " (trustLastPlayer=" + trustLastPlayer + " lastPlayerSeenAgo="
+                            + " (code 952 always-GONE; wouldTrust=" + trustLastPlayer
+                            + " lastPlayerSeenAgo="
                             + ((sPauseAtMs == 0L || sPausePlayerSeenMs == 0L)
                                     ? -1 : (sPauseAtMs - sPausePlayerSeenMs)) + "ms)");
                 }
@@ -3071,6 +3396,7 @@ public class ActivityButtonHook {
                     sAnchorAliveSinceMs = now;
                     sLastProbeAlive = Boolean.TRUE;
                     sLastPlayerSeenMs = now;
+                    sHideRecheckMs = 0L; // 【code 953】重新见到播放页证据 → 补检额度刷新
                     sLastAnchorAlive = Boolean.TRUE;
                     // 【code 933 精简】不再打视图树 dump（每次最多 260 行，纯结构参考）。
                     sTreeDumped = true;
@@ -3086,6 +3412,9 @@ public class ActivityButtonHook {
                     }
                     // v35：确认在播放页 → 顺手把「播放键」认下来，并在页面静止时采集跟随基线。
                     // 只在页面静止（跟帧循环没跑 + 位移为 0）时才采 —— 见 captureFollowBaseline()。
+                    // 【code 951】自愈必须先跑：它处理的正是「位移非 0」的状态，而
+                    //   captureFollowBaseline() 第一步就被 sFollowAppliedY != 0 挡掉了。
+                    healStaleBiasIfAtRest(now);
                     captureFollowBaseline();
                     sLastDecision = Boolean.TRUE;
                     sPlayerConfirmedInSession = true; // v43：本会话确认过播放页 → 抑制门解闸
@@ -3171,6 +3500,7 @@ public class ActivityButtonHook {
                         // 页面级容器还在屏幕上 → 仍在播放页（主滑条只是被 RN 回收 / 控制条隐藏）。
                         // v25：**立即恢复显示**，不再傻等下一次扫到主滑条（那要 ~0.6s）。
                         sLastPlayerSeenMs = now;
+                        sHideRecheckMs = 0L; // 【code 953】锚点存活同样是播放页证据
                         sPlayerConfirmedInSession = true; // v43：锚点存活也是播放页证据
                         resetAnchorTracking();
                         // v30：ANCHOR_HARD_TIMEOUT 的计时起点必须是「锚点**连续**存活的时刻」。
@@ -3200,6 +3530,10 @@ public class ActivityButtonHook {
                         }
                         // 从未取到过锚点（findPlayerAnchor 返回 null 的页面结构）：只能靠时间宽限兜底。
                         if (sLastPlayerSeenMs == 0L || now - sLastPlayerSeenMs >= NO_ANCHOR_GRACE_MS) {
+                            // 【code 953】同上：全空的一趟先补检（见 deferHideOnEmptyScan）
+                            if (deferHideOnEmptyScan(now, scan)) {
+                                break;
+                            }
                             if (Boolean.TRUE.equals(sLastDecision)) {
                                 XposedCompat.log(TAG + " no player evidence for "
                                         + (sLastPlayerSeenMs == 0L ? -1 : (now - sLastPlayerSeenMs))
@@ -3294,6 +3628,11 @@ public class ActivityButtonHook {
                         //   其余两档维持「连续 2 次采样」去抖不变。
                         int needSamples = goneStill ? 1 : ANCHOR_DEAD_MIN_SAMPLES;
                         if (deadFor >= need && sAnchorDeadSamples >= needSamples) {
+                            // 【code 953】先问一句「这一趟是不是什么都没测到」——
+                            //   是就先补检、本轮不收起（判据与真机取证见 deferHideOnEmptyScan）。
+                            if (deferHideOnEmptyScan(now, scan)) {
+                                break;
+                            }
                             if (Boolean.TRUE.equals(sLastDecision)) {
                                 XposedCompat.log(TAG + " no player evidence for "
                                         + (sLastPlayerSeenMs == 0L ? -1 : (now - sLastPlayerSeenMs))
@@ -3400,6 +3739,62 @@ public class ActivityButtonHook {
         return Boolean.TRUE.equals(sLastDecision)
                 && sLastOtherSeenMs != 0L
                 && now - sLastOtherSeenMs <= OTHER_EVIDENCE_TTL_MS;
+    }
+
+    /**
+     * 【code 953】「整棵树扫成空」的这一趟扫描**不作为判隐藏的证据** —— 先补一趟快检。
+     *
+     * ── 真机取证（Ari 2026-09-26 日志，12:57:52~59 与 13:02:33~48）──
+     * 播放页**完好地铺在屏幕上**（前后两趟扫描都是 `verdict=PLAYER | main=1153x54 y=1799`、
+     * 字幕文本一致、页面静止 691~1056ms），中间却夹着这样一趟：
+     * <pre>
+     *   12:57:52.252 button shown (player page) + verdict=PLAYER | main=y=1799 ...
+     *   12:57:52.946 player anchor alive=false (area=0%)
+     *   12:57:52.946 anchor dead for 0ms (area=0% need=0ms gone=true goneStill=true samples=1 still=691ms)
+     *   12:57:52.946 verdict=UNKNOWN | main=none bottom=none wideSliders=0 timeTexts=0 liveLines=0 anchor=none
+     *   12:57:52.946 no player evidence for 50ms ... -> hide        ← 当场收起
+     *   12:57:53.753 button shown (player page) + verdict=PLAYER | main=y=1799 ...
+     * </pre>
+     * 8 秒里这样闪了 6 次。判据：「滑条 0 条 + 时间文本 0 个 + 连锚点都找不到」= 这趟**什么
+     * 都没测到**。真离开播放页时不可能全空 —— 首页/列表页至少有文字
+     * （{@code descCandidateCount}），列表页还有底部 mini-player 滑条；只有「整棵子树被瞬时
+     * 重排成不可测」（窗口重排 / RN 换实例那一帧）才会全空。而 948/949 的「面积归零 ⇒ 首次
+     * 检测即收起（need=0 / 1 次采样）」正是让这种**单趟退化测量**当场把按钮收掉。
+     *
+     * ── 修法 ──
+     * 命中「全空 + 上一趟还有播放页证据 + 按钮正显示」时**本轮不收起**，改为强制补一趟
+     * {@link #HIDE_RECHECK_DELAY_MS} 之后的快检：
+     *   · 退化测量（寿命一两帧）→ 补检时页面已可测 → 重新确认 PLAYER，**全程不闪**；
+     *   · 真离开播放页 → 补检时依然全空 → 照常收起，只晚一个补检间隔（60ms，远小于
+     *     948/949 实测的 133/100/200ms 量级）。
+     * 每个「证据丢失」回合只补检**一次**（{@link #sHideRecheckMs} 非 0 即不再推迟），
+     * 所以真离开时绝不会赖着不走；一旦重新见到播放页证据就清零，下一回合还能再补检。
+     *
+     * @return true = 本轮已推迟（调用方直接 break，维持现状）
+     */
+    private static boolean deferHideOnEmptyScan(long now, SubtitleViewHook.ScanResult scan) {
+        if (scan == null || !Boolean.TRUE.equals(sLastDecision)) {
+            return false; // 按钮本来就没显示 —— 收无可收
+        }
+        if (scan.hasMainSlider || scan.hasBottomSlider || scan.anchorRef != null
+                || scan.wideSliderCount > 0 || scan.timeTextCount > 0
+                || scan.descCandidateCount > 0 || !scan.liveLines.isEmpty()) {
+            return false; // 有东西可测 —— 那是**真的**离开播放页，照常收起
+        }
+        if (sLastPlayerSeenMs == 0L || now - sLastPlayerSeenMs > HIDE_RECHECK_EVIDENCE_MS) {
+            return false; // 早就没有播放页证据了，不该再犹豫
+        }
+        if (sHideRecheckMs != 0L) {
+            return false; // 本回合已补检过一次，还是全空 ⇒ 真的走了
+        }
+        sHideRecheckMs = now;
+        sForceNextDetect = true; // 补检必须绕过 DETECT_MIN_INTERVAL_MS 的节流
+        uiHandler.removeCallbacks(detectRunnable);
+        uiHandler.postDelayed(detectRunnable, HIDE_RECHECK_DELAY_MS);
+        XposedCompat.log(TAG + " [code 953] empty scan while capsule showing -> defer hide,"
+                + " forced recheck in " + HIDE_RECHECK_DELAY_MS + "ms"
+                + " (lastPlayerSeenAgo=" + (now - sLastPlayerSeenMs) + "ms)");
+        return true;
     }
 
     /** 锚点在屏上的可见面积占比（仅用于日志诊断，判断锚点是否选得过高）。 */
@@ -3880,7 +4275,14 @@ public class ActivityButtonHook {
     private static TextView createCapsule(Context ctx, int id) {
         TextView tv = new TextView(ctx);
         tv.setId(id);
-        tv.setTextSize(CAPSULE_TEXT_SP);
+        // 【code 955】字号口径：**固定 px**（首次算好锁死），不吃 scaledDensity
+        //   （用户改「字体大小」不会撑破胶囊）、也不吃重锁后的 density（不随显示大小变）。
+        //   尺寸已在 capsuleTextPx 里按「胶囊宽 − 左右安全边」对当前语言的全部文案量过 ⇒
+        //   "文字在按钮内完全显示"是算出来的保证，见该函数的注释。
+        tv.setTextSize(TypedValue.COMPLEX_UNIT_PX, capsuleTextPx(ctx));
+        tv.setSingleLine(true);          // 永不换行
+        tv.setEllipsize(null);           // 永不出现「…」（放不下时由字号兜底保证，不靠截断）
+        tv.setIncludeFontPadding(false);  // 去掉字体自带上下留白 → 垂直居中更准、更省高度
         tv.setTextColor(0xFFFFFFFF);
         tv.setGravity(Gravity.CENTER);
         // 【code 922 问题 4】需求「按钮内文字强制使用粗体显示」——
@@ -3981,7 +4383,10 @@ public class ActivityButtonHook {
         // 旧写法 999f 靠「超出部分自动钳到 h/2」实现全圆角 —— 圆角会**跟着高度变**
         // （35dp 高 → 17.5dp；改到 30dp 高就悄悄变 15dp）。现在规格明确是 15dp，写死。
         // density 由 dip2px / createButtonGroup 维护进 sDensityPx（本函数没有 Context 参数）。
-        float d = sDensityPx > 0f ? sDensityPx : 3f;
+        // 【code 955】但**优先用锁定密度**：sDensityPx 会被 stableDensity 的重锁改写，
+        //   拿它算圆角会出现「高度没变、圆角变了」的隐性变形（本轮一并锁死）。
+        float d = sCapsuleMetricsDensity > 0f ? sCapsuleMetricsDensity
+                : (sDensityPx > 0f ? sDensityPx : 3f);
         drawable.setCornerRadius(CAPSULE_RADIUS_DP * d);
         return drawable;
     }
@@ -4023,16 +4428,20 @@ public class ActivityButtonHook {
         // ── 【v57】两个按钮各自的文字 / 底色 / 可见性 ──
         //   悬浮窗钮：始终显示，文字在「悬浮窗 开 / 悬浮窗 关 / 无字幕」三态间切换。
         //   状态栏钮：无字幕时**整个消失**（需求原话「状态栏字幕按键消失」）。
+        // 【code 954】多语言（Ari 2026-09-26）：简体保持原样；繁体
+        //   狀態欄 開/關、懸浮窗 開/關、無字幕；非中文 Status ON/OFF、Popup ON/OFF、No Sub。
+        //   文案见 {@link I18n}（语言在进程内只判定一次，切换系统语言会重建 App）。
         final String floatText;
         if (noSub) {
-            floatText = "无字幕";
+            floatText = I18n.noSub();
         } else if (repo.isFloatingWindowOpen()) {
-            floatText = "悬浮窗 开";
+            floatText = I18n.floatingOn();
         } else {
-            floatText = "悬浮窗 关";
+            floatText = I18n.floatingOff();
         }
         final boolean floatOn = floatingButtonOn(repo, noSub);
-        final String statusText = StatusBarSubtitleBridge.sAppEnabled ? "状态栏 开" : "状态栏 关";
+        final String statusText = StatusBarSubtitleBridge.sAppEnabled
+                ? I18n.statusOn() : I18n.statusOff();
         final boolean statusOn = statusBarButtonOn(repo, noSub);
         // 【code 941】可见性多一条「SystemUI 作用域已授权」—— 见 statusBarButtonVisible。
         final boolean statusVisible = statusBarButtonVisible(repo, noSub);
@@ -4049,7 +4458,10 @@ public class ActivityButtonHook {
             sBtnNoSubGen++;                    // 状态已经一致 -> 作废排队中的延时切换
             return;                            // 没变化就不折腾（避免每次通知都重建 drawable / 触发重绘）
         }
-        if (allowDelay && noSub && sLastBtnSig != null && sLastBtnSig.indexOf("无字幕") < 0) {
+        // 【code 954】这里判的是「上一笔**不是**无字幕态」→ 用当前语言的「无字幕」文案
+        //   （三种语言下它各不相同，写死简体会让 EN/HANT 下这道延时门失效）。
+        if (allowDelay && noSub && sLastBtnSig != null
+                && sLastBtnSig.indexOf(I18n.noSub()) < 0) {
             if (sBtnNoSubPending) {
                 return;                        // 已经在等，别重复排队
             }
@@ -4200,11 +4612,103 @@ public class ActivityButtonHook {
         return sLockedDensity;
     }
 
+    /**
+     * 【code 955】**口径变更**：本类里 {@code dip2px} 只服务「胶囊自己的度量」
+     * （宽 / 高 / 间距 / 圆角 / 距滑条与边缘的各段偏移），因此一律走
+     * {@link #capsuleDip}（= 首次锁死的密度），不再走 {@link #stableDensity}
+     * —— 后者在「持续不一致就重锁」时会让胶囊跟着 2.975/3.5/3.875 变，
+     * 那正是用户报的「按钮大小随显示大小变化」。取证见 {@link #sCapsuleMetricsDensity}。
+     */
     private static int dip2px(Context ctx, float dp) {
-        float d = stableDensity(ctx);
-        if (d > 0f) {
-            sDensityPx = d; // 【code 923】顺手维护，createCapsuleDrawable 算圆角要用
+        return capsuleDip(ctx, dp);
+    }
+
+    /**
+     * 【code 955】胶囊度量的**锁定密度**（完整取证见 {@link #sCapsuleMetricsDensity}）。
+     *
+     * 首次调用锁一次。取谁作基准：
+     *   · **首选宿主密度**（{@link #stableDensity}，即按钮一直在用的那一份）——
+     *     这样「首次锁定的尺寸」与用户当前看到的按钮尺寸**完全一致**，不会因为换了基准
+     *     而突然变大变小；
+     *   · 宿主读不到时退回系统密度（{@code Resources.getSystem()}）；
+     *   · 再不行退回已锁定值 / 3f。
+     * 两个读数都会打进日志：万一日后发现冻结值选错了基准，一行就能看出来。
+     */
+    private static float capsuleMetricsDensity(Context ctx) {
+        if (sCapsuleMetricsDensity > 0f) {
+            return sCapsuleMetricsDensity;
         }
-        return (int) (dp * d + 0.5f);
+        float app = 0f;
+        float sys = 0f;
+        try {
+            app = ctx == null ? 0f : stableDensity(ctx);
+        } catch (Throwable ignored) {
+        }
+        try {
+            sys = Resources.getSystem().getDisplayMetrics().density;
+        } catch (Throwable ignored) {
+        }
+        float d = app > 0f ? app : (sys > 0f ? sys : (sLockedDensity > 0f ? sLockedDensity : 3f));
+        sCapsuleMetricsDensity = d;
+        sDensityPx = d; // 【code 923】圆角要用（createCapsuleDrawable 没有 Context 参数）
+        XposedCompat.log(TAG + " [code 955] capsule metrics density locked: " + d
+                + " (appStable=" + app + ", system=" + sys + ") -> capsule size / text / offsets"
+                + " no longer follow display-size changes");
+        return d;
+    }
+
+    /** 【code 955】胶囊专用 dp→px：一律走锁定密度，不跟 {@link #stableDensity} 的重锁。 */
+    private static int capsuleDip(Context ctx, float dp) {
+        return (int) (dp * capsuleMetricsDensity(ctx) + 0.5f);
+    }
+
+    /**
+     * 【code 955】胶囊文字的**固定 px 字号**（首次算好后锁死，见 {@link #sCapsuleTextPx}）。
+     *
+     * 两步：
+     *   ① 基准 = {@link #CAPSULE_TEXT_SP} × 锁定密度（= 设计值在“正常显示大小”下的像素高度，
+     *      不再乘 {@code scaledDensity} ⇒ 用户改「字体大小」不会撑破胶囊）；
+     *   ② 适配兜底：用粗体（{@code DEFAULT_BOLD}，与按钮一致）量一遍**当前语言下所有可能文案**
+     *      的宽度，放不进「胶囊宽 − 左右安全边」就逐步缩到放得下为止（下限
+     *      {@link #CAPSULE_TEXT_MIN_SP}）。这样"文字在按钮内完全显示"是**算出来保证**的，
+     *      而不是靠字号碰巧合适。
+     */
+    private static float capsuleTextPx(Context ctx) {
+        if (sCapsuleTextPx > 0f) {
+            return sCapsuleTextPx;
+        }
+        float d = capsuleMetricsDensity(ctx);
+        float design = CAPSULE_TEXT_SP * d;
+        int avail = capsuleDip(ctx, CAPSULE_W_DP) - capsuleDip(ctx, CAPSULE_TEXT_SIDE_PAD_DP);
+        float size = design;
+        try {
+            TextPaint paint = new TextPaint(TextPaint.ANTI_ALIAS_FLAG);
+            paint.setTypeface(Typeface.DEFAULT_BOLD); // 与按钮文字同一字体口径
+            float min = CAPSULE_TEXT_MIN_SP * d;
+            String[] samples = {
+                    I18n.statusOn(), I18n.statusOff(),
+                    I18n.floatingOn(), I18n.floatingOff(), I18n.noSub()};
+            while (size > min) {
+                paint.setTextSize(size);
+                float max = 0f;
+                for (String s : samples) {
+                    max = Math.max(max, paint.measureText(s));
+                }
+                if (max <= avail) {
+                    break;
+                }
+                size -= Math.max(0.5f, d * 0.25f);
+            }
+            if (size < min) {
+                size = min;
+            }
+        } catch (Throwable t) {
+            XposedCompat.log(TAG + " [code 955] capsule text fit failed: " + t);
+        }
+        sCapsuleTextPx = size;
+        XposedCompat.log(TAG + " [code 955] capsule text locked: " + Math.round(size)
+                + "px (design=" + Math.round(design) + "px, avail=" + avail
+                + "px, density=" + d + ", lang=" + I18n.lang() + ")");
+        return sCapsuleTextPx;
     }
 }

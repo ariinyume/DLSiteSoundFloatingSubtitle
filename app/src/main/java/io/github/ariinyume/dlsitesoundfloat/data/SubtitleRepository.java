@@ -63,10 +63,11 @@ public class SubtitleRepository {
      * （录屏 21:29:51 至 21:30:00 整 10 秒），被当成「没有自动关闭」。
      * 不能靠缩短裁决窗：实测有字幕轨的 JSON 到达延迟双峰（小于 0.7s 或约 5.5s，历史 12s+），
      * 缩窗会误杀慢 JSON 的真字幕轨。所以把「关窗」从「裁决」里拆出来：
-     * 4s 无 JSON 就先关窗（code 942 原为 2s，code 943 放宽到 6s，code 944 收到 4s）；之后 JSON 到了，loadFromJsonArrayInternal 里现成的
-     * autoClosedForNoSubtitle 恢复路径会把窗口开回来。裁决（数据侧）仍按原 grace 走。
+     * 5s 无 JSON 就先关窗（code 942 原为 2s，code 943 放宽到 6s，code 944 收到 4s，
+     * 【code 954】Ari 2026-09-26 指令定为 **5s**）；之后 JSON 到了，loadFromJsonArrayInternal
+     * 里现成的 autoClosedForNoSubtitle 恢复路径会把窗口开回来。裁决（数据侧）仍按原 grace 走。
      */
-    private static final long NO_SUBTITLE_EARLY_CLOSE_MS = 4000L;
+    private static final long NO_SUBTITLE_EARLY_CLOSE_MS = 5000L;
     /** 【1.21.15】判「无字幕」后若在这么久内又来字幕 JSON，就把它当假阴性记一笔。 */
     private static final long FALSE_NEGATIVE_REPORT_MS = 60000L;
     /**

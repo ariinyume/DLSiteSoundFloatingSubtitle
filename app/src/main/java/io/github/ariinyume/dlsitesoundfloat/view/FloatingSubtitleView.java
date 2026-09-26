@@ -44,6 +44,7 @@ import io.github.ariinyume.dlsitesoundfloat.data.SubtitleRepository;
 
 import java.util.List;
 
+import io.github.ariinyume.dlsitesoundfloat.util.I18n;
 import io.github.ariinyume.dlsitesoundfloat.util.XposedCompat;
 
 /**
@@ -366,7 +367,10 @@ public class FloatingSubtitleView extends FrameLayout {
         scrollView.addView(container);
 
         hint = new TextView(getContext());
-        hint.setText("无字幕");
+        // 【code 954】多语言：简体「无字幕」/ 繁体「無字幕」/ 非中文「No Subtitles」
+        //   （见 I18n —— 这里**不能**用宿主 Context 的字符串资源，理由是类头那条：
+        //    目标进程的 Resources 里没有本模块的资源。）
+        hint.setText(I18n.noSubtitles());
         hint.setTextColor(0xB3FFFFFF);
         hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         hint.setGravity(Gravity.CENTER);

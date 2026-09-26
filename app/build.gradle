@@ -34,7 +34,7 @@ plugins {
 //                 如 9 月 20 日发版 → 0920；10 月 3 日 → 1003。
 //                 ⚠️ 不是 20000 这种「语义版本 ×1000」的老规则。
 //                 同日多次发版时后一位可用 0921/0922 递增（保持单调即可）。
-def appVersionTag = '2.1.0'
+def appVersionTag = '2.1.2'
 // ⚠️ 写成 int 字面量 925（不要写 0925 —— Groovy 可能按八进制/前导零解析）：
 //    versionCode 的**数值**是 925，管理器里显示 925，可读语义看 appVersionCodeLabel。
 //    【0921.1】2.0.1 的**9/21 第一版**（code 923 → 924，versionName 不变）：
@@ -94,13 +94,63 @@ def appVersionTag = '2.1.0'
 //    修法：归零档 need 取 0、采样门槛由 2 降到 1（首次检测即收起）；为防 fling 中锚点
 //    被滚出屏幕时误收，新增前置门「页面已静止 ≥80ms」（真离场实测 still=209~729ms，
 //    全部远超此门）。诊断日志新增 goneStill= 直接可验。
-def appVersionCode = 950
-def appVersionCodeLabel = '0924.3'
-def appVersionName = '2.1.0'
+//    【0926.1】code 951：修「偶尔按键会到页面上不合理的位置（挡住音声的封面）」
+//    （Ari 2026-09-25 反馈 + 随附 LSPosed 日志）。根因不在几何，而在**跟手偏置被转场
+//    位移污染**：日志 09:33:41.155 打出 `page follow bias calibrated: 431px`，
+//    而同一刻 `[几何4] sliderCy=2233`（稳态 1799，差 434px）—— 打开播放页那一次标定
+//    踩进了入场转场中途的 80ms 停顿窗，把「还没走完的 431px」当成宿主静态偏置记了下来。
+//    此后 `vis = ΣtranslationY − 431` 在页面真正静止时恒为 −431，被写进按钮 translationY
+//    ⇒ 两个胶囊整体抬高 431px，从「滑条上方」跑到标题/封面下缘（转场相位更早时更高，
+//    正好压在封面上）。偏置只标定一次、`captureFollowBaseline()` 又被
+//    `sFollowAppliedY != 0` 挡在门外 ⇒ 标错就**整个进程都错**，这就是「偶尔」的成因。
+//    修法（ActivityButtonHook，详见 【code 951】注释）：门①.5「页面最近没动过」接到
+//    位移采样时间轴上；门②.5 候选位置连续稳住 400ms（墙钟）；门⑤ 偏置量级闸 64dp；
+//    新增 `healStaleBiasIfAtRest()` 自愈（页面确在布局静止位却带非零位移 → 重标偏置）。
+//    诊断新增 `baseline deferred:` / `bias NOT adopted:` / `stale bias healed:` 三行。
+//    ⚠️ code 由 950 递增到 951（**不是**按日期算的 926 —— 那会小于已装的 950，
+//     Android 会判 version downgrade 装不上）。
+//    【0926.2】code 954：本包并入三轮改动 ——
+//    ①【code 952】按钮不再用「上次结论」预判可见性（Ari 报「按钮偶尔还是会在非播放页
+//      出现」）：新建按钮一律先 GONE，可见性交给紧随其后的检测；配套 sForceNextDetect
+//      让 addView 触发的首帧扫描不被 150ms 节流吃掉，所以播放页上仍然同一帧亮起。
+//      日志新增 `wouldTrust=`（只作诊断）。取证：work_diag_80 两次 trusted 重建
+//      （lastPlayerSeenAgo=1310/1377ms）都比首次检测早 230~240ms 亮在非播放页上。
+//    ②【code 953】「整棵树扫成空」的一趟扫描不再当作判隐藏的证据（治「播放页上按钮每
+//      ~700ms 闪一次」，8 秒 6 次）：命中「全空 + 上一趟还是播放页证据 + 按钮正显示」时
+//      本轮不收起，改为 60ms 后强制补检；真离场在补检里照样收起（只晚 60ms），退化测量
+//      则被发现、不再误收。日志新增 `[code 953] empty scan while capsule showing`。
+//    ③【code 954】多语言（Ari 2026-09-26 需求）：新增 util/I18n 统一对外文案 ——
+//      简体（简体中文/中文（简体））保持原样；繁体（繁體中文 / 中文（繁體）/
+//      繁體中文（中國香港/中國台灣/香港/台灣）→ 狀態欄 開/關、懸浮窗 開/關、無字幕；
+//      其它语言 → Status ON/OFF、Popup ON/OFF、No Sub，悬浮窗占位 No Subtitles。
+//      同时把「切到无字幕音轨后悬浮窗挂着无字幕占位的时长」由 4s 改为 **5s**
+//      （NO_SUBTITLE_EARLY_CLOSE_MS，数据侧裁决窗未动）。
+//    ④【同版本号第二次打包】单个胶囊宽 **75dp → 85dp**（Ari 2026-09-26 指令，
+//      versionName / versionCode 均不变 —— 按本文件的老规矩，同版本号可能对应多个包，
+//      装机前用日志里的 `==== BUILD 2.1.2 / code 954` 那一行 + 本描述里的「85dp」确认）。
+//      组宽随之 160dp → 180dp（容器 wrap_content，子视图宽度是唯一真源）。
+//    ⑤【同版本号第三次打包】code 955：**锁死胶囊大小与按钮内文字大小** ——
+//      真机日志（work_diag_82，15:34~15:36）里宿主 App 的 density 在 2.9750001 / 3.5 /
+//      3.875（= OPPO 屏幕缩放三档）之间长期来回跳，而 code 939 的「持续 20s 就重锁」
+//      把每个档位都当新常态锁一遍 ⇒ `[几何4] capsuleH` 在 95/112/124px 间反复变
+//      （宽/圆角/文字/偏移同吃一套 dip2px），用户看到「按钮大小随显示大小变化」。
+//      修法：新增「胶囊度量锁定密度」（首次取宿主稳定密度锁死一次，dip2px 全部改走它，
+//      此后任何重锁都不跟随）；胶囊文字改**固定 px**（13sp 设计值 × 锁定密度，不吃
+//      scaledDensity），并用粗体按「胶囊宽 − 左右各 4dp」量过当前语言全部文案自动缩到
+//      放得下（下限 10sp 等效），配 singleLine + 不省略号 + 去字体留白 ⇒ 完全显示有保证。
+//      诊断新增 `[code 955] capsule metrics density locked:` / `capsule text locked:` 两行。
+def appVersionCode = 954
+def appVersionCodeLabel = '0926.3'
+def appVersionName = '2.1.2'
 
 android {
     namespace 'io.github.ariinyume.dlsitesoundfloat'
     compileSdk 34
+    // ⚠️ 必须显式钉 34.0.0：AGP 8.1.0 的默认 build-tools 是 **33.0.1**，而本机 toolchain
+    //    里的 33.0.1 缺 `core-lambda-stubs.jar` 等文件（工作区精简时被删）→ AGP 直接报
+    //    「Installed Build Tools revision 33.0.1 is corrupted」。34.0.0 是完整的一套，
+    //    也正是 docs/build.md 里写明的构建要求。
+    buildToolsVersion '34.0.0'
 
     defaultConfig {
         applicationId "io.github.ariinyume.dlsitesoundfloat"
