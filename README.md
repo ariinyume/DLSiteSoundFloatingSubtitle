@@ -2,9 +2,9 @@
 
 > 一个 LSPosed / Xposed 模块，在 DLsiteSound（DLsite 音频 App）的**播放页**上挂一个与播放进度同步的**悬浮字幕窗**；同时支持将字幕镜像到**系统状态栏**（在 SystemUI 进程内注入）。
 
-- 当前版本：**2.1.0**（`DLsiteFloat-2.1.0-debug.apk`，包名 `io.github.ariinyume.dlsitesoundfloat`）
-- 📦 下载 APK：[Releases · v2.1.0](https://github.com/ariinyume/DLSiteSoundFloatingSubtitle/releases/tag/v2.1.0)
-- 🕘 历史版本：[Releases · v2.0.3](https://github.com/ariinyume/DLSiteSoundFloatingSubtitle/releases/tag/v2.0.3)
+- 当前版本：**2.1.2**（`DLsiteFloat-2.1.2-debug.apk`，包名 `io.github.ariinyume.dlsitesoundfloat`）
+- 📦 下载 APK：[Releases · v2.1.2](https://github.com/ariinyume/DLSiteSoundFloatingSubtitle/releases/tag/v2.1.2)
+- 🕘 历史版本：[Releases · v2.1.0](https://github.com/ariinyume/DLSiteSoundFloatingSubtitle/releases/tag/v2.1.0)
 - 📝 开发进度：[DLsiteFloat插件开发进度管理](https://my.feishu.cn/wiki/CQoMwY4nFilzLkkrzG4cy44fnoh)
 
 
@@ -91,7 +91,7 @@
   1. 你的设备型号 / Android 版本 / ROM（尤其是否 ColorOS / 澎湃 / 原生 / 类原生 等）
   2. 使用的 DLsiteSound 的版本号
   3. 复现步骤 + LSPosed 日志（`DLsiteSoundFloat` 过滤）+ 必要时 `dlsitefloat_net.log`+ 录屏 / 截屏（请给敏感信息打码或进行截除）
-- **提交前请先确认**：装的是不是最新 APK（看 LSPosed 日志里 `==== BUILD 2.1.0 / code ...` 那一行）
+- **提交前请先确认**：装的是不是最新 APK（看 LSPosed 日志里 `==== BUILD 2.1.2 / code 954` 那一行）
 - 仓库地址：<https://github.com/ariinyume/DLSiteSoundFloatingSubtitle>
 - 提交 Issue：<https://github.com/ariinyume/DLSiteSoundFloatingSubtitle/issues>
 
