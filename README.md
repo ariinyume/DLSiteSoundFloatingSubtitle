@@ -6,6 +6,7 @@
 - 📦 下载 APK：[Releases · v2.1.2](https://github.com/ariinyume/DLSiteSoundFloatingSubtitle/releases/tag/v2.1.2)
 - 🕘 历史版本：[Releases · v2.1.0](https://github.com/ariinyume/DLSiteSoundFloatingSubtitle/releases/tag/v2.1.0)
 - 📝 开发进度：[DLsiteFloat插件开发进度管理](https://my.feishu.cn/wiki/CQoMwY4nFilzLkkrzG4cy44fnoh)
+- ⭐ Xposed 仓库：[DLsiteFloat - DLSiteSound悬浮窗/状态栏字幕模块](https://github.com/Xposed-Modules-Repo/io.github.ariinyume.dlsitesoundfloat)
 
 
 ---
