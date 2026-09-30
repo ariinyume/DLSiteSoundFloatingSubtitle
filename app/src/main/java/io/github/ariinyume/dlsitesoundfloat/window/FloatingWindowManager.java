@@ -411,6 +411,9 @@ public class FloatingWindowManager {
                         return true;
                     }
                     case MotionEvent.ACTION_CANCEL:
+                        // 【2.1.4】诊断：手势被系统打断时留一行。2.1.3 实测「16 次 DOWN 只有 15 次 UP」，补上这条日志后下次取证能一眼看清手势从哪个口出去（本条只记日志，不改行为）。
+                        XposedCompat.log(TAG + " touch CANCEL moved=" + moved
+                                + " resizing=" + resizing + " -> gesture aborted by system");
                         resizing = false;
                         moved = false;
                         return true;

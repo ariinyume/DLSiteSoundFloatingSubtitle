@@ -34,7 +34,7 @@ plugins {
 //                 如 9 月 20 日发版 → 0920；10 月 3 日 → 1003。
 //                 ⚠️ 不是 20000 这种「语义版本 ×1000」的老规则。
 //                 同日多次发版时后一位可用 0921/0922 递增（保持单调即可）。
-def appVersionTag = '2.1.2'
+def appVersionTag = '2.1.3'
 // ⚠️ 写成 int 字面量 925（不要写 0925 —— Groovy 可能按八进制/前导零解析）：
 //    versionCode 的**数值**是 925，管理器里显示 925，可读语义看 appVersionCodeLabel。
 //    【0921.1】2.0.1 的**9/21 第一版**（code 923 → 924，versionName 不变）：
@@ -139,9 +139,9 @@ def appVersionTag = '2.1.2'
 //      scaledDensity），并用粗体按「胶囊宽 − 左右各 4dp」量过当前语言全部文案自动缩到
 //      放得下（下限 10sp 等效），配 singleLine + 不省略号 + 去字体留白 ⇒ 完全显示有保证。
 //      诊断新增 `[code 955] capsule metrics density locked:` / `capsule text locked:` 两行。
-def appVersionCode = 954
-def appVersionCodeLabel = '0926.3'
-def appVersionName = '2.1.2'
+def appVersionCode = 958
+def appVersionCodeLabel = '0930.4'
+def appVersionName = '2.1.3'
 
 android {
     namespace 'io.github.ariinyume.dlsitesoundfloat'

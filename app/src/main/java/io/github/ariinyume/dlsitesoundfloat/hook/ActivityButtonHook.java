@@ -1263,6 +1263,28 @@ public class ActivityButtonHook {
     private static final int CAPSULE_FOLLOW_DEADZONE_PX = 6;
 
     /**
+     * 【2.1.3 问题 2】几何快照门迟滞阈值（px）。
+     *
+     * 真机日志（2.1.2 / code 954）实证：进入播放页时 RN 先报 {@code sliderCy=1807}、
+     * settle 后再报 {@code 1799}（差 8px），同一轮 {@code descBottom 1716->1706} 等
+     * 也同步小幅漂移：
+     *   19:03:17.522 [几何4] sliderCy=1807 centerY=1659
+     *   19:03:17.523 [几何6] bottom=1066px
+     *   19:03:17.696 [几何4] sliderCy=1799 centerY=1651
+     *   19:03:17.696 [几何6] bottom=1074px   ← 174ms 后写第二次 ⇒ 视觉「上下抖一下」
+     * 同样形态复现于 20:31:38.004/.225、20:37:26.017/.320。
+     *
+     * 根因：{@link #replaceCapsuleByGeometry} 的快照门只判「值是否相等」，
+     * **没有迟滞**，于是 8px 的 settle 抖动也算「几何变了」而重摆。
+     * 注意 8px 恰好同时越过两个门：> {@link #CAPSULE_FOLLOW_DEADZONE_PX}(6)
+     * 且 != 快照值 —— 两头都拦不住。
+     *
+     * 取 12px：大于 RN settle 抖动实测幅度（8px），又远小于滚动跟手的真实位移
+     * （实测滚动时 sliderCy 1799->2243，Δ444px），不会削弱跟手。
+     */
+    private static final int GEO_SNAPSHOT_DEADZONE_PX = 12;
+
+    /**
      * 【v57】最近一次扫描到的主滑条中心 y（**屏幕坐标**，px）；{@code -1} = 未知。
      *
      * 为什么缓存它而不是把 scan 结果整个存下来：本类只需要这一个数来算按钮位置，
@@ -4002,10 +4024,10 @@ public class ActivityButtonHook {
             return;   // 几何还没到手：保持现状（兜底位），等下一次几何更新再来
         }
         if (!force
-                && sLastSliderCy == sPlacedGeoSliderCy
-                && sLastDescBottomY == sPlacedGeoDescBottom
-                && sLastSliderRightPx == sPlacedGeoSliderRight) {
-            return;   // 几何没变：不折腾（避免每帧 setLayoutParams 造成布局回环）
+                && Math.abs(sLastSliderCy - sPlacedGeoSliderCy) <= GEO_SNAPSHOT_DEADZONE_PX
+                && Math.abs(sLastDescBottomY - sPlacedGeoDescBottom) <= GEO_SNAPSHOT_DEADZONE_PX
+                && Math.abs(sLastSliderRightPx - sPlacedGeoSliderRight) <= GEO_SNAPSHOT_DEADZONE_PX) {
+            return;   // 几何没变（含 settle 期小抖动）：不折腾（避免每帧 setLayoutParams 造成布局回环）
         }
         try {
             int btnW = sButtonGroup.getWidth() > 0 ? sButtonGroup.getWidth()
@@ -4085,17 +4107,34 @@ public class ActivityButtonHook {
         // 【v57】滑条位置在页面滚动时变化（实测 y 在 1799~2243 摆），所以这里必然比
         //        旧版更频繁地命中。用**迟滞阈值**兜住逐帧微抖（1.21.10 的教训：
         //        逐帧动画会灌爆「相等才跳过」的缓存）。
+        //
+        // 【2.1.3 问题 2】这里原先用 CAPSULE_FOLLOW_DEADZONE_PX(6)，而
+        //   replaceCapsuleByGeometry 的快照门是严格相等 —— 两个写同一份
+        //   LayoutParams 的入口口径不一致，8px 的 settle 抖动两头都拦不住。
+        //   现在统一提到 GEO_SNAPSHOT_DEADZONE_PX(12)，并同步更新快照三元组，
+        //   使两个入口共享同一份「已落位几何」，不再互相打架。
+        boolean wroteLp = false;
         if (lp.gravity != wantGravity
                 || lp.leftMargin != 0
                 || lp.topMargin != 0
                 || lp.rightMargin != wantRight
-                || Math.abs(lp.bottomMargin - wantBottom) > CAPSULE_FOLLOW_DEADZONE_PX) {
+                || Math.abs(lp.bottomMargin - wantBottom) > GEO_SNAPSHOT_DEADZONE_PX) {
             lp.gravity = wantGravity;
             lp.leftMargin = 0;
             lp.topMargin = 0;
             lp.rightMargin = wantRight;
             lp.bottomMargin = wantBottom;
             sButtonGroup.setLayoutParams(lp);
+            wroteLp = true;
+        }
+        // 无论是否真写了 lp，都把当前几何登记为「已落位」，避免紧随其后的
+        // replaceCapsuleByGeometry 因快照过期而重复计算、重复落位。
+        sPlacedGeoSliderCy = sLastSliderCy;
+        sPlacedGeoDescBottom = sLastDescBottomY;
+        sPlacedGeoSliderRight = sLastSliderRightPx;
+        if (wroteLp) {
+            XposedCompat.log(TAG + " [几何7] capsule placed by showButton -> bottom="
+                    + wantBottom + "px right=" + wantRight + "px");
         }
 
         if (sButtonGroup.getVisibility() != View.VISIBLE) {

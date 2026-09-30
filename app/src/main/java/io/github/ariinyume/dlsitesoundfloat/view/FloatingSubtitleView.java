@@ -240,6 +240,15 @@ public class FloatingSubtitleView extends FrameLayout {
     /** v20：平滑滚动动画（同一时刻只允许一个，新的会取消旧的）。 */
     private ValueAnimator scrollAnim;
 
+    /** 【2.1.5】onMeasure 预置内边距是否可信（预置值与真实布局值不符时永久停用，见 applyCenterPadding）。 */
+    private boolean predictPadOk = true;
+    /** 【2.1.5】上一次被 onMeasure 预置过的「可用高」（用于发现预置值与真实布局值不一致）。 */
+    private int predictedVp = -1;
+    /** 【2.1.6】本次尺寸变化还欠一次「同帧重新居中」：onViewportSizeChanged 置起、preDraw 消费。 */
+    private boolean pendingResizeRecenter = false;
+    /** 【2.1.6】兜底：万一这一帧没走到 preDraw，下一帧补一次；已被 preDraw 消费则空转。 */
+    private final Runnable mResizeFallback = this::recenterForResizeSameFrame;
+
     /**
      * v40：{@link #renderCues} 本次渲染时，每个 cue 在 container 里占据的
      * 子 View 下标区间（首/末）。用于算「上一句 → 这一句」的几何位移距离。
@@ -331,6 +340,13 @@ public class FloatingSubtitleView extends FrameLayout {
     @Override
     protected void onDetachedFromWindow() {
         closeBtnHandler.removeCallbacks(closeBtnHideTask);
+        // 【2.1.5】摘掉可能还挂着的缩放探针，避免它握住已废弃的视图
+        if (scrollView != null) {
+            ViewTreeObserver vto = scrollView.getViewTreeObserver();
+            if (vto.isAlive()) {
+                vto.removeOnPreDrawListener(mResizeProbe);
+            }
+        }
         super.onDetachedFromWindow();
     }
 
@@ -421,7 +437,8 @@ public class FloatingSubtitleView extends FrameLayout {
                 + " currentScale=" + CURRENT_SCALE + " closeBtn=" + CLOSE_BTN_DP
                 + "dp margin=" + CLOSE_BTN_MARGIN_DP + "dp gripInset="
                 + GripIndicatorView.INSET_DP + "dp gripView=" + GRIP_VIEW_DP
-                + "dp gripHit=" + GRIP_HIT_DP + "dp scrollAnim=" + SCROLL_ANIM_MS + "ms");
+                + "dp gripHit=" + GRIP_HIT_DP + "dp scrollAnim=" + SCROLL_ANIM_MS + "ms"
+                + " resizeProbe=v216");
     }
 
     /**
@@ -710,13 +727,30 @@ public class FloatingSubtitleView extends FrameLayout {
      * 只有内容上下各多出半个视口的空白，ScrollView 才可能把**第一行 / 最后一行**
      * 也滚到窗口正中（否则滚动量被夹在 0 ~ 内容高-视口高，首尾行只能贴边）。
      *
+     * 【2.1.5】这个「按视口高算内边距」的动作必须在**内容被测量之前**完成，否则会出现
+     * 「视口已是新值、内边距还是旧值」的中间帧。
+     * 真正的预置点在 {@link NonInterceptScrollView#onMeasure}（super 之前），本方法保留为
+     * **权威真值与兜底修正**，并顺手做一件事：一旦发现预置用的可用高与真实布局高不一致
+     * （两条路会在两个取值间反复改内边距 ⇒ 每帧一次 requestLayout），就永久停用预置。
+     *
      * @return 本次是否真的改了内边距（改了就需要等一次布局再算滚动位置）
      */
     private boolean applyCenterPadding() {
+        int vp = scrollView == null ? 0 : scrollView.getHeight();
+        if (predictPadOk && predictedVp > 0 && vp > 0 && predictedVp != vp) {
+            predictPadOk = false;
+            XposedCompat.log(TAG + " resize probe: predictive padding DISABLED (spec="
+                    + predictedVp + " actual=" + vp + ")");
+        }
+        return applyCenterPaddingFor(vp);
+    }
+
+    /** 【2.1.5】按给定的「视口高」把内边距算到目标值（与 applyCenterPadding 同一套算式）。 */
+    private boolean applyCenterPaddingFor(int vp) {
         if (container == null || scrollView == null) {
             return false;
         }
-        int half = scrollView.getHeight() / 2;
+        int half = vp / 2;
         int wantH = dp(PANEL_PAD_H_DP);
         int wantV = half + dp(PANEL_PAD_V_DP);
         if (container.getPaddingTop() == wantV && container.getPaddingBottom() == wantV
@@ -727,12 +761,109 @@ public class FloatingSubtitleView extends FrameLayout {
         return true;
     }
 
-    /** 视口尺寸变化（拖动缩放窗口）→ 刷新居中内边距并立即重新居中。 */
+    /**
+     * 【2.1.6】缩放期间的「同帧重新居中」。
+     *
+     * <p><b>为什么必须同帧</b>：居中落点 y = 内边距 + 前置行高和 + 行高/2，而**前置行高和只随
+     * 宽度变化** —— 窗口变宽/变窄 ⇒ 文字重新折行 ⇒ 当前行的内容坐标整段平移（实测阶跃恰好是
+     * 52px 的整数倍），高度变化完全不改它。所以「拖动缩放时字幕上下抖」只在改**宽度**时出现。
+     *
+     * <p>原来这里是 post(runnable)，落在**下一帧**才执行。2.1.5 真机探针 10395 行铁证：
+     * 4940 对相邻帧里 100% 都是「本帧的滚动量 = 上一帧该有的落点」，一帧不差 ——
+     * 于是一旦折行，那一帧画出来的还是旧落点，字幕偏 1~2 帧后再自己弹回，观感就是上下抖动。
+     *
+     * <p>现在改在 preDraw（**同一趟布局之后、绘制之前**）里重新居中：视口与内容重排 →
+     * 算落点 → 绘制，全在同一帧内完成，中间帧从结构上消失。
+     */
+    private void recenterForResizeSameFrame() {
+        if (!pendingResizeRecenter) {
+            return;
+        }
+        pendingResizeRecenter = false;
+        if (container == null || scrollView == null || currentLocalIndex < 0) {
+            return;
+        }
+        scrollNow(currentLocalIndex);
+    }
+
+    /** 视口尺寸变化（拖动缩放窗口）→ 刷新居中内边距 + 登记一次「同帧重新居中」。 */
     private void onViewportSizeChanged() {
         applyCenterPadding();
         if (currentLocalIndex >= 0) {
-            post(() -> scrollNow(currentLocalIndex));
+            probeResizeFrame("v216-layout");
+            pendingResizeRecenter = true;
+            ViewTreeObserver obs = scrollView.getViewTreeObserver();
+            if (obs.isAlive()) {
+                obs.removeOnPreDrawListener(mResizeProbe);
+                obs.addOnPreDrawListener(mResizeProbe);
+            }
+            // 兜底：preDraw 是本版的正路；万一这帧没走到（视图不可见等），下一帧补一次。
+            post(mResizeFallback);
         }
+    }
+
+    /**
+     * 【2.1.5】缩放探针；【2.1.6】在同一个 preDraw 里记「修正前 / 修正后」两条：
+     * 修正前 = 不修的话这一帧会画成什么样（对照上一版的观感），修正后 = 本帧真正画出去的样子。
+     * 纯只读 + 记日志，跑完即自行摘下。
+     */
+    private final ViewTreeObserver.OnPreDrawListener mResizeProbe =
+            new ViewTreeObserver.OnPreDrawListener() {
+                @Override
+                public boolean onPreDraw() {
+                    ViewTreeObserver obs = scrollView.getViewTreeObserver();
+                    if (obs.isAlive()) {
+                        obs.removeOnPreDrawListener(this);
+                    }
+                    probeResizeFrame("v216-pre");
+                    recenterForResizeSameFrame();
+                    probeResizeFrame("v216-fix");
+                    return true;
+                }
+            };
+
+    /**
+     * 【2.1.5】把当前帧的几何写成一行日志（只在窗口尺寸变化时调用）。
+     * 【2.1.6】新增 vw（视口宽）与 cw（容器宽）两列，用来直接证明「是宽度在变」。
+     *
+     * 字段含义：
+     *   vp        视口高（scrollView.getHeight()）
+     *   vw / cw   视口宽 / 容器宽（宽度变了才会重新折行 ⇒ 落点才会变）
+     *   padNow    container 此刻的上下内边距值
+     *   padUsed   内容**实际被测量时**用的内边距，由 (容器高 − 内容高) / 2 反推
+     *             padUsed != padNow 即 `[PAD-LATE]`：内边距改了但内容还没按新值量
+     *   ctrInVp   当前行中心相对视口顶的偏移；居中时应恒等于 vp/2
+     *   off       ctrInVp − vp/2，非 0 就是偏了多少像素（正 = 偏下 / 负 = 偏上）
+     */
+    private void probeResizeFrame(String where) {
+        if (container == null || scrollView == null || currentLocalIndex < 0) {
+            return;
+        }
+        int count = container.getChildCount();
+        int vp = scrollView.getHeight();
+        int vw = scrollView.getWidth();
+        if (count <= 0 || vp <= 0) {
+            return;
+        }
+        View target = container.getChildAt(Math.min(currentLocalIndex, count - 1));
+        if (target == null) {
+            return;
+        }
+        int contentH = container.getChildAt(count - 1).getBottom()
+                - container.getChildAt(0).getTop();
+        int padNow = container.getPaddingTop();
+        int padUsed = (container.getHeight() - contentH) / 2;
+        int ctr = target.getTop() + target.getHeight() / 2 - scrollView.getScrollY()
+                + (int) container.getTranslationY();
+        int off = ctr - vp / 2;
+        XposedCompat.log(TAG + " resize probe[" + where + "]: vp=" + vp
+                + " vw=" + vw + " cw=" + container.getWidth()
+                + " padNow=" + padNow + " padUsed=" + padUsed
+                + (padUsed == padNow ? "" : " [PAD-LATE]")
+                + " scrollY=" + scrollView.getScrollY()
+                + " lineTop=" + target.getTop() + " lineH=" + target.getHeight()
+                + " ctrInVp=" + ctr + " expect=" + (vp / 2)
+                + (off == 0 ? " OK" : " OFF=" + off));
     }
 
     /**
@@ -946,11 +1077,31 @@ public class FloatingSubtitleView extends FrameLayout {
             setOverScrollMode(OVER_SCROLL_NEVER); // 关掉边缘辉光
         }
 
+        /**
+         * 【2.1.5】在**内容被测量之前**把「半个视口」的内边距预置好。
+         *
+         * 为什么必须在这里：onSizeChanged 发生在布局阶段、子内容已经量完之后，
+         * 那时改内边距只能再排一趟布局 ⇒ 会出现「新视口 + 旧内边距」的中间帧。
+         * 放在 super.onMeasure 之前改，则「视口 → 内边距 → 内容测量」全在同一趟里完成。
+         * （2.1.6 真机数据表明绘制帧里内边距其实并没有滞后，本条属于无害的双保险。）
+         */
+        @Override
+        protected void onMeasure(int widthSpec, int heightSpec) {
+            if (predictPadOk && MeasureSpec.getMode(heightSpec) == MeasureSpec.EXACTLY) {
+                int vp = MeasureSpec.getSize(heightSpec);
+                if (vp > 0) {
+                    predictedVp = vp;
+                    FloatingSubtitleView.this.applyCenterPaddingFor(vp);
+                }
+            }
+            super.onMeasure(widthSpec, heightSpec);
+        }
+
         @Override
         protected void onSizeChanged(int w, int h, int oldw, int oldh) {
             super.onSizeChanged(w, h, oldw, oldh);
             if (w != oldw || h != oldh) {
-                // v20：窗口尺寸变了 → 半个视口的居中内边距要跟着重算
+                // v20：窗口尺寸变了 → 半个视口的居中内边距要跟着重算（现在是兜底修正）
                 FloatingSubtitleView.this.onViewportSizeChanged();
             }
         }
