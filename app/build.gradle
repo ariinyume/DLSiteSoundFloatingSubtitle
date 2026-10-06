@@ -34,7 +34,7 @@ plugins {
 //                 如 9 月 20 日发版 → 0920；10 月 3 日 → 1003。
 //                 ⚠️ 不是 20000 这种「语义版本 ×1000」的老规则。
 //                 同日多次发版时后一位可用 0921/0922 递增（保持单调即可）。
-def appVersionTag = '2.1.3'
+def appVersionTag = '2.2.0'
 // ⚠️ 写成 int 字面量 925（不要写 0925 —— Groovy 可能按八进制/前导零解析）：
 //    versionCode 的**数值**是 925，管理器里显示 925，可读语义看 appVersionCodeLabel。
 //    【0921.1】2.0.1 的**9/21 第一版**（code 923 → 924，versionName 不变）：
@@ -139,9 +139,120 @@ def appVersionTag = '2.1.3'
 //      scaledDensity），并用粗体按「胶囊宽 − 左右各 4dp」量过当前语言全部文案自动缩到
 //      放得下（下限 10sp 等效），配 singleLine + 不省略号 + 去字体留白 ⇒ 完全显示有保证。
 //      诊断新增 `[code 955] capsule metrics density locked:` / `capsule text locked:` 两行。
-def appVersionCode = 958
-def appVersionCodeLabel = '0930.4'
-def appVersionName = '2.1.3'
+//    【0927.1】code **956**：**M1 —— 可视化设置页**（依据 `docs/PRD-可视化设置页-v1.1.md`
+//      §13.2 的 M1 里程碑：状态卡 + 三组参数 + 保存 + 配置文件 + SystemUI 读取 + 三语 i18n + 恢复默认三件）。
+//      · 新增独立设置 Activity（模块自己进程，不进宿主）：ui/SettingsActivity +
+//        res/layout/activity_settings.xml + res/values/themes.xml（MD3 DayNight + 动态取色）；
+//        它同时是模块的 **launcher 入口**（桌面图标 / LSPosed「打开」都进这里）。
+//      · 新增配置层 config/{SubtitleConfig, ConfigStore, RemoteConfig, ConfigBus}：
+//        标准配置 JSON（schema_version + saved_at，临时文件 + 原子替换）与 SharedPreferences
+//        平铺键**双写**；hook 侧经 `XposedInterface.getRemotePreferences` 跨进程读取（PRD §5.3 A1），
+//        保存后广播 CONFIG_CHANGED 触发重载（A2 降级天然保留：收不到就手动重启生效）。
+//      · 悬浮窗外观参数**全部由硬编码常量改为读配置**：新增 view/SubtitleStyle 作为
+//        「配置 → 绘制参数」的唯一换算入口（M2 的预览区将复用它，避免 PRD §14.1 RK-03 的预览漂移）。
+//      · 状态卡的作用域检测用**进程间握手**（ConfigBus + ScopeProbe），分立判定
+//        DLsiteSound / SystemUI 两个作用域；未授权/未响应时给出 LSPosed 引导（PRD §12 E-01/E-02/E-10）。
+//      · 新增依赖：`com.google.android.material:material:1.9.0`（+ appcompat/core）。
+//        ⚠️ 首次构建需联网拉取；本文件顶部「离线构建」的既有约定因此多一条例外。
+//      ⚠️ code 由 954 → **956**：跳过 955 —— 955 只是上一版**日志描述里出现过的内部编号**，
+//         实际 versionCode 一直是 954；取 956 以保证严格单调、且不与日志里出现过的任何号相撞。
+//    【0930.1】code **959**：把 code 从 956 提到 959 —— 已发的 2.1.3 是 code 958，956 低于它，
+//         装机时若机上有 958 会被「版本降级」拒装；提 959 保证严格高于所有已发/已占号（954/956/957/958），
+//         可正常覆盖安装。versionName 仍 2.2.0。
+//    【1005.1】code **960**：versionName 2.2.0 → **2.3.0**（2.2.0 是 code 959 的设置页 WIP，
+//         从未单独发版，2.3.0 就是它的正式版）。960 严格高于所有已发/已占号（954/956/957/958/959）。
+//         本版是**基于 code 959 真机测试结果的返工**，两条线并行：
+//         ① 核心链路（配置 / 探测 / 数据裁定 / 渲染）——
+//            配置跨进程持久化改「各被注入进程写自己的本地 prefs」（LSPosed 2.2.0 的 remote prefs
+//            是只读实现，实测 remote prefs EMPTY + UnsupportedOperationException，重启即丢配置）；
+//            作用域探测的 PONG 增校验 tag（SystemUI 进程此前误答宿主的 HOST_PING，
+//            导致「宿主划掉/未授权」被判成「模块已激活」，用例 1.2/1.4）；
+//            保存后立即重绘（用例 2.1）；无字幕音轨的软挂起期间清空显示层（用例 7.2）；
+//            悬浮窗颜色配置化 + 面板渐变；
+//         ② 设置页 UI 全面 MD3 化（本文件负责的 UI 线）——
+//            语言按钮移页头右上角 + 改为语言短名 + 主题色填充胶囊 + 内边距再减 60% + 全圆角；
+//            整页走 surfaceContainer 分层（浅色奶白 / 夜间 #1C1B1F 系，不再纯黑）；
+//            状态栏区域与 app 背景同色（不再主题色染色）；色板各 8 预设 + 行末圆形取色按钮；
+//            滑块步长统一（阴影强度 50% / 高亮 100% / 模糊 3.0px / 缩放 90% / 行距上限 5dp）；
+//            新增「悬浮窗颜色」（半透明叠加预览）；状态栏字幕功能改为**功能级总闸**；
+//            预览窗复用 SubtitleStyle 换算入口 + 半透明面板；
+//            修「只切语言返回弹未保存」（语言不计入脏判定 + 切语言即时独立落盘，用例 6.3）；
+//            修「系统显示大小拉最大页面跟着变」（钉 fontScale + forced density + configChanges，用例 3.11）。
+//        本版按 Ari 拍板**删除两项无效功能**：字重不生效、保持屏幕常亮无效果
+//        （两个配置键保留解析兼容，界面移除，「恢复默认」小字同步更新）。
+//    【1005.2】code **961**：versionName 2.3.0 → **2.3.1**。961 严格高于所有已发/已占号
+//         （954/956/957/958/959/960）。本版是**基于 code 960 真机测试结果的返工**（Ari 2026-10-05）：
+//         `docs` 侧报告 `测试结果-可视化设置页-code960-20261005.md` 的 ❌ 项逐条修：
+//         ① 状态卡判定根因（2.1.1/2.6/2.8）—— SystemUI 进程此前以 tag="host" 抢答 HOST_PING，
+//            使「只勾 SystemUI」被判成「DLsiteSound 未运行」；改 onPackageLoaded 只挂目标进程
+//            + ConfigBus.isHostProcess() 硬闸 + isHostAlive() 改进程 importance 判活；
+//         ② 10.5 删掉对只读 remote prefs 的写入尝试（不再有 persistToRemotePrefs failed）；
+//         ③ 7.8 关闭「状态栏字幕功能」不再弹 Toast（常驻小字已足够）；
+//         ④ 4.10 文案「高亮」→「不透明度」（三语同步）；
+//         ⑤ 1.1.1 MD3 化 —— 重置 / 对齐 / 导出 / 导入全部由 outlined 改 tonal 填充（不再黑线画圈）；
+//         ⑥ 1.14 / 7.1.1 间距统一 —— 卡片间距 22dp、卡片内上下留白同「字幕排版」；
+//         ⑦ 1.17 深色模式卡片底色 —— 补齐 surfaceContainer 全链路兜底色；
+//         ⑧ 1.18–1.20 显示大小钉死 —— attachBaseContext 改 applyOverrideConfiguration，
+//            语言胶囊加 maxWidth 防溢出；
+//         ⑨ 3.2/3.4/3.5 预览区重做 —— 逐行 View 与真窗同构、模糊/壁纸底落地；
+//         ⑩ 4.1.1/4.3/6.8 色板行重做 —— 彩虹色环（与色点等大）+ 棋盘格只在色点圆内；
+//         ⑪ 6.1.1 悬浮窗彩色面板时 ✕ / 缩放手柄转白（不透明度不变）；
+//         ⑫ 8.1 底栏「重启系统界面」改浅重点色填充；8.2 删底栏上沿分隔线。
+//    【1005.3】code **962**：versionName 2.3.1 → **2.3.2**。962 严格高于所有已发/已占号
+//        （954/956/957/958/959/960/961）。本版是**基于 code 961 真机测试结果的返工**
+//        （Ari 2026-10-05 23:25 报告 `测试结果-可视化设置页-code961-20261005.md` + 录屏）：
+//        A. **1.2 四组按钮的真 bug**：`new MaterialButton(ctx, null, R.style.Widget_Material3_Button_TonalButton)`
+//           —— 第三个参数是 defStyleAttr（属性），传 style 资源进去解析不到，tonal 的
+//           浅底与 onSecondaryContainer 字色全都没落地 ⇒ 真机渲染成「深底 + 黑字」，
+//           且分段按钮三段同色（Ari 判成「对齐点选不可用」）。改为**显式**设
+//           backgroundTint / textColor / iconTint，并补「禁用态 38%」ColorStateList
+//           （禁用时按钮整体消失正是 code961 录屏里「导出/导入 一片空白」的原因）。
+//        B. **1.1 语言胶囊**：MaterialButton + app:icon + iconGravity=textStart 在真机上
+//           只画出图标、文字被吃掉 ⇒ 换成 LinearLayout 自绘胶囊（ImageView + TextView）。
+//        C. **2.1 状态卡左右贴边**：补 layout_marginStart/End = 16dp（它不在 settings_content 里）。
+//        D. **2.3 卡片内间隔**（Ari 第三次点名）：行与行之间加回 1dp colorOutlineVariant 细分隔线。
+//        E. **2.4 / 2.5 底距**：删掉导出/导入下面那个**空 TextView**（凭空 8dp + 卡片 6dp），
+//           提示小字的底部留白交给卡片统一收口 ⇒ 两处底距都恰好 6dp。
+//        F. **2.6 行内上边距以文字为准**：所有行统一 40dp 最小高度 + 垂直居中，
+//           四张卡片首行文字顶边恒等（v1.5 开关行被 32dp 的开关撑高、文字被推低 6dp）。
+//        G. **2.2 / 2.7 预览卡重做**：MaterialCardView 会顶掉 setBackground ⇒ 换成普通
+//           FrameLayout，内部三层（不透明壁纸底 → 半透明面板 → 逐行字幕）。v1.5 的
+//           「半透明面板」其实一次都没画出来；壁纸底半透明又导致吸顶时底下内容透出来。
+//           AppBarLayout 加 paddingBottom 5dp，钉住时与下方内容恒定留 5dp。
+//        H. **2.8 夜间配色**：页面大底 colorSurface → colorSurfaceContainerLow（提亮一档），
+//           卡片 containerLow → containerHigh；状态栏/导航栏由代码写成大底色。
+//        I. **4.1 / 4.2 滚动**：页头行 / 状态卡 / 引导小字 scrollFlags 由
+//           `scroll|enterAlways` 改 **`scroll`** —— 只在滚回页面最顶部才出现，
+//           不再和吸顶的预览窗一起回来（4.2），也不再与 NestedScrollView 抢滚动量（4.1）。
+//        J. **6.1.1 悬浮窗彩色面板控件转白**（Ari 第二次点名）：真 bug 是 init() 里
+//           applyPanelBackground() 早于 closeBtn/gripView 创建 ⇒ applyControlTint() 空转，
+//           而 refreshStyle() 的补色分支在「视图重建、style 是新建」时走不到。
+//    【1006.1】code **963**：versionName 2.3.2 → **2.3.3**。963 严格高于所有已发/已占号
+//        （954/956/957/958/959/960/961/962）。**代码零改动，只修一个资源层的语法错**：
+//        🔴 code 962 装上后**设置页一点就闪退**（Ari 2026-10-06 00:09 报告，LSPosed 日志
+//           `dropbox/data_app_crash@…` ×10 全同一异常）：
+//             RuntimeException: Unable to start activity …SettingsActivity:
+//               Resources$NotFoundException: Drawable …:drawable/ic_import with resource ID #0x7f07008c
+//             Caused by: IllegalArgumentException: L needs to be followed by a multiple of 2 floats.
+//               However, 1 float(s) are found. Failure occurred at position 19 of path:
+//               M19,9h-4L15,3L9,3v6L5l7,7 7,-7zM5,18v2h14v-2L5,20z
+//        根因：962 新增的 `res/drawable/ic_import.xml` 里 pathData 写着 `L5` —— **`L` 必须跟
+//           偶数个坐标，这里只给了 1 个**（原作者把 MD 官方的 `H5` 手工改写成 `L5` 时漏了 y）。
+//           aapt2 **不校验 pathData 语法**（它在 arsc 里就是普通字符串）⇒ 编译过、`aapt2 dump
+//           xmltree` 也打得出来，**只有真机 VectorDrawable 解析时才抛** ⇒ 崩在
+//           `onCreate → buildRows → buildMiscGroup → makeTonalButton → setIconResource`，
+//           Activity 直接起不来。同一路径里 `L5,20`（该是 `H5`）语法合法但几何错，
+//           会把托盘右下角画成对角线。
+//        修法：`ic_import` / `ic_export` 双双改回 **MD 官方原文**（H/V 保留，不再做等价改写）：
+//           ic_import: M19,9h-4V3H9v6H5l7,7 7,-7zM5,18v2h14v-2H5z
+//           ic_export: M9,16h6v-6h4l-7,-7 -7,7h4v6zM5,18h14v2H5z
+//        ★ 新增验证层 `_rel232/verify_pathdata.py`（+ `selftest_pathdata.py`）：
+//           对 res/ 下**所有** `<vector>` 的 pathData 做「命令元数自洽 + 子路径包围盒不越界」
+//           两层离线校验 —— 补上 dex 三层 / aapt2 资源层都覆盖不到的这块盲区。
+//           ⚠️ 边界：能抓「元数错（会崩）」与「坐标越界」，**抓不到「形状错但坐标都合法」**。
+def appVersionCode = 972
+def appVersionCodeLabel = '1006.10'
+def appVersionName = '2.2.0'
 
 android {
     namespace 'io.github.ariinyume.dlsitesoundfloat'
@@ -181,11 +292,17 @@ android {
     }
 }
 
-// 让 APK 产物文件名带上「版本 + 构建类型」，便于区分各次打包。
+// 让 APK 产物文件名带上「版本 + versionCode + 构建类型」。
+// ⚠️【2026-10-04 Ari 指令】**文件名必须标出 versionCode** —— 历史上 2.1.3 出现过两个
+//    不同的 code（955 / 958）、2.1.5 与「2.1.3 修复」也复用过同一个 958，光看
+//    「DLsiteFloat-2.1.3-debug.apk」根本分不清装的是哪一版，返工时对不上号。
+//    现在统一 DLsiteFloat-<versionName>-code<versionCode>-<buildType>.apk，
+//    与工作区根目录的历史交付包命名（DLsiteFloat-2.1.4-code957-debug.apk）对齐。
 androidComponents {
     onVariants(selector().all()) { variant ->
         variant.outputs.each { output ->
-            output.outputFileName.set("DLsiteFloat-${appVersionTag}-${variant.buildType}.apk")
+            output.outputFileName.set(
+                    "DLsiteFloat-${appVersionTag}-code${appVersionCode}-${variant.buildType}.apk")
         }
     }
 }
@@ -194,4 +311,15 @@ dependencies {
     // libxposed 现代 API（API 102）。compileOnly：API 由框架在运行时提供，不打进 APK。
     // ⚠️ 只能 compileOnly —— 打进包会导致模块与框架的 XposedInterface 类冲突。
     compileOnly 'io.github.libxposed:api:102.0.0'
+
+    // ── 【M1】可视化设置页（PRD §7 / NFR-01）──────────────────────────────
+    // 设置页是本模块**自己进程内**的独立 Activity（SettingsActivity），需要 MD3 组件。
+    // ⚠️ 用 implementation（不是 compileOnly）：这些类要打进本模块 APK 供设置页使用。
+    //    注入到宿主 / SystemUI 的视图（FloatingSubtitleView 等）一律用**代码构建**
+    //    且不引用本模块资源 / 不依赖 Material（见 FloatingSubtitleView 类头），
+    //    所以下游进程不会因为缺这些类而崩。
+    // ⚠️ 首次构建需联网拉取（本机 toolchain/maven-local 里没有 androidx 制品）。
+    implementation 'com.google.android.material:material:1.9.0'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'androidx.core:core:1.9.0'
 }

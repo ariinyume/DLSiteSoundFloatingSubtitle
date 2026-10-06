@@ -16,7 +16,42 @@
         android:label="@string/app_name"
         android:description="@string/app_description"
         android:icon="@mipmap/ic_launcher"
-        android:allowBackup="false">
+        android:allowBackup="false"
+        android:theme="@style/Theme.DLsiteFloat">
+
+        <!--
+          【M1 / v1.4】可视化设置页（PRD §5.1 方案 A：独立设置 Activity + MD3 原生控件 + 配置文件中转）。
+
+          · 跑在**模块自己的进程**里，不与 SystemUI / DLsiteSound 抢交互（PRD §5.2、§11 进程隔离）；
+          · 是模块唯一的 launcher 入口：LSPosed 模块列表点「打开」与桌面图标都进这里；
+          · exported=true 是带 intent-filter 的必需项（Android 12+ 强制显式声明）。
+
+          ── v1.4 §3.11②：configChanges 接管「字号 / 显示大小」这一族 ──
+          设置页的 UI 要**固定系统最小字号与显示大小**（不让用户把系统字体拉到最大就把
+          三组参数行挤到疯狂换行，见 SettingsActivity#attachBaseContext）。做法是两层：
+            ① 代码侧克隆 Configuration 把 fontScale 钉成 1.0、densityDpi 钉成系统强制档；
+            ② 清单侧声明接管这些配置变化，**不重建 Activity** —— 否则系统的每次
+               「显示大小」变更都会重建页面，重建后 Resources 又按系统新值刷新，
+               我们钉的值等于白钉，用户会看到页面「跳一下再缩放」。
+          ⚠️ **刻意不含 uiMode**：深浅色（DayNight）切换必须让 Activity 重建一次，
+             重建后主题才会重新解析 colorSurface 等色槽，页面才能真正换到夜间配色。
+             接管 uiMode 就得自己调 recreate()，反而多一层坑，所以留在系统默认行为。
+          ⚠️ 接管 locale 是安全的：页内文案走 ui/Strings.java 的三语表（运行时取值），
+             不依赖 res 限定符，因此系统语言变了不需要重建（FR-02 规则 2 的既有口径）。
+          ⚠️ 接管 layoutDirection / screenLayout / smallestScreenSize：这几个在折叠屏
+             展开/旋转时会变，重建会丢掉未保存的草稿改动，交给 onConfigurationChanged 处理。
+        -->
+        <activity
+            android:name="io.github.ariinyume.dlsitesoundfloat.ui.SettingsActivity"
+            android:exported="true"
+            android:label="@string/settings_label"
+            android:theme="@style/Theme.DLsiteFloat"
+            android:configChanges="fontScale|density|screenSize|screenLayout|smallestScreenSize|orientation|keyboardHidden|locale|layoutDirection">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
 
     </application>
 </manifest>

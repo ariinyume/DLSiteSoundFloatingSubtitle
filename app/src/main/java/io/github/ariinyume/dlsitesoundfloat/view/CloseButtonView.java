@@ -47,6 +47,19 @@ public class CloseButtonView extends View {
     private static final float DISC_ALPHA = 0.40f;
     /** 圆底灰度（与缩放手柄同色，视觉上成一对）。 */
     private static final int DISC_GRAY = 0xB3B3B3;
+    /**
+     * 【2.3.1 §6.1.1】面板底色为**除黑白之外的其他颜色**时，控件圆底改为白色。
+     *
+     * ── 为什么需要单独一档 ──────────────────────────────────────────────
+     * 现状是恒用中灰 {@link #DISC_GRAY}（0xB3B3B3）。中灰在**黑/白面板**上对比度够，
+     * 但在彩色面板（例如红/绿/紫）上会「吃色」—— 灰圆盘和面板底色亮度接近，看不清。
+     * Ari 的实测截图（Screenshot_2026-10-05-16-21-13-66）就是彩色面板下控件几乎隐形。
+     * 改白的理由是：白色在所有饱和色相上都有稳定对比，且**不透明度沿用原值**
+     * （§6.1.1 原话「不透明度与现有的控件不透明度设定一致」）⇒ 视觉重量不变、
+     * 只是色相从灰换成白。
+     * ⚠️ 黑白面板**不套用**这一档：白面板上一枚白色控件 = 隐形，所以仍走中灰。
+     */
+    private static final int DISC_WHITE = 0xFFFFFF;
     /** ✕ 臂半长 = 圆的半径 × 该比例。 */
     private static final float X_HALF_RATIO = 0.34f;
     /** ✕ 线宽（dp）。v15：1.6 → 2.0dp（匹配放大后的 40dp 圆盘）。 */
@@ -71,6 +84,21 @@ public class CloseButtonView extends View {
             //noinspection deprecation
             xPaint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.CLEAR));
         }
+    }
+
+    /**
+     * 【2.3.1 §6.1.1】按面板底色切换控件圆底的「灰 / 白」。
+     *
+     * @param panelColor 当前悬浮窗面板基色（ARGB）；面板是**黑白之外的彩色**时传 true 让它转白
+     *
+     * 判据（在调用侧算好传进来）：只看「是否黑白」——极度接近纯黑或纯白的（含默认的
+     * 深蓝黑 {@code #0E1420}）都算「黑白档」，保持中灰；其余一律白。
+     * ⚠️ alpha 沿用 {@link #DISC_ALPHA}，不做改动（§6.1.1 要求不透明度与现有控件一致）。
+     */
+    public void setOnColoredPanel(boolean onColoredPanel) {
+        int base = onColoredPanel ? DISC_WHITE : DISC_GRAY;
+        discPaint.setColor(GripIndicatorView.alphaColor(DISC_ALPHA, base));
+        invalidate();
     }
 
     @Override

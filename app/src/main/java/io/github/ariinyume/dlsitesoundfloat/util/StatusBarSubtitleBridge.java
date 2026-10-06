@@ -106,6 +106,44 @@ public final class StatusBarSubtitleBridge {
     public static boolean sAppEnabled = false;
 
     /**
+     * 【2.3.0 §2.1.1.4】**功能级总闸**（L1）在宿主进程里的镜像。
+     *
+     * 两级开关的口径（与设置页 UI 同一份口径，两边必须一致）：
+     *   · L1「状态栏字幕功能」= 配置键 {@code statusbar_subtitle_enabled}，持久配置、属于设置页；
+     *   · L2「播放页那个开关」= {@link #sAppEnabled}，会话级、只活在宿主进程、默认关。
+     *
+     * ⚠️ 两者**绝不能互相复用**：生命周期完全不同（L1 持久 / L2 会话），
+     *    而且 L1 关时 L2 连 UI 都不存在。本字段只是 L1 在宿主进程内的镜像，
+     *    由 {@link #setFeatureEnabled} 从配置同步，**不**由用户点击写。
+     */
+    public static volatile boolean sFeatureEnabled = true;
+
+    /** 真正生效的「状态栏字幕开着吗」= L1 与 L2 同时成立。广播出去的就是它。 */
+    public static boolean effectiveEnabled() {
+        return sFeatureEnabled && sAppEnabled;
+    }
+
+    /**
+     * 【2.3.0 §2.1.1.4】同步 L1 总闸，并**顺带把 L2 复位成关**。
+     *
+     * 为什么两个动作绑在一起（需求原文：「重新打开功能后，播放器页开关初始为关」）：
+     *   · L1 关 → 功能都没了，会话态一起没（否则下次打开 L1，状态栏会莫名其妙自己亮）；
+     *   · L1 开 → 用户是「重新启用功能」，播放页开关按需求从**关**起步，不继承上次会话。
+     * 值没变时是 no-op（每次保存配置都会走到这里，不能把用户已开的会话开关反复清掉）。
+     */
+    public static void setFeatureEnabled(boolean on) {
+        boolean prev = sFeatureEnabled;
+        if (prev == on) {
+            return;
+        }
+        sFeatureEnabled = on;
+        sAppEnabled = false; // L2 随 L1 一起复位（两个方向都复位成「关」）
+        android.util.Log.i("DLsiteSoundFloat", "[2.3.0] statusbar subtitle feature gate -> "
+                + (on ? "ON" : "OFF") + " (session toggle reset to off)");
+        notifyEnabledChanged(); // 让播放页按钮立刻重算可见性（L1 关时它整个消失）
+    }
+
+    /**
      * 【1.21.13 问题 2】开关状态变化的监听（**只在 App 进程注册**）。
      *
      * 为什么必须有它：按钮底色（绿色 = 状态栏字幕开）直接读 {@link #sAppEnabled}。
@@ -212,8 +250,12 @@ public final class StatusBarSubtitleBridge {
 
     /** 长按触发：翻转开关并向 SystemUI 广播新状态。返回翻转后的状态。 */
     public static boolean toggleAppEnabled(Context ctx) {
+        // 【2.3.0 §2.1.1.4】L1 关着 → 不允许翻 L2（此时播放页连按钮都不显示，这里只是兜底）
+        if (!sFeatureEnabled) {
+            return false;
+        }
         sAppEnabled = !sAppEnabled;
-        sendEnabled(ctx, sAppEnabled);
+        sendEnabled(ctx, effectiveEnabled());
         notifyEnabledChanged();
         return sAppEnabled;
     }
@@ -243,8 +285,9 @@ public final class StatusBarSubtitleBridge {
     /** 【1.21.11 问题 3】「无字幕」状态下不允许开启状态栏字幕。
      *  【v57】触发形式已由「长按」改为「点击」，判据本身不变。 */
     // 【1.21.16 问题 1】口径统一到 shouldShowNoSubtitles()（含软裁决 / 换轨待确认）。
+    // 【2.3.0 §2.1.1.4】再加一道 L1 总闸：功能级关着时，会话开关压根不该能被翻。
     public static boolean canToggle(SubtitleRepository repo) {
-        return repo != null && !repo.shouldShowNoSubtitles();
+        return repo != null && !repo.shouldShowNoSubtitles() && sFeatureEnabled;
     }
 
     /** 广播开关状态（App 启动 / 翻转时调用）。 */
@@ -264,7 +307,9 @@ public final class StatusBarSubtitleBridge {
         }
         Intent i = new Intent(ACTION_LINE);
         i.putExtra(EXTRA_LINE, line == null ? "" : line);
-        i.putExtra(EXTRA_ENABLED, sAppEnabled);
+        // 【2.3.0 §2.1.1.4】推给 SystemUI 的是**生效值**（L1 && L2）：
+        // L1 关着时即使 L2 残留 true，状态栏也必须停显。
+        i.putExtra(EXTRA_ENABLED, effectiveEnabled());
         i.putExtra(EXTRA_DURATION_MS, durationMs);
         i.putExtra(EXTRA_PLAYING, playing);
         ctx.sendBroadcast(i);

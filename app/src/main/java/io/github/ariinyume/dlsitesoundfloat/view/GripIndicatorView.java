@@ -60,6 +60,12 @@ public class GripIndicatorView extends View {
     private static final float FILL_ALPHA = 0.40f;
     /** 填充灰度（"灰底"，而非纯白 —— 纯白在半透明玻璃上会显得发亮、太实）。 */
     private static final int FILL_GRAY = 0xB3B3B3;
+    /**
+     * 【2.3.1 §6.1.1】面板底色为黑白之外的彩色时改用白色填充（与右上角 ✕ 按钮同步）。
+     * 理由见 {@code CloseButtonView#DISC_WHITE} 的注释（灰在彩色面板上会「吃色」）。
+     * ⚠️ alpha 仍沿用 {@link #FILL_ALPHA} 40%。
+     */
+    private static final int FILL_WHITE = 0xFFFFFF;
     /** 最终填充色（灰 + 40% 不透明度）。 */
     private static final int FILL_COLOR = alphaColor(FILL_ALPHA, FILL_GRAY);
 
@@ -70,6 +76,16 @@ public class GripIndicatorView extends View {
         super(context);
         paint.setStyle(Paint.Style.FILL);
         paint.setColor(FILL_COLOR);
+    }
+
+    /**
+     * 【2.3.1 §6.1.1】按面板底色切换填充的「灰 / 白」（与 {@code CloseButtonView} 同一判据）。
+     *
+     * @param onColoredPanel 面板基色是**黑白之外的彩色**时为 true ⇒ 填充转白
+     */
+    public void setOnColoredPanel(boolean onColoredPanel) {
+        paint.setColor(alphaColor(FILL_ALPHA, onColoredPanel ? FILL_WHITE : FILL_GRAY));
+        invalidate();
     }
 
     @Override

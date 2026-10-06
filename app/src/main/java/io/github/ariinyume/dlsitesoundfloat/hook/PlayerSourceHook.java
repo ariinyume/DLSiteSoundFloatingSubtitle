@@ -21,62 +21,71 @@ package io.github.ariinyume.dlsitesoundfloat.hook;
 import android.os.SystemClock;
 
 import io.github.ariinyume.dlsitesoundfloat.data.SubtitleRepository;
+import io.github.ariinyume.dlsitesoundfloat.util.Shape;
 import io.github.ariinyume.dlsitesoundfloat.util.XposedCompat;
 
 import java.lang.reflect.Method;
-import java.util.List;
+import java.util.Map;
 
 import io.github.libxposed.api.XposedInterface;
 
 /**
  * 音轨切换 Hook —— 解决「切到没有字幕的音轨后，悬浮窗仍从头播放上一音轨的缓存字幕」。
  *
- * ─────────────────────────────────────────────────────────────────────
- * v17：音频是**播放列表**形态（expo.modules.audio.AudioPlaylist），列表内换轨不走 setMediaSource，
- *      故把 next / previous / skipTo / emitTrackChanged / getCurrentTrackIndex 全挂上。
+ * <h3>🔴🔴 2.1.4：本文件因宿主 R8 混淆而整条重写</h3>
+ * 老版本挂在五个换轨信号上，宿主 2.20.2 上<b>全部</b>失效（真机日志原文）：
+ * <pre>
+ * hookAllMethods found no method: expo.modules.audio.AudioPlaylist.emitTrackChanged
+ * hookAllMethods found no method: expo.modules.audio.AudioPlaylist.next
+ * hookAllMethods found no method: expo.modules.audio.AudioPlaylist.previous
+ * hookAllMethods found no method: expo.modules.audio.AudioPlaylist.skipTo
+ * hookAllMethods found no method: expo.modules.audio.AudioPlaylist.onManualNavigation
+ * hookAllMethods found no method: expo.modules.audio.AudioPlaylist.getCurrentTrackIndex
+ * hookAllMethods found no method: expo.modules.audio.AudioPlayer.setMediaSource
+ * [DLsiteSoundFloat:Source] class not found: androidx.media3.exoplayer.ExoPlayerImpl
+ * </pre>
+ * 离线核实（dex 层）：这些方法名已被 R8 改名（实测 {@code AudioPlaylist} 的方法变成
+ * {@code l0()I} / {@code R(I)V} / {@code i0(I)V} …），而 {@code ExoPlayerImpl} 整个类已不存在。
  *
- * ── v27（1.20.4）：**「调了方法」≠「真的换轨」** ──
- * 第一轨按「上一首」时 App 是 no-op，但 previous() 仍被调用 → 误判无字幕 → 清 cues + 关窗。
- * 修法：给这些信号加「曲目序号二次确认」。
+ * <h3>✅ 本版方案：曲目序号由「状态 Map」提供</h3>
+ * 换轨判据的<b>本质</b>是「当前曲目序号变了没有」。而序号这个值，
+ * expo-audio 状态 Map 里以字符串键 {@code currentIndex} 直接给出
+ * （离线反汇编确认：{@code currentIndex -> Integer}，由播放器实例的 {@code p0()I} 填入）。
+ * ⇒ 由 {@link PlayerPositionHook} 在消费状态 Map 时一并检测序号变化并发换轨通知，
+ * <b>本文件不再自己挂钩任何换轨方法</b>。
  *
- * ── v28（1.20.5）：**v27 的两处缺陷导致两个新 bug**（本轮修复）──
+ * <h3>为什么保留本文件（而不是直接删掉）</h3>
+ * ① {@link #notifyTrackChanged} 是换轨通知的<b>唯一出口</b>（含去重），
+ * 仍被 {@link PlayerPositionHook} 调用；
+ * ② 序号相关的判据（{@link #isListReset}「X→0 是列表重置不是换轨」、
+ *    {@link #INDEX_STALE_MS}「进程重建后首次读数只种基线」）都集中在这里，便于维护；
+ * ③ 老宿主（未混淆）上仍能挂到那五个信号，作为<b>状态 Map 之外的第二条换轨来源</b>。
  *
- * 【缺陷 A：基线从未种入】v27 把 seed 挂在 {@code AudioPlaylist.setMediaSource} 上，
- *   但**该类根本没有这个方法**（日志实测 `[unconditional + seed] (0 methods)`，`seeded` 零命中），
- *   setMediaSource 实际在 {@code AudioPlayer} 上。后果：{@code sLastTrackIndex} 恒为 MIN_VALUE
- *   → 首次观测落进 `[first observed index]` 分支 → **把「进程重建后重新读到序号」当成换轨**。
- *   这正是【问题 1】的来源：App 退到后台被重建、回到前台重新读到序号 → 伪换轨通知 →
- *   数据层用被清零的播放位置（0）重算字幕行 → 画面**跳回该音轨已播过的开头字幕**。
- *
- * 【缺陷 B：序号回 0 被当成换轨】日志里大量 `23->0` / `10->0` / `5->0` / `3->0` ——
- *   这是**播放列表被重置/重新装载**（进程重建、切作品），不是用户在列表内换轨。
- *   用户换轨是 `4->3` / `2->1` 这类**相邻**变化。故新增 {@link #isListReset}：
- *   新序号为 0 且旧序号 &gt;1 → 判为「列表重置」，**不当作换轨通知**
- *   （由后续的 setMediaSource / 字幕 JSON 到达去驱动正常流程）。
- *
- * ── 真伪换轨的最终判据（本轮确立）──
- * v27 用「播放位置是否回退」做兜底判据，前提不成立：实测 54 次换轨里 **52 次 pos=0ms**
- * （切轨瞬间位置就被清零），「回退」恒真 → 真换轨全被误判成假换轨（见【问题 2】）。
- * 本版改为：**序号门负责识别「真换轨」**（相邻变化 = 真换轨；X-&gt;0 = 列表重置，忽略），
- * 位置判据仅在数据层作为**弱兜底**，且不再据其重算字幕行（见 SubtitleRepository）。
- *
- * 判定逻辑（是否保留字幕 / 是否关窗）全部在 {@link SubtitleRepository#onTrackChanged} 里。
- * 注意：拖动进度条走的是 seekTo，不会触发以上任何方法，因此不会误清字幕。
- * ─────────────────────────────────────────────────────────────────────
+ * <h3>真伪换轨的判据（沿用并保留全部历史教训）</h3>
+ * <ul>
+ *   <li><b>首次 / 距上次太久</b>（进程重建、长时间后台）→ 只重建基线，<b>不发通知</b>。
+ *       否则数据层会用被清零的播放位置（0）重算字幕行 ⇒ <b>画面跳回已播过的开头字幕</b>。</li>
+ *   <li><b>X → 0</b>（且旧序号 &gt; 1）→ 判为「播放列表被重置 / 切作品」，
+ *       <b>不</b>当换轨（否则会误清字幕、误判「无字幕」）。</li>
+ *   <li><b>相邻变化</b>（4→3 / 2→1）→ 真换轨，通知。</li>
+ *   <li>序号读不到 → 退化为旧行为（无条件通知），由数据层的弱兜底再判一次。</li>
+ * </ul>
+ * ⚠️ 拖动进度条走 seekTo，不改序号 ⇒ 不会误清字幕。
  */
 public class PlayerSourceHook {
     private static final String TAG = "[DLsiteSoundFloat:Source]";
+
     /** 同一次切换可能触发多个 hook 点，去重窗口。 */
     private static final long DEDUP_MS = 500L;
     /**
      * 距上次「进程内已观测到序号」超过这么久，说明中间大概率经历了进程重建 / 长时间后台，
-     * 此时读到的新序号不可信，**只重建基线、不发换轨通知**。
+     * 此时读到的新序号不可信，<b>只重建基线、不发换轨通知</b>。
      */
     private static final long INDEX_STALE_MS = 30000L;
 
     private static volatile long sLastNotifyMs = 0L;
-    /** 最近一次观察到的播放列表曲目序号（Integer.MIN_VALUE = 尚未观测到）。 */
-    private static volatile int sLastTrackIndex = Integer.MIN_VALUE;
+    /** 最近一次观察到的播放列表曲目序号（{@code null} = 尚未观测到）。 */
+    private static volatile Integer sLastTrackIndex = null;
     /** 最近一次观测到序号的时间（用于识别进程重建后的「首次读数」）。 */
     private static volatile long sLastIndexSeenMs = 0L;
 
@@ -90,14 +99,24 @@ public class PlayerSourceHook {
             "setMediaItems", "setMediaItem", "setMediaSource", "setMediaSources"};
 
     public static void hook(ClassLoader cl, SubtitleRepository repo) {
-        // setMediaSource 在 AudioPlayer 上（**不是** AudioPlaylist）—— 这里同时种基线。
-        // v27 误挂在 AudioPlaylist 上，导致 0 methods、基线从未种入（问题 1 的根因之一）。
+        // 老信号：仅在宿主「未混淆」时有效（≤2.20.1）。
+        // 2.20.2+ 上这些方法名已被 R8 改掉，全部找不到 —— 属预期，不打错误日志。
         hookClass(cl, repo, "expo.modules.audio.AudioPlayer",
                 PLAYER_SOURCE, false, true);
         hookClass(cl, repo, "expo.modules.audio.AudioPlaylist", PLAYLIST_SIGNALS, true, false);
-        hookTrackIndex(cl, repo);
         hookClass(cl, repo, "androidx.media3.exoplayer.ExoPlayerImpl", EXO_SOURCE, false, false);
+
+        if (sAnyLegacyHooked) {
+            XposedCompat.log(TAG + " legacy change signals active (host NOT obfuscated);"
+                    + " status-map index also feeding change detection");
+        } else {
+            XposedCompat.log(TAG + " legacy change signals absent (expected on obfuscated host)"
+                    + " -> track change will be detected via status-map currentIndex");
+        }
     }
+
+    /** 是否至少挂到了一条老换轨信号（用于日志判断当前走哪条路）。 */
+    private static volatile boolean sAnyLegacyHooked = false;
 
     /**
      * @param requireIndexChange true = 该方法的调用不足以证明换轨，需再比一次曲目序号
@@ -110,131 +129,89 @@ public class PlayerSourceHook {
         try {
             cls = XposedCompat.findClass(className, cl);
         } catch (Throwable e) {
-            XposedCompat.log(TAG + " class not found: " + className);
+            // 类不存在（混淆后改名 / 该宿主没有）—— 静默跳过，主通道不依赖它
             return;
         }
         int hooked = 0;
         for (final String name : methodNames) {
-            // 迁移对照：旧 XposedBridge.hookAllMethods(cls, name, XC_MethodHook) 返回 Unhook 集合，
-            // 代码里只取 .size()；XposedCompat.hookAllMethods 直接返回「成功挂钩的数量」。
             hooked += XposedCompat.hookAllMethods(cls, name, new XposedCompat.SimpleHook() {
                 @Override
                 protected Object after(XposedInterface.Chain chain, Object r) {
-                    String where = className + "." + name;
-                    if (requireIndexChange) {
-                        notifyIfTrackIndexChanged(repo, where, chain.getThisObject());
-                        return r;
+                    try {
+                        String where = className + "." + name;
+                        if (requireIndexChange) {
+                            notifyIfTrackIndexChanged(repo, where, chain.getThisObject());
+                            return r;
+                        }
+                        if (seedIndexOnly) {
+                            seedTrackIndex(chain.getThisObject(), where);
+                        }
+                        notifyTrackChanged(repo, where);
+                    } catch (Throwable ignored) {
+                        // 钩子体绝不能把异常抛回宿主
                     }
-                    if (seedIndexOnly) {
-                        seedTrackIndex(chain.getThisObject(), where);
-                    }
-                    notifyTrackChanged(repo, where);
                     return r;
                 }
             });
         }
-        XposedCompat.log(TAG + " hooked " + className
-                + (requireIndexChange ? " [index-verified]"
-                        : (seedIndexOnly ? " [unconditional + seed]" : " [unconditional]"))
-                + " (" + hooked + " methods)");
-    }
-
-    /**
-     * 曲目序号变化检测：只在**返回值发生变化**时才当作换轨。
-     *
-     * ⚠️ 实测 JS 从不调用本方法（基线靠 {@link #seedTrackIndex} 种），
-     * 这里保留是为了万一 App 某版本开始轮询它时仍能兜住。
-     */
-    private static void hookTrackIndex(ClassLoader cl, SubtitleRepository repo) {
-        Class<?> cls;
-        try {
-            cls = XposedCompat.findClass("expo.modules.audio.AudioPlaylist", cl);
-        } catch (Throwable e) {
-            return;
-        }
-        try {
-            int n = XposedCompat.hookAllMethods(cls, "getCurrentTrackIndex", new XposedCompat.SimpleHook() {
-                @Override
-                protected Object after(XposedInterface.Chain chain, Object res) {
-                    if (!(res instanceof Integer)) {
-                        return res;
-                    }
-                    int idx = (Integer) res;
-                    long now = SystemClock.uptimeMillis();
-                    long since = now - sLastIndexSeenMs;
-                    int last = sLastTrackIndex;
-                    sLastIndexSeenMs = now;
-
-                    // 首次观测 / 距上次观测太久（进程重建、长时间后台）→ 只重建基线，不发通知。
-                    // ⚠️ v27 的 bug：这里发通知会被当成换轨；而此刻播放位置已被清零，
-                    //    数据层会用它重算字幕行 → 跳回已播过的字幕（问题 1）。
-                    if (last == Integer.MIN_VALUE || since > INDEX_STALE_MS) {
-                        sLastTrackIndex = idx;
-                        XposedCompat.log(TAG + " seeded track index=" + idx
-                                + " (first/stale observation"
-                                + (since > INDEX_STALE_MS ? ", since=" + since + "ms" : "") + ")");
-                        return res;
-                    }
-                    if (idx != last) {
-                        if (isListReset(last, idx)) {
-                            // 列表被重置（切作品 / 重新装载），不是列表内换轨
-                            sLastTrackIndex = idx;
-                            XposedCompat.log(TAG + " ignored " + last + "->" + idx
-                                    + " (playlist reset, not a track change)");
-                            return res;
-                        }
-                        sLastTrackIndex = idx;
-                        notifyTrackChanged(repo, "AudioPlaylist.getCurrentTrackIndex " + last + "->" + idx);
-                    }
-                    return res;
-                }
-            });
-            XposedCompat.log(TAG + " hooked AudioPlaylist.getCurrentTrackIndex (" + n + " methods)");
-        } catch (Throwable e) {
-            XposedCompat.log(TAG + " hookTrackIndex failed: " + e.getMessage());
+        if (hooked > 0) {
+            sAnyLegacyHooked = true;
+            XposedCompat.log(TAG + " hooked " + className
+                    + (requireIndexChange ? " [index-verified]"
+                            : (seedIndexOnly ? " [unconditional + seed]" : " [unconditional]"))
+                    + " (" + hooked + " methods)");
         }
     }
 
-    /**
-     * 是不是「播放列表被重置」而不是「列表内换轨」。
-     *
-     * 观测依据：日志里真换轨是相邻变化（4-&gt;3、2-&gt;1），而 {@code 23->0} / {@code 10->0} /
-     * {@code 5->0} 这类**骤然归 0** 出现在进程重建、切换作品、重新装载列表时。
-     * 这类事件应当**忽略**（后续 setMediaSource 与字幕 JSON 会自然驱动流程），
-     * 否则会误清字幕、误判「无字幕」。
-     */
-    private static boolean isListReset(int last, int idx) {
-        return idx == 0 && last > 1;
-    }
+    // ======================================================================
+    //  序号判据（状态 Map 与老信号共用）
+    // ======================================================================
 
-    /** 只记录序号，不产生任何换轨通知。用于把基线种上。 */
-    private static void seedTrackIndex(Object holder, String where) {
-        sLastIndexSeenMs = SystemClock.uptimeMillis();
-        int idx = readTrackIndex(holder);
-        if (idx != Integer.MIN_VALUE && sLastTrackIndex != idx) {
+    /**
+     * 由 {@link PlayerPositionHook} 在读到状态 Map 的 {@code currentIndex} 时调用。
+     *
+     * <p>这是 2.1.4 的<b>主换轨通道</b>：状态 Map 每次被读都会走到这里，
+     * 而「读状态」在播放中必然频繁发生（宿主自己 + 我们的兜底轮询）。
+     *
+     * @return 本次是否发出了换轨通知（仅供诊断）
+     */
+    public static boolean onTrackIndexFromStatusMap(int idx, String where) {
+        long now = SystemClock.uptimeMillis();
+        long since = now - sLastIndexSeenMs;
+        Integer last = sLastTrackIndex;
+        sLastIndexSeenMs = now;
+
+        // 首次 / 距上次太久 → 只种基线，不发通知（否则进程重建会被误判成换轨）
+        if (last == null || since > INDEX_STALE_MS) {
             sLastTrackIndex = idx;
-            XposedCompat.log(TAG + " seeded track index=" + idx + " from " + where);
+            XposedCompat.log(TAG + " seeded track index=" + idx + " from " + where
+                    + " status map (first/stale" + (since > INDEX_STALE_MS ? ", since=" + since + "ms" : "")
+                    + ", no change notification)");
+            return false;
         }
+        if (idx == last) {
+            return false; // 序号没变 ⇒ 不是换轨
+        }
+        sLastTrackIndex = idx;
+        if (isListReset(last, idx)) {
+            XposedCompat.log(TAG + " ignored " + last + "->" + idx
+                    + " (playlist reset, not a track change)");
+            return false;
+        }
+        notifyTrackChanged(null, where + " " + last + "->" + idx);
+        return true;
     }
 
     /**
-     * 只有「当前曲目序号确实变了」才通知换轨。
-     *
-     * 关键场景：在**第一轨**按「上一首」，App 是 no-op（序号仍是 0），
-     * 此时必须忽略，否则会走 3 秒待确认 → 误判「无字幕」→ 清字幕 + 关窗。
-     *
-     * 序号读不到时退化为旧行为（无条件通知），由数据层的弱兜底再判一次。
+     * 曲目序号变化检测（老信号路径）：只在<b>序号确实变了</b>时才当作换轨。
      */
     private static void notifyIfTrackIndexChanged(SubtitleRepository repo, String where, Object holder) {
-        int last = sLastTrackIndex;           // 先取基线：readTrackIndex 内部可能顺带刷新它
+        int last = sLastTrackIndex == null ? Integer.MIN_VALUE : sLastTrackIndex;
         int idx = readTrackIndex(holder);
         if (idx == Integer.MIN_VALUE) {
             notifyTrackChanged(repo, where + " [index unknown -> assume changed]");
             return;
         }
-        // 基线尚未建立（或已过期）→ 只种基线，不通知。
-        // v27 的 `[first observed index=N]` 分支会把「首次读到序号」当换轨，
-        // 而首次读到往往发生在进程重建后、位置已清零，交给数据层就会跳回旧字幕（问题 1）。
         long now = SystemClock.uptimeMillis();
         long since = now - sLastIndexSeenMs;
         sLastIndexSeenMs = now;
@@ -245,26 +222,46 @@ public class PlayerSourceHook {
             return;
         }
         if (idx != last) {
+            sLastTrackIndex = idx;
             if (isListReset(last, idx)) {
-                sLastTrackIndex = idx;
                 XposedCompat.log(TAG + " ignored " + where + " " + last + "->" + idx
                         + " (playlist reset, not a track change)");
                 return;
             }
-            sLastTrackIndex = idx;
             notifyTrackChanged(repo, where + " " + last + "->" + idx);
             return;
         }
-        // 序号没变 → 这个方法只是被调了一下，并没有真的换轨
         XposedCompat.log(TAG + " ignored " + where + " (track index unchanged=" + idx
                 + ", no-op navigation)");
     }
 
-    /** 读取播放列表当前曲目序号；失败返回 Integer.MIN_VALUE。 */
+    /**
+     * 是不是「播放列表被重置」而不是「列表内换轨」。
+     *
+     * <p>观测依据：真换轨是<b>相邻</b>变化（4→3、2→1），而 {@code 23→0} / {@code 10→0} /
+     * {@code 5→0} 这类<b>骤然归 0</b>出现在进程重建、切换作品、重新装载列表时。
+     * 这类事件必须<b>忽略</b>，否则会误清字幕、误判「无字幕」。
+     */
+    static boolean isListReset(int last, int idx) {
+        return idx == 0 && last > 1;
+    }
+
+    /** 只记录序号，不产生任何换轨通知。用于把基线种上。 */
+    private static void seedTrackIndex(Object holder, String where) {
+        sLastIndexSeenMs = SystemClock.uptimeMillis();
+        int idx = readTrackIndex(holder);
+        if (idx != Integer.MIN_VALUE && (sLastTrackIndex == null || sLastTrackIndex != idx)) {
+            sLastTrackIndex = idx;
+            XposedCompat.log(TAG + " seeded track index=" + idx + " from " + where);
+        }
+    }
+
+    /** 读取播放列表当前曲目序号；失败返回 {@link Integer#MIN_VALUE}。 */
     private static int readTrackIndex(Object holder) {
         if (holder == null) {
             return Integer.MIN_VALUE;
         }
+        // 未混淆宿主：直接按方法名调
         try {
             Object r = XposedCompat.callMethod(holder, "getCurrentTrackIndex");
             if (r instanceof Integer) {
@@ -272,15 +269,33 @@ public class PlayerSourceHook {
             }
         } catch (Throwable ignored) {
         }
+        // 混淆宿主：按「无参 + 返回 int/Integer」形状找
+        try {
+            Method m = Shape.findNoArgAssignableTo(holder.getClass(), null, Integer.class);
+            if (m != null) {
+                Object r = m.invoke(holder);
+                if (r instanceof Number) {
+                    return ((Number) r).intValue();
+                }
+            }
+        } catch (Throwable ignored) {
+        }
         return Integer.MIN_VALUE;
     }
 
+    /**
+     * 换轨通知的唯一出口（带去重）。
+     *
+     * @param repo 可为 {@code null}（状态 Map 路径直接用单例，见下）
+     */
     private static void notifyTrackChanged(SubtitleRepository repo, String where) {
         long now = SystemClock.uptimeMillis();
         if (now - sLastNotifyMs < DEDUP_MS) {
             return; // 同一次切换的多个 hook 点，只处理一次
         }
         sLastNotifyMs = now;
-        repo.onTrackChanged(where);
+        XposedCompat.log(TAG + " >>> track changed: " + where);
+        SubtitleRepository target = repo != null ? repo : SubtitleRepository.getInstance();
+        target.onTrackChanged(where);
     }
 }

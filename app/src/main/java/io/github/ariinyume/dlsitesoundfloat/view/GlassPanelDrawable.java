@@ -77,6 +77,26 @@ public class GlassPanelDrawable extends Drawable {
         fillPaint.setStyle(Paint.Style.FILL);
     }
 
+    /**
+     * 【2.3.0】按**配置**取色的构造：渐变两档颜色来自 {@link SubtitleStyle}
+     * （由 {@code float_window_color} 换算，见该类的换算注释）。
+     *
+     * ⚠️ 公共签名不变、默认行为不变：老的两个构造照旧用 {@link #DARK_FILL_TOP} /
+     * {@link #DARK_FILL_BOTTOM}（这两个常量保留为「无配置时的默认」）；
+     * 传 null 的 style 也回落到同一套默认值。
+     */
+    public GlassPanelDrawable(float radiusPx, boolean light, SubtitleStyle style) {
+        this.radiusPx = radiusPx;
+        if (style != null) {
+            this.fillTop = style.panelColorTop;
+            this.fillBottom = style.panelColorBottom;
+        } else {
+            this.fillTop = light ? LIGHT_FILL_TOP : DARK_FILL_TOP;
+            this.fillBottom = light ? LIGHT_FILL_BOTTOM : DARK_FILL_BOTTOM;
+        }
+        fillPaint.setStyle(Paint.Style.FILL);
+    }
+
     @Override
     public void draw(Canvas canvas) {
         Rect b = getBounds();

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 【M1】状态卡「模块未激活」叉形图标（PRD §FR-01 规则 1）。着色由代码按色槽设置。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="?attr/colorOnErrorContainer">
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M15.54,14.12L14.12,15.54L12,13.41L9.88,15.54L8.46,14.12L10.59,12L8.46,9.88L9.88,8.46L12,10.59L14.12,8.46L15.54,9.88L13.41,12L15.54,14.12Z" />
+</vector>

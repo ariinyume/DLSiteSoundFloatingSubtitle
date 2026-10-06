@@ -23,7 +23,6 @@ import android.content.Context;
 import android.graphics.Paint;
 import android.graphics.RenderEffect;
 import android.graphics.Shader;
-import android.graphics.Typeface;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
@@ -39,6 +38,7 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import io.github.ariinyume.dlsitesoundfloat.config.RemoteConfig;
 import io.github.ariinyume.dlsitesoundfloat.data.SubtitleCue;
 import io.github.ariinyume.dlsitesoundfloat.data.SubtitleRepository;
 
@@ -209,6 +209,8 @@ public class FloatingSubtitleView extends FrameLayout {
     private LinearLayout container;
     private TextView hint;
     private CloseButtonView closeBtn;
+    /** 【2.3.1 §6.1.1】右下角缩放手柄 —— 需要按面板底色切换灰/白，故留一个字段引用。 */
+    private GripIndicatorView gripView;
     /** 【code 944】✕ 自动隐藏用的主线程 Handler（视图随窗口重建，Handler 也跟着废弃）。 */
     private final Handler closeBtnHandler = new Handler(Looper.getMainLooper());
     /** 【code 944】自动隐藏任务 —— 到点把 ✕ 收回 GONE（已隐藏则不重复打日志）。 */
@@ -269,9 +271,57 @@ public class FloatingSubtitleView extends FrameLayout {
     // 系统级跨窗模糊是否生效（影响玻璃的可透度）
     private boolean blurActive = false;
 
+    /**
+     * 【M1】由标准配置换算出来的绘制参数（PRD §十 / §14.1 RK-03）。
+     *
+     * ⚠️ 换算只走 {@link SubtitleStyle#of}，本类**不再持有一份自己的外观常量默认值**：
+     *    所有外观参数（颜色 / 字号 / 字重 / 对齐 / 阴影 / 模糊 / 行距）唯一真源是配置文件。
+     *    M2 的预览区会用同一个映射函数渲染，两边不可能求出两份结果。
+     */
+    private volatile SubtitleStyle style = null;
+
     public FloatingSubtitleView(Context context) {
         super(context);
         init();
+    }
+
+    /** 当前绘制参数（恒非 null；未初始化时按已保存配置现算一次）。 */
+    private SubtitleStyle style() {
+        SubtitleStyle s = style;
+        if (s == null) {
+            s = SubtitleStyle.of(RemoteConfig.get(),
+                    getContext().getResources().getDisplayMetrics());
+            style = s;
+        }
+        return s;
+    }
+
+    /**
+     * 【M1】重新读取标准配置并换算绘制参数。
+     *
+     * 调用时机：视图构建时 + 每次渲染前（{@link #updateFromRepository}）。
+     * 成本极低 —— {@link RemoteConfig#get()} 只做一次 volatile 读，配置变了才会重算
+     * （设置页保存后广播 {@code ACTION_CONFIG_CHANGED} → hook 侧 {@code RemoteConfig.reload()}）。
+     */
+    private void refreshStyle() {
+        SubtitleStyle s = SubtitleStyle.of(RemoteConfig.get(),
+                getContext().getResources().getDisplayMetrics());
+        SubtitleStyle old = style;
+        style = s;
+        if (old == null || !old.sameAs(s)) {
+            // 【2.3.0】面板底色也来自配置：色变了就重建背景（init 里紧接着那次
+            // applyPanelBackground 已经按新样式建过，这里只在**运行中改色**时补一次）。
+            if (old != null && (old.panelColorTop != s.panelColorTop
+                    || old.panelColorBottom != s.panelColorBottom)) {
+                applyPanelBackground();
+            }
+            XposedCompat.log(TAG + " style refreshed (config rev=" + RemoteConfig.revision()
+                    + ", source=" + RemoteConfig.source() + ") " + s.summary());
+            // 【2.3.0】立刻重画：改完配置后可能长时间没有新的字幕行（没在播 / 字幕没换行），
+            // 少了这一下新样式要等到下一句字幕才现身（用例 2.1 补充意见）。
+            invalidate();
+            requestLayout();
+        }
     }
 
     public int getMinWidthPx() {
@@ -358,13 +408,53 @@ public class FloatingSubtitleView extends FrameLayout {
      */
     private void applyPanelBackground() {
         // v13：GlassPanelDrawable 已精简为「只有半透明渐变底」，不再需要传描边宽度。
-        GlassPanelDrawable panel = new GlassPanelDrawable(dp(CORNER_RADIUS_DP), LIGHT_GLASS);
+        // 【2.3.0】渐变两档颜色改由配置换算（SubtitleStyle），无配置时回落原常量。
+        GlassPanelDrawable panel =
+                new GlassPanelDrawable(dp(CORNER_RADIUS_DP), LIGHT_GLASS, style());
         panel.setAlpha(blurActive ? 242 : 255);
         panel.setFillScale(blurActive ? 1f : 1.9f);
         setBackground(panel);
+        // 【2.3.1 §6.1.1】面板底色一变就同步 ✕ / 缩放手柄的「灰 ↔ 白」。
+        applyControlTint();
+    }
+
+    /**
+     * 【2.3.1 §6.1.1】按面板基色决定 ✕ 关闭按钮与右下缩放手柄的控件颜色。
+     *
+     * ── 规则（Ari 原话）────────────────────────────────────────────────
+     *   「当悬浮窗背景是**除黑白两色外的其他颜色**时，关闭和尺寸调整改为用白色
+     *    （不透明度与现有的控件不透明度设定一致）」
+     *
+     * ── 判据 ───────────────────────────────────────────────────────────
+     * 取面板基色 RGB，看它是否在「黑白档」里：
+     *   · 亮度极低（≤ 0.06，含默认的深蓝黑 #0E1420）→ 黑档；
+     *   · 亮度极高（≥ 0.94，含纯白）→ 白档；
+     *   · 其余（任何有彩度/中等灰度的颜色）→ 彩色档 ⇒ 控件转白。
+     * ⚠️ 用感知亮度（Rec.709 加权）而不是简单平均：纯绿 (0,255,0) 的平均值和灰 (85)
+     *    差不多，但看起来亮得多，平均法会把它误判成黑白档。
+     */
+    private void applyControlTint() {
+        boolean colored = isColoredPanel(style().panelColorTop);
+        if (closeBtn != null) {
+            closeBtn.setOnColoredPanel(colored);
+        }
+        if (gripView != null) {
+            gripView.setOnColoredPanel(colored);
+        }
+    }
+
+    /** 面板基色是否属于「黑白之外」的彩色档（判据见 {@link #applyControlTint()}）。 */
+    private static boolean isColoredPanel(int panelColorTop) {
+        int r = (panelColorTop >> 16) & 0xFF;
+        int g = (panelColorTop >> 8) & 0xFF;
+        int b = panelColorTop & 0xFF;
+        float lum = (0.2126f * r + 0.7152f * g + 0.0722f * b) / 255f;
+        return lum > 0.06f && lum < 0.94f;
     }
 
     private void init() {
+        // 【M1】先把标准配置读出来（此时 sp / 颜色 / 字重等都由配置决定，不再是硬编码常量）
+        refreshStyle();
         applyPanelBackground();
         // v14：根视图**不设**内边距 —— ✕ 与缩放手柄需要贴到窗口边缘（3dp）。
         // 内容内边距下移到 container；measureCurrentCue 里的 padW/padH 数值含义不变。
@@ -404,6 +494,7 @@ public class FloatingSubtitleView extends FrameLayout {
                 dp(GRIP_VIEW_DP), dp(GRIP_VIEW_DP));
         gripLp.gravity = Gravity.BOTTOM | Gravity.END;
         grip.setLayoutParams(gripLp);
+        gripView = grip;
 
         // 右上角关闭按钮（✕），默认隐藏，点击面板任意处切换显隐。
         // v15：自绘「灰底圆 + 镂空 ✕」，直径 / 点击区域同为 40dp，距窗口上/右边缘各 10dp。
@@ -431,6 +522,29 @@ public class FloatingSubtitleView extends FrameLayout {
         addView(hint);
         addView(grip);
         addView(closeBtn); // 最后添加，保证在最上层、可点击
+
+        // 🔴【2.3.2 §6.1.1 真 bug】补一次控件配色。
+        //
+        // ── 现象 ────────────────────────────────────────────────────────
+        // Ari 连报两轮：「优化悬浮窗背景色 除黑白两色 外的调整控件颜色
+        // （！！上次就说了，这里根本没修改，还是灰色）」。
+        //
+        // ── 根因（不在判据，全在调用时机）────────────────────────────────
+        // init() 第 458 行就调了 applyPanelBackground()，而它内部会顺手调
+        // applyControlTint()。可那一刻 **closeBtn / gripView 都还是 null**
+        // （它们在本方法后半段才 new 出来），于是 applyControlTint() 里两个
+        // `if (xx != null)` 全部落空 —— 控件保持 CloseButtonView / GripIndicatorView
+        // 构造函数里写死的中灰。
+        // 之后唯一的补色入口是 refreshStyle() 里那条「面板色变了才重建背景」的分支，
+        // 而视图重建时 style 是**新建的**（old == null 直接 return）⇒ 只要一开就是彩色面板，
+        // 这条补色链永远走不到。结果就是「判据写对了、算也算了，颜色却永远是灰的」。
+        //
+        // 修法：控件建好之后**再补一次** applyControlTint()。它只读 style()（缓存字段），
+        // 不重建背景、不重测布局，开销可以忽略。
+        // ⚠️ 不要改成「把 applyPanelBackground() 挪到末尾」—— 面板背景是要给
+        //    setBackground 用的，两件事分开更清楚，也避免以后有人再挪坏顺序。
+        applyControlTint();
+
         XposedCompat.log(TAG + " view built: padH=" + PANEL_PAD_H_DP + "dp padV=" + PANEL_PAD_V_DP
                 + "dp minTextPad=" + MIN_TEXT_PAD_DP + "dp corner=" + CORNER_RADIUS_DP
                 + "dp lightGlass=" + LIGHT_GLASS
@@ -465,11 +579,15 @@ public class FloatingSubtitleView extends FrameLayout {
         List<SubtitleCue> cues = repo.getCues();
         int currentIdx = repo.findCurrentCueIndex();
 
+        // 【M1】每次渲染前同步一次配置（设置页保存后配置代数会变，渲染缓存键随之变化 → 立即重绘）
+        refreshStyle();
+        int cfgRev = RemoteConfig.revision();
+
         // 1) 有完整 cue 列表 → 渲染当前行附近，当前行放大、其余模糊
         if (!cues.isEmpty()) {
             int from = Math.max(0, currentIdx - WINDOW_RADIUS);
             int to = Math.min(cues.size() - 1, (currentIdx < 0 ? 0 : currentIdx) + WINDOW_RADIUS);
-            String key = "cues:" + cues.size() + ":" + currentIdx + ":" + from + ":" + to;
+            String key = "c" + cfgRev + ":cues:" + cues.size() + ":" + currentIdx + ":" + from + ":" + to;
             if (key.equals(lastRenderKey) && !lastHintVisible) {
                 return;
             }
@@ -491,7 +609,7 @@ public class FloatingSubtitleView extends FrameLayout {
         // 2) 降级：只有屏上镜像的当前行（播放进度不可用且未抓到完整列表）
         List<String> current = repo.getCurrentSubtitles();
         if (!current.isEmpty()) {
-            String key = "mirror:" + String.join("\u0001", current);
+            String key = "c" + cfgRev + ":mirror:" + String.join("\u0001", current);
             if (key.equals(lastRenderKey) && !lastHintVisible) {
                 return;
             }
@@ -529,10 +647,14 @@ public class FloatingSubtitleView extends FrameLayout {
         cueBlockEnd = null;
         minWidthPx = 0;
         minHeightPx = 0;
+        SubtitleStyle st = style();
         for (String line : lines) {
             TextView tv = new TextView(getContext());
             tv.setText(line);
-            styleLine(tv, 18f, 0xFFFFFFFF, 1.0f, false);
+            // 【M1】降级镜像行：字号沿用 legacy 的 18sp（不暴露给用户），其余（颜色/字重/对齐/
+            // 阴影/内边距）全部走配置 —— 与活动行同一套观感，避免「有 cue 列表 / 没 cue 列表
+            // 两种渲染看起来不是同一个悬浮窗」。
+            styleLine(tv, st.mirrorSizeSp, st.activeColor, st.activeAlpha, false);
             clearBlur(tv);
             container.addView(tv);
         }
@@ -547,6 +669,7 @@ public class FloatingSubtitleView extends FrameLayout {
         cueBlockStart = new int[n];
         cueBlockEnd = new int[n];
         int childIndex = 0;
+        SubtitleStyle st = style();
         for (int i = from; i <= to; i++) {
             SubtitleCue cue = cues.get(i);
             boolean isCurrent = (i == currentIdx);
@@ -559,8 +682,8 @@ public class FloatingSubtitleView extends FrameLayout {
                 }
                 TextView tv = new TextView(getContext());
                 tv.setText(joinSubtitles(cue));
-                // 焦点行：加粗 + 全白，与上下模糊的上下文行拉开层次
-                styleLine(tv, BASE_TEXT_SP * CURRENT_SCALE, 0xFFFFFFFF, 1.0f, true);
+                // 【M1】活动行：字号 = 17sp × 主字幕放大倍数；颜色/高亮/字重/阴影/对齐走配置
+                styleLine(tv, st.activeSizeSp, st.activeColor, st.activeAlpha, true);
                 tv.setMaxLines(MAX_LINES);
                 tv.setEllipsize(TextUtils.TruncateAt.END);
                 clearBlur(tv);
@@ -570,7 +693,8 @@ public class FloatingSubtitleView extends FrameLayout {
                 for (String line : cue.subtitles) {
                     TextView tv = new TextView(getContext());
                     tv.setText(line);
-                    styleLine(tv, 15f, 0x99FFFFFF, 0.35f, false);
+                    // 【M1】非活动行：字号 = 17sp × 非活动行缩放比例；模糊由配置决定
+                    styleLine(tv, st.inactiveSizeSp, st.inactiveColor, st.inactiveAlpha, false);
                     applyBlur(tv);
                     container.addView(tv);
                     childIndex++;
@@ -602,16 +726,30 @@ public class FloatingSubtitleView extends FrameLayout {
         return new int[]{s, e};
     }
 
-    /** 统一的字幕行样式：居中 + 内边距 + 字号 + 颜色 + 不透明度 + 投影。 */
-    private void styleLine(TextView tv, float sizeSp, int color, float alpha, boolean bold) {
-        tv.setGravity(Gravity.CENTER);
-        tv.setPadding(dp(LINE_PAD_H_DP), dp(LINE_PAD_V_DP), dp(LINE_PAD_H_DP), dp(LINE_PAD_V_DP));
+    /**
+     * 统一的字幕行样式：对齐 + 内边距 + 字号 + 颜色 + 不透明度 + 投影 + 字重。
+     *
+     * 【M1】本方法不再持有任何默认外观常量 —— 对齐、内边距、阴影（半径/偏移/颜色）、
+     * 字重全部来自 {@link SubtitleStyle}（即标准配置）；只有**字号 / 颜色 / 不透明度**
+     * 三个随行角色（活动行 / 非活动行 / 镜像行）变化的值由调用方显式传入。
+     *
+     * @param active true = 活动行（用活动行字重，并吃「长字幕内换行额外行距」）；
+     *               false = 非活动行 / 镜像行（用非活动行字重，不加额外行距）
+     */
+    private void styleLine(TextView tv, float sizeSp, int color, float alpha, boolean active) {
+        SubtitleStyle st = style();
+        tv.setGravity(st.gravity);
+        tv.setPadding(dp(st.linePadH), dp(st.linePadV), dp(st.linePadH), dp(st.linePadV));
         tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, sizeSp);
         tv.setTextColor(color);
         tv.setAlpha(alpha);
-        tv.setShadowLayer(TEXT_SHADOW_RADIUS, 0f, dp(1), TEXT_SHADOW_COLOR);
-        if (bold) {
-            tv.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
+        // 阴影：半径/偏移/颜色（alpha 已按「阴影强度」折算）都来自配置。
+        // radius = 0 时 setShadowLayer 自动不画阴影（阴影强度 0% 的效果由此保证）。
+        tv.setShadowLayer(st.shadowRadiusPx, 0f, st.shadowDyPx, st.shadowColor);
+        tv.setTypeface(active ? st.activeTypeface : st.inactiveTypeface);
+        if (active && st.wrapExtraSpacingPx != 0f) {
+            // 「长字幕内换行额外行距」只作用于会换行的活动行段落（PRD §FR-06）
+            tv.setLineSpacing(st.wrapExtraSpacingPx, 1f);
         }
     }
 
@@ -656,19 +794,22 @@ public class FloatingSubtitleView extends FrameLayout {
         if (text.isEmpty()) {
             return;
         }
+        SubtitleStyle st = style();
         float sizePx = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP,
-                BASE_TEXT_SP * CURRENT_SCALE, getContext().getResources().getDisplayMetrics());
+                st.activeSizeSp, getContext().getResources().getDisplayMetrics());
         Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         paint.setTextSize(sizePx);
-        // 必须与渲染用的字体一致（当前行加粗），否则测量宽度会偏小、导致多出一行。
-        paint.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
+        // 必须与渲染用的字体一致（活动行字重由配置决定），否则测量宽度会偏小、导致多出一行。
+        paint.setTypeface(st.activeTypeface);
         Paint.FontMetrics fm = paint.getFontMetrics();
         float lineH = fm.descent - fm.ascent;
 
         // 每边**有效**留白 = 面板内边距 + 文字自身内边距，且不低于 MIN_TEXT_PAD_DP。
         // ⚠️ max 必须作用在"有效值"上：max(13,15)+2 = 17dp 是错的，应是 max(13+2,15) = 15dp。
-        int padHSide = Math.max(PANEL_PAD_H_DP + LINE_PAD_H_DP, MIN_TEXT_PAD_DP);
-        int padVSide = Math.max(PANEL_PAD_V_DP + LINE_PAD_V_DP, MIN_TEXT_PAD_DP);
+        // 【M1】文字自身内边距改为读配置换算结果（「字幕间行距」会改变上下内边距），
+        //       于是窗口最小高度天然把行距算进去，不会出现「行距调大后被裁切」。
+        int padHSide = Math.max(PANEL_PAD_H_DP + st.linePadH, MIN_TEXT_PAD_DP);
+        int padVSide = Math.max(PANEL_PAD_V_DP + st.linePadV, MIN_TEXT_PAD_DP);
         int padW = dp(padHSide) * 2;
         int padH = dp(padVSide) * 2;
 
@@ -1040,11 +1181,25 @@ public class FloatingSubtitleView extends FrameLayout {
         }
     }
 
+    /**
+     * 【M1】非活动行模糊。
+     *
+     * 是否模糊、半径多少全部来自配置（{@code inactive_blur_enabled} /
+     * {@code inactive_blur_steps}，1 档 = 0.5px，PRD §FR-05）；关闭或半径为 0 时
+     * 明确清掉 RenderEffect（而不是沿用上一次的），否则「关掉模糊」在已渲染的行上看不出来。
+     */
     private void applyBlur(TextView tv) {
+        SubtitleStyle st = style();
+        if (!st.inactiveBlurEnabled || st.blurRadiusPx <= 0f) {
+            clearBlur(tv);
+            return;
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             try {
-                tv.setRenderEffect(RenderEffect.createBlurEffect(6f, 6f, Shader.TileMode.CLAMP));
+                tv.setRenderEffect(RenderEffect.createBlurEffect(
+                        st.blurRadiusPx, st.blurRadiusPx, Shader.TileMode.CLAMP));
             } catch (Throwable ignored) {
+                // 系统不支持 RenderEffect 时的降级：用更低的不透明度近似「弱化」
                 tv.setAlpha(0.3f);
             }
         }

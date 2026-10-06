@@ -27,6 +27,8 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.res.ColorStateList;
+import android.graphics.Paint;
+import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.os.Build;
 import android.os.Handler;
@@ -45,6 +47,9 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import io.github.ariinyume.dlsitesoundfloat.BuildConfig;
+import io.github.ariinyume.dlsitesoundfloat.config.ConfigBus;
+import io.github.ariinyume.dlsitesoundfloat.config.RemoteConfig;
+import io.github.ariinyume.dlsitesoundfloat.config.SubtitleConfig;
 import io.github.ariinyume.dlsitesoundfloat.view.NotificationBadgeView;
 import io.github.ariinyume.dlsitesoundfloat.util.StatusBarSubtitleBridge;
 import io.github.ariinyume.dlsitesoundfloat.util.XposedCompat;
@@ -224,6 +229,67 @@ public class StatusBarSubtitleHook {
     private static final long WIDTH_SETTLE_MS = 220L;   // code 931：放宽到 layout 稳定后（实测稳定需 ~156ms）
     /** 滚动目标迟滞：新目标与当前目标相差不足这个量就不重启动画（治 1px 级抖动）。 */
     private static final int TARGET_HYSTERESIS_PX = 8;
+
+    /**
+     * 计算「必须完整露出」的文本宽度时的**末端安全余量**。
+     *
+     * <p>【2.2.0 半字根修·第三处】advance（{@code measureText}）是「字符步进」总和，
+     * 而真正画出来的墨迹还包含字形轮廓 / 抗锯齿 / 亚像素定位那一点外溢 ⇒
+     * 只按 advance 算「刚好滚到末尾」，末尾最后那几像素就落在视窗之外（真机报「差一点」）。
+     *
+     * <p>所以：宽度取三个口径最大后再补这个余量（⚠️ 但每个口径都必须先过
+     * {@link #MEASURE_TOLERANCE_PX} 的合理性闸门 —— 否则会把脏值放大）。
+     * 同时要求滚动终点**必须落在字符边界上**（见 {@link #snapToCharBoundary}），两边都不切字。
+     */
+    private static final int TAIL_MARGIN_PX = 3;
+
+    /**
+     * 参与「取最大」的各个宽度口径，最多允许比 {@code measureText} 大出这么多像素。
+     *
+     * <p>🔴🔴 **为什么必须有这个闸门**（2.2.0/code 969 首版真机翻车）：
+     * 同一段文本的三种宽度度量（advance / 字形轮廓 / 排版宽度）**正常应当几乎相等**，
+     * 差异只可能在「一个字宽以内」的量级。一旦某个口径跳出这个范围，它不是「测量更准」，
+     * 而是**输入本身脏了** —— 真机实证：TextView 在尚未完成一次真实 layout 时，
+     * {@code getLayout()} 返回 **1048576（= 1024×1024）** 这个超大占位值，
+     * 直接纳入 {@code Math.max} ⇒ 滚动目标算到 ~105 万像素 ⇒ 字幕以 420px/s 滑出屏幕
+     * （用户报「状态栏字幕直接飞走」）。
+     *
+     * <p>⚠️ 教训：**「取最大」只有在「输入可信」的前提下才成立** ——
+     * 旧代码的 {@code Math.min} 反而歪打正着挡住了那个脏值。
+     * ⇒ 正确写法 = **先验合理性，再取最大**，两件事缺一不可。
+     */
+    private static final int MEASURE_TOLERANCE_PX = 128;
+
+    /**
+     * 期望「文本末尾」在可视区内**富余**出来的像素数（吸附够不到时允许为此微调终点）。
+     *
+     * <p>起因：吸附只保证「左边缘落在字边界」，**不保证右边缘把末尾包住** ——
+     * 真机那条的覆盖余量只有 4px（`417 + 508 − 921`），而末字的字形/抗锯齿还要再往外
+     * 溢一点点 ⇒ 末尾仍差 1px 左右（用户报「最后一个字还是会有一点没显示完全」）。
+     * 而把吸附值再往右推一个字又会换成「开头少一个字」。
+     *
+     * <p>⇒ 折中：允许终点**偏离字边界一点点**（见 {@link #MAX_NUDGE_PX}），
+     * 把覆盖余量补到这个值 —— 末尾完整，左边缘只切进第一个字一两像素（肉眼不可见）。
+     */
+    private static final int COVER_MARGIN_PX = 6;
+
+    /**
+     * 终点允许偏离「字符边界」的最大像素数（配合 {@link #COVER_MARGIN_PX} 使用）。
+     *
+     * <p>超过这个量就不微调了 —— 宁可保持「整字起步」，也不做明显的切字
+     * （切字超过约 0.15 个字宽就会被看出来，那正是 968 修掉的问题）。
+     */
+    private static final int MAX_NUDGE_PX = 6;
+
+    /**
+     * 【code 971 就近吸附】向下取边界时，允许**末字被裁掉**的最大像素数。
+     *
+     * <p>起因：可视宽不是字宽的整数倍 ⇒ 右对齐点（adv − viewW）几乎总落在字中间，
+     * 向左取边界会裁末字、向右取边界会留白。为缩短「句尾空白」，就近吸附允许向下取，
+     * 但以「末字裁切 ≤ 本值」为限 —— 约 1/10 字宽，句尾多为标点/语气词，肉眼几乎不可见；
+     * 比 969 修掉的 5px 硬切更轻，且只发生在「恰好卡在边界」的少数句子上。超限退回右边界。
+     */
+    private static final int MAX_TAIL_CLIP_PX = 4;
 
     /** 字幕显示期间的心跳：① 重新压制被 SystemUI 改回可见的时钟/图标；② 更新徽标；③ 重新同步颜色/流体云边界。 */
     private static final long TICK_MS = 600L;
@@ -982,6 +1048,7 @@ public class StatusBarSubtitleHook {
         //   tryAttachDoubleTap / sDoubleTapListener 方法保留（不再调用）以免改动 dex 结构。
         refreshSystemViews();
         registerReceiver(ctx);
+        installConfigChannel(ctx);
         logCompatSelfCheck();
         XposedCompat.log(TAG + " attached to status bar"
                 + " (host=" + host.getClass().getSimpleName()
@@ -1392,6 +1459,34 @@ public class StatusBarSubtitleHook {
     // 广播
     // ======================================================================
 
+    /**
+     * 【M1】挂「标准配置」通道（PRD §5.3 方案 A1 的读取端）。
+     *
+     * 做两件事：
+     *  ① 应答设置页的作用域探测（{@link ConfigBus#ACTION_HOST_PING}）—— 让设置页状态卡能
+     *     **独立**判定「SystemUI 已授权」，并与既有的 {@code ACTION_SCOPE_PING} 通道并存；
+     *     同时接收 {@link ConfigBus#ACTION_CONFIG_CHANGED}，收到就 {@link RemoteConfig#reload()}。
+     *  ② 把读到的配置打一行日志：这是「设置页写的配置，SystemUI 进程真的能读到」的直接证据，
+     *     排查「保存了但没生效」时先看这一行（PRD §13.1 把这条链路列为阻塞依赖）。
+     *
+     * ⚠️ 本版**不**把 {@code subtitle_color} 应用到状态栏字幕上：状态栏那一行的颜色是
+     *    刻意从**时钟**同步过来的（见 {@code sFontSynced} / {@code sLastColorArgb}），
+     *    与悬浮窗是两套观感口径；强行套用会让状态栏字幕与系统 UI 割裂。
+     *    配置里与状态栏相关的 {@code statusbar_subtitle_enabled} 属 M3（PRD §13.2），
+     *    届时在 {@code showLine} 的入口加一道闸即可 —— 配置读取链路本轮已经打通。
+     */
+    private static void installConfigChannel(Context ctx) {
+        ConfigBus.installResponder(ctx, "systemui");
+        try {
+            SubtitleConfig cfg = RemoteConfig.get();
+            XposedCompat.log(TAG + " config loaded (source=" + RemoteConfig.source() + "): "
+                    + cfg.summary());
+        } catch (Throwable t) {
+            XposedCompat.log(TAG + " config load failed: " + t);
+        }
+        RemoteConfig.logDiagnostics();
+    }
+
     private static void registerReceiver(Context ctx) {
         if (sReceiverRegistered) {
             return;
@@ -1536,6 +1631,8 @@ public class StatusBarSubtitleHook {
         }
         // 【code 929 诊断】开始一行就记录：text 前 32 字符 + textW + viewW。
         // 真机复现 bug 1 时直接拿来定位是 setText 没起效、width 没落地，还是别的。
+        // 【2.2.0】补 appliedW：getWidth() 只有在 layout 跑过之后才更新，光看 viewW
+        //   分不清「宽度没落地」和「落地了但读晚了」—— 两个数一起打才不会被误导。
         if (sLineView != null) {
             try {
                 float tw = sLineView.getPaint().measureText(sLine);
@@ -1545,6 +1642,8 @@ public class StatusBarSubtitleHook {
                         + (sLine.length() > 32 ? sLine.substring(0, 32) + "..." : sLine)
                         + "> textW=" + (int) Math.ceil(tw)
                         + " viewW=" + vw
+                        + " appliedW=" + (sAppliedLineWidth == Integer.MIN_VALUE
+                                ? "none" : String.valueOf(sAppliedLineWidth))
                         + " vis=" + sLineView.getVisibility());
             } catch (Throwable ignored) { }
         }
@@ -1592,6 +1691,40 @@ public class StatusBarSubtitleHook {
     // ======================================================================
     // 样式：与状态栏时钟保持一致
     // ======================================================================
+
+    /**
+     * 【2.3.0】配置变更后，把**当前正在显示的那一行**立刻按新样式重画。
+     *
+     * 为什么需要它：{@code RemoteConfig.reload()} 只换了内存里的配置，而状态栏这一行
+     * 只有下一条 {@code ACTION_LINE} 到达时才会重画 —— 用户保存后要等下一句字幕才看得到
+     * 变化（没在播就永远看不到）。这里主动走一遍 showLine 的样式应用路径：
+     * 重新跟随时钟取字体/字号/阴影、重新同步颜色、用当前文本重设一次并重画。
+     *
+     * ⚠️ **不**重新起滚动动画（{@code sShownLine} 不动）：改样式不该让正在滚的字幕跳回开头。
+     */
+    public static void reapplyCurrentLineStyle() {
+        try {
+            if (sLineView == null) {
+                return;
+            }
+            // 强制重新跟时钟取一次（syncFontFromClock 会因 sFontSynced 早退）
+            sFontSynced = false;
+            sFontSource = null;
+            syncFontFromClock();
+            syncColorFromClock();
+            if (sLine != null && !sLine.isEmpty()) {
+                sLineView.setText(sLine);   // 重设文本 → 重新测量 → 新字号/新阴影立即生效
+            }
+            sLineView.invalidate();
+            if (sContainer != null) {
+                sContainer.invalidate();
+            }
+            XposedCompat.log(TAG + " style reapplied on current line (rev="
+                    + RemoteConfig.revision() + ")");
+        } catch (Throwable t) {
+            XposedCompat.log(TAG + " reapplyCurrentLineStyle failed: " + t);
+        }
+    }
 
     /** 字体（typeface / 字号 / 字距 / 字体特性）：对齐时钟即可，换时钟实例时重来一次。 */
     private static void syncFontFromClock() {
@@ -2236,7 +2369,11 @@ public class StatusBarSubtitleHook {
             if (!sScrollArmed) {
                 startScroll();
             } else {
-                retargetScrollForNewWidth(width); // 校正目标，沿用原速度，不重启动画
+                // 【2.2.0 半字根修】这里**没有改宽度**（差值在迟滞窗口内被丢弃）
+                // ⇒ 重算目标必须用**实际生效的** sAppliedLineWidth，
+                //   绝不能用那个被丢掉的 width（否则目标差最多 WIDTH_HYSTERESIS_PX≈24px，
+                //   正好是「最后一个字只出现一半」的量级）。
+                retargetScrollForNewWidth(sAppliedLineWidth);
             }
             return;
         }
@@ -2560,8 +2697,32 @@ public class StatusBarSubtitleHook {
         });
     }
 
+    /**
+     * 算滚动目标时该按「多宽」来算。
+     *
+     * <p>🔴🔴 <b>【2.2.0 半字根修】为什么不能直接用 {@code sLineView.getWidth()}</b>：
+     * {@code applyPendingWidth()} 里是「{@code lp.width = w} → {@code setLayoutParams()}
+     * → 立刻调 {@code startScroll()}」，而 <b>{@code setLayoutParams} 只是 requestLayout，
+     * 真正的 layout 要等下一帧</b> ⇒ 此刻 {@code getWidth()} 返回的还是<b>上一帧的旧宽度</b>。
+     * 用旧宽算目标，误差恰好等于「本次宽度变化量」—— 缩窄时正好差半个到一个汉字宽，
+     * 表现就是<b>滚到底了但最后一个字只出现一半</b>。真机日志铁证：
+     * <pre>
+     *   subtitle width: max 305px (prev=349px) [widthSettled]   ← 宽度改成 305
+     *   scroll retarget: 0->237px                              ← 542-305=237（对）
+     *   scroll: target=193px (viewW=349)                       ← 542-349=193（旧宽，少滚 44px≈一个字）
+     * </pre>
+     * 而 {@link #sAppliedLineWidth} 是刚写进 LayoutParams 的值 —— 它<b>比 getWidth() 新，
+     * 且下一帧必然生效</b>，所以一律优先用它。
+     *
+     * @return &gt;0 时表示用这个宽度；&le;0 表示「还没有已落地的宽度，回退到 getWidth()」
+     */
+    private static int effectiveLineWidth() {
+        return sAppliedLineWidth != Integer.MIN_VALUE ? sAppliedLineWidth : -1;
+    }
+
     private static int computeScrollTarget() {
-        return computeScrollTarget(-1);
+        // 【2.2.0 半字根修】见 effectiveLineWidth() 的注释
+        return computeScrollTarget(effectiveLineWidth());
     }
 
     /**
@@ -2578,16 +2739,229 @@ public class StatusBarSubtitleHook {
             return 0;
         }
         CharSequence cs = sLineView.getText();
-        float textW = sLineView.getPaint().measureText(cs == null ? "" : cs.toString());
-        int target = (int) Math.ceil(textW) - viewW;
+        String text = cs == null ? "" : cs.toString();
+        Paint paint = sLineView.getPaint();
+        if (paint == null) {
+            return 0;
+        }
+        // ── 「必须完整露出」的文本宽度 ──────────────────────────────────────
+        // 三个口径，逐个都要先过合理性闸门：
+        //   · adv = measureText          → advance（字符步进）总和，基准
+        //   · ink = getTextBounds().right→ 字形轮廓右边界（理论上可能略超 adv）
+        //   · lay = Layout.getWidth()    → 排版宽度（正常应与 adv 几乎相等）
+        //
+        // 🔴🔴 **先验合理性，再取最大** —— 两件事缺一不可：
+        //   ① 只取 adv 会漏掉字形外溢（真机 968 报「末字差一点」）；
+        //   ② 但无闸门地取最大会被**脏值**放大：真机 969 首版实测
+        //      `getLayout()` 在「尚未完成一次真实 layout」时返回 **1048576（=1024×1024）**，
+        //      纳入 max ⇒ 目标 ≈105 万像素 ⇒ 字幕以 420px/s 滑出屏幕（用户报「直接飞走」）。
+        //   ⚠️ 旧代码的 `Math.min` 恰好歪打正着挡住了这个脏值 ——
+        //      把它改成 max 的前提是「输入可信」，所以这里把闸门补齐。
+        int adv = (int) Math.ceil(paint.measureText(text));
+
+        int ink = adv;
+        try {
+            Rect inkRect = new Rect();
+            paint.getTextBounds(text, 0, text.length(), inkRect);
+            int right = inkRect.right;
+            if (right > 0 && right <= adv + MEASURE_TOLERANCE_PX) {
+                ink = Math.max(ink, right);
+            }
+        } catch (Throwable ignored) {
+            // 拿不到轮廓边界就退回 advance，不抛错
+        }
+
+        sLayoutRejected = false;
+        int lay = adv;
         if (sLineView.getLayout() != null) {
-            int layoutW = (int) Math.ceil(sLineView.getLayout().getWidth()) - viewW;
-            if (layoutW > 0) {
-                target = Math.min(target, layoutW);
+            int lw = (int) Math.ceil(sLineView.getLayout().getWidth());
+            if (lw > 0 && lw <= adv + MEASURE_TOLERANCE_PX) {
+                lay = Math.max(lay, lw);
+            } else if (lw > 0) {
+                // 脏值：只报一次，绝不采用
+                sLayoutRejected = true;
+                if (!sLayoutRejectedLogged) {
+                    sLayoutRejectedLogged = true;
+                    XposedCompat.log(TAG + " !! layout width abnormal (" + lw + "px vs adv="
+                            + adv + "px) -> IGNORED (would have flung the subtitle off screen)");
+                }
             }
         }
-        return Math.max(0, target);
+        sLastMeasure = "adv=" + adv + " ink=" + ink + " layout=" + lay
+                + (sLayoutRejected ? "[rejected]" : "")
+                + " calcW=" + viewW;
+
+        int base = Math.max(Math.max(adv, ink), lay);
+        // 终极保底：任何「比 advance 大出一个字宽以上」的度量都不可信
+        if (base > adv + MEASURE_TOLERANCE_PX) {
+            base = adv + MEASURE_TOLERANCE_PX;
+        }
+        if (base <= viewW) {
+            return 0;   // 放得下 -> 不滚（保持旧判据）
+        }
+        int target = base + TAIL_MARGIN_PX - viewW;
+        // 出口保底：滚动量绝不该超过文本总宽（超过就是滚到文本之外 = 满屏空白）
+        if (target > adv) {
+            target = adv;
+        }
+        // 【2.2.0 半字根修·第二处】终点必须落在**汉字边界**上，见 snapToCharBoundary 的注释；
+        // 并在「末尾仍差一点点」时允许微调（见 COVER_MARGIN_PX / MAX_NUDGE_PX）
+        return snapToCharBoundary(target, text, viewW, base + COVER_MARGIN_PX);
     }
+
+    /** 最近一次宽度测量的诊断串（adv / ink / layout 三个口径），只用于日志。 */
+    private static volatile String sLastMeasure = "";
+    /** 最近一次是否拒绝了异常的 layout 宽度（诊断用）。 */
+    private static volatile boolean sLayoutRejected = false;
+    /** 「layout 宽度异常」只报一次，避免刷屏。 */
+    private static volatile boolean sLayoutRejectedLogged = false;
+
+    /**
+     * 文本里每个**字符起点的 x 坐标**（相对文本起点），末项 = 文本总宽。
+     *
+     * <p>用 {@link Paint#getTextWidths} 逐字累加 —— 它给的是每个字的**步进宽度**，
+     * 和 {@code measureText}（整体宽度）同源，所以边界值与文本总宽自洽。
+     *
+     * @return 长度 = 字符数 + 1；任何异常（字体度量拿不到）都返回 {@code null} 表示「不吸附」
+     */
+    private static int[] charBoundaries(String text) {
+        if (sLineView == null || text == null || text.isEmpty()) {
+            return null;
+        }
+        Paint p = sLineView.getPaint();
+        if (p == null) {
+            return null;
+        }
+        int n = text.length();
+        float[] adv = new float[n];
+        try {
+            if (p.getTextWidths(text, adv) < n) {
+                return null;
+            }
+        } catch (Throwable t) {
+            return null;
+        }
+        int[] b = new int[n + 1];
+        float acc = 0f;
+        for (int i = 0; i < n; i++) {
+            if (adv[i] <= 0f) {
+                return null;   // 度量异常 -> 宁可不吸附，也不要算出坏值把滚动带偏
+            }
+            b[i] = (int) Math.round(acc);
+            acc += adv[i];
+        }
+        b[n] = (int) Math.ceil(acc);
+        return b;
+    }
+
+    /**
+     * 【2.2.0 半字根修·第二处】把滚动终点**就近吸附到字符边界**上。
+     *
+     * <h3>为什么</h3>
+     * 终点是一个**像素值**，几乎必然落在某个字的中间。滚到底停下时，可视区
+     * **左边缘**就正好切在那个字中间 ⇒ 状态栏最左边永久挂着「半个字」。
+     *
+     * <h3>怎么吸（code 971 起 =「就近」）</h3>
+     * 取「**离 target 最近的字符边界**」，而不是旧版的「≥ target 的最小边界」。
+     * 旧版只向右取，终点最多被推远**一个整字宽**（真机 13:34 日志统计：25/25 条
+     * 起滚记录过冲全为正，中位 32px、最大 40px ≈ 一个字）—— 这就是用户报的
+     * 「每句后面多了一大块空白」。改成就近后，过冲最多半个字，空白直接砍半。
+     *
+     * <p>⚠️ 但「向下取」有一个前提：取到 {@code target} 左边的边界后，可视区必须
+     * **仍能盖住末尾**（{@code lower + viewW >= coverNeed}）—— 否则末字会被重新裁掉，
+     * 那正是 969/970 花大力气修掉的问题。不满足就退回右边界的 {@code upper}。
+     * 换句话说：就近是「能就近就就近，不能就近就保住末字完整」。
+     *
+     * <p>⚠️ 上界保护：吸附值不会超过「**最后一个字的起点**」—— 否则可视区会整段
+     * 滑到文本之外（全空白）。正常机型的可视宽（真机 508px）远大于一个字宽，
+     * 该保护不会生效；它只防「可视宽 < 一个字宽」这种退化情形。
+     *
+     * <h3>吸附之后的「微调」</h3>
+     * 吸附只保证**左边缘尽量整字**，不保证**右边缘把末尾包满**：若「选中边界 + 可视宽」
+     * 比 {@code coverNeed} 小一两个像素，末尾最后那点抗锯齿仍会被裁。⇒ 此时把终点往右
+     * 挪到「刚好覆盖 coverNeed」，但**挪动量 ≤ {@link #MAX_NUDGE_PX}** —— 左边缘切进
+     * 第一个字一两像素（肉眼不可见），换来末尾完整。挪动量超限就不挪。
+     *
+     * @param viewW     可视宽（用于判断覆盖是否够）
+     * @param coverNeed 期望被覆盖到的「文本坐标」上限（= 需要宽度 + 富余量）
+     */
+    private static int snapToCharBoundary(int target, String text, int viewW, int coverNeed) {
+        if (target <= 0) {
+            return 0;
+        }
+        int[] b = charBoundaries(text);
+        if (b == null || b.length < 2) {
+            return target;   // 拿不到边界就不吸（保守：维持原行为）
+        }
+        final int maxSnap = b[b.length - 2];   // 最后一个字的起点
+        // 找 target 两侧最近的边界：lower = ≤target 的最大边界，upper = ≥target 的最小边界
+        int lower = -1;
+        int upper = -1;
+        for (int v : b) {
+            if (v <= target) {
+                lower = v;
+            }
+            if (upper < 0 && v >= target) {
+                upper = Math.min(v, maxSnap);
+            }
+        }
+        if (upper < 0) {
+            // target 比整段文本还长（说明上游输入异常，正常路径不可能走到）⇒
+            // 保底回落到「最后一个字的起点」：至少能看到末尾，而不是把视窗整段滑到文本之外。
+            return Math.min(target, maxSnap);
+        }
+        // 【code 971 就近吸附】取离 target 最近的字符边界（左或右），把过冲从
+        //   「最多一个字宽」压到「最多半个字宽」。
+        //
+        //   ⚠️ 「向下取」会裁掉末尾一点 —— 这是「留白」与「切末字」的此消彼长：
+        //   可视宽不是字宽的整数倍时，右对齐点（adv - viewW）几乎总落在字中间，
+        //   向左取边界 = 末字被裁，向右取边界 = 句尾留白。真机 13:34 实测过冲 +32px
+        //   （「金枪鱼」句：adv=882/viewW=371，theory=514 落在边界 504 与 546 之间，
+        //   向右取 546 留白 32px）。
+        //
+        //   ⇒ 折中：向下取时**允许末字被裁 ≤ MAX_TAIL_CLIP_PX**（约 1/5 字宽，
+        //   句尾多为标点/语气词，肉眼几乎不可见；比 969 修掉的 5px 硬切更轻，
+        //   且只发生在「恰好卡在边界」的少数句子上）。裁切超限就退回右边界，
+        //   保住末字完整。这样过冲最多半个字、多数句子直接压到 0。
+        int chosen = upper;
+        if (lower >= 0) {
+            int tailBase = coverNeed - COVER_MARGIN_PX;   // = base（文本真实宽）
+            int clip = tailBase - (lower + viewW);        // 向下取会裁掉末字的量（>0 表示裁）
+            boolean lowerAcceptable = viewW <= 0 || clip <= MAX_TAIL_CLIP_PX;
+            int toUpper = upper - target;
+            int toLower = target - lower;
+            if (lowerAcceptable && toLower < toUpper) {
+                chosen = lower;
+            }
+            if (!sSnapSideLogged) {
+                sSnapSideLogged = true;
+                XposedCompat.log(TAG + " snap: target=" + target + " lower=" + lower
+                        + " upper=" + upper + " -> " + chosen
+                        + (chosen == lower ? " [nearer-lower]" : " [upper]")
+                        + (lowerAcceptable ? "" : " (lower clips tail " + clip + "px)"));
+            }
+        }
+        // 微调：选中边界仍包不住 coverNeed 时，往右挪「差的那一点点」（限 MAX_NUDGE_PX）
+        if (viewW > 0 && chosen + viewW < coverNeed) {
+            int ideal = coverNeed - viewW;
+            int nudge = ideal - chosen;
+            if (nudge > 0 && nudge <= MAX_NUDGE_PX && ideal <= maxSnap) {
+                if (!sNudgeLogged) {
+                    sNudgeLogged = true;
+                    XposedCompat.log(TAG + " tail nudge: " + chosen + " -> " + ideal
+                            + "px (+" + nudge + "px, coverNeed=" + coverNeed
+                            + ", viewW=" + viewW + ") [keeps tail fully visible]");
+                }
+                return ideal;
+            }
+        }
+        return chosen;
+    }
+
+    /** 「末尾微调」只打一次日志，避免刷屏。 */
+    private static volatile boolean sNudgeLogged = false;
+    /** 「就近吸附选了哪一侧」只打一次日志，避免刷屏。 */
+    private static volatile boolean sSnapSideLogged = false;
 
     /**
      * 单程左移：scrollX 0 → (文本宽 - 可视宽)，线性插值，播完停在末尾。
@@ -2617,6 +2991,11 @@ public class StatusBarSubtitleHook {
                 sLineView.setScrollX(0);   // 放得下 → 静态显示，不滚动
                 sScrollTarget = 0;
                 sLiveTargetPx = 0;
+                // 【2.2.0 半字根修·兜底】「放得下」这个结论是在宽度刚写进 LayoutParams
+                //   时下的；若父容器实际量给子视图的宽度更小（钳制）、或字体刚从时钟
+                //   同步过来导致 Layout 偏小，结论就会错 —— 最后一个字会被永久裁掉。
+                //   ⇒ 下一帧（layout 已落地）用**真实宽度**复核一次，真放不下就补起滚。
+                recheckFitAfterLayout();
                 return;
             }
             long dur = sDurationMs > 0 ? sDurationMs : SCROLL_FALLBACK_MS;
@@ -2636,12 +3015,53 @@ public class StatusBarSubtitleHook {
             sScrollSpeedPxPerMs = Math.max(spd, SCROLL_FALLBACK_SPEED_PX_PER_S * 0.5 / 1000d);
             dur = Math.max(60L, (long) (target / sScrollSpeedPxPerMs));
             animateScrollTo(sLineView.getScrollX(), target, dur);
+            // ⚠️ 这里的 liveW 是**实时读**的宽度（可能是「还没 layout 完」的旧值），
+            //    真正参与计算的是 sLastMeasure 里的 calcW —— 两者不一致正是「读到旧值」的信号，
+            //    所以两个都打出来，别再让读数误导排查（969 那轮就被 viewW=0 带偏过一次）。
             XposedCompat.log(TAG + " scroll: target=" + target + "px dur=" + dur
-                    + "ms (viewW=" + (sLineView.getWidth() - sLineView.getPaddingLeft()
-                    - sLineView.getPaddingRight()) + ")");
+                    + "ms (liveW=" + (sLineView.getWidth() - sLineView.getPaddingLeft()
+                    - sLineView.getPaddingRight()) + ", " + sLastMeasure + ")");
         } catch (Throwable t) {
             XposedCompat.log(TAG + " startScroll failed: " + t);
         }
+    }
+
+    /**
+     * 【2.2.0 半字根修·兜底】「放得下、不用滚」这个结论下得太早时，最后一个字会被永久裁掉。
+     *
+     * <p>结论是在 {@code lp.width} 刚写进 LayoutParams 时下的（那一刻 {@code getWidth()}
+     * 还是旧值），而真正生效的宽度要等下一帧 layout。若父容器实际量给子视图的宽度更小
+     * （钳制），或字体刚从时钟同步过来导致内部 Layout 偏小，结论就是错的。
+     *
+     * <p>⇒ 下一帧（layout 已落地）用**真实宽度**复核一次：真的放不下就按原速度补上滚动。
+     * 只复核一次，不做轮询；已经滚起来的（目标 &gt; 0）直接让路，绝不打断。
+     */
+    private static void recheckFitAfterLayout() {
+        if (sLineView == null) {
+            return;
+        }
+        sLineView.post(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    if (sLineView == null || sAnimator != null) {
+                        return;
+                    }
+                    if (sLiveTargetPx > 0 || sLineView.getScrollX() != 0) {
+                        return;   // 已经安排了滚动 / 已在滚 —— 别插手
+                    }
+                    int real = computeScrollTarget(-1);   // 显式用真实 getWidth()/getLayout()
+                    if (real > TARGET_HYSTERESIS_PX) {
+                        XposedCompat.log(TAG + " fit recheck: does NOT fit -> real target="
+                                + real + "px (start scroll, tail was clipped)");
+                        sLiveTargetPx = real;
+                        sScrollTarget = real;
+                        continueScrollToLiveTarget();
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+        });
     }
 
     private static void animateScrollTo(final int from, final int to, final long dur) {
@@ -2680,14 +3100,27 @@ public class StatusBarSubtitleHook {
                 if (sAnimator == anim) {
                     sAnimator = null;
                 }
-                if (gen != sScrollGen || sLineView == null) {
-                    return;   // 已被换代（cancelScroll / 到线自停 / 起了新一段）→ 不是自然跑完
-                }
-                // 【1.21.11 问题 1】目标变大（胶囊出现把右界推窄）→ 本段自然跑完后，
-                // 按原速度续滚剩余距离。速度恒定，只是分两段跑。
-                if (sLineView.getScrollX() < sLiveTargetPx - 2) {
-                    continueScrollToLiveTarget();
-                }
+                    if (gen != sScrollGen || sLineView == null) {
+                        return;   // 已被换代（cancelScroll / 到线自停 / 起了新一段）→ 不是自然跑完
+                    }
+                    // 【2.2.0 半字根修·兜底】动画自然跑完的那一刻，这一帧的布局**一定已经落地**
+                    //   ⇒ 用真实宽度（显式传 -1 强制走 getWidth()/getLayout()）再核一次目标。
+                    //   起滚时若因「宽度刚写、getWidth 还是旧值」把目标算小了（最多差半个字），
+                    //   这里按**原速度**补上剩余距离 —— 保证末尾必然完整露出来。
+                    int realTarget = computeScrollTarget(-1);
+                    if (realTarget > sLiveTargetPx + 2) {
+                        XposedCompat.log(TAG + " scroll recheck after settle: "
+                                + sLiveTargetPx + "->" + realTarget + "px (tail was clipped)");
+                        sLiveTargetPx = realTarget;
+                        sScrollTarget = realTarget;
+                        continueScrollToLiveTarget();
+                        return;
+                    }
+                    // 【1.21.11 问题 1】目标变大（胶囊出现把右界推窄）→ 本段自然跑完后，
+                    // 按原速度续滚剩余距离。速度恒定，只是分两段跑。
+                    if (sLineView.getScrollX() < sLiveTargetPx - 2) {
+                        continueScrollToLiveTarget();
+                    }
             }
         });
         a.start();
@@ -2711,8 +3144,14 @@ public class StatusBarSubtitleHook {
         }
         try {
             int target = computeScrollTarget(newWidthPx);
-            if (Math.abs(target - sLiveTargetPx) < TARGET_HYSTERESIS_PX) {
-                return;   // 差异太小：连记录都不改（迟滞治抖，别每帧都动）
+            // 【2.2.0 半字根修】迟滞必须**单向**：
+            //   · 目标变大（可视区变窄 ⇒ 要滚得更远）→ **立刻采信**，绝不压着 ——
+            //     压着不放的代价是「末尾那几个像素永远滚不到」＝ 最后一个字被裁掉半截；
+            //   · 目标变小（可视区变宽 ⇒ 能少滚一点）→ 才用迟滞挡抖动（多滚几像素只是末尾留白）。
+            //   旧实现是双向 |delta|<8 一律忽略，于是「该滚更远」也被吞掉了最多 8px。
+            int delta = target - sLiveTargetPx;
+            if (delta == 0 || (delta < 0 && -delta < TARGET_HYSTERESIS_PX)) {
+                return;   // 差异太小 / 变小且不显著：连记录都不改（迟滞治抖，别每帧都动）
             }
             int prev = sLiveTargetPx;
             sLiveTargetPx = target;

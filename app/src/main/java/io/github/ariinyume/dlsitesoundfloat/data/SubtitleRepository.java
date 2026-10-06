@@ -170,8 +170,16 @@ public class SubtitleRepository {
      *   20:37:40.968 NO subtitles for this track (cues were 46)
      *
      * 语义：`true` = 本次挂起是「软挂起」——手上数据完好，只是新轨 JSON 还没确认，
-     * 显示层**不该**因此降级成「无字幕」，而应冻结上一状态继续显示。
+     * 显示层**不该**因此降级成「无字幕」。
      * 与 {@link #softNoSubtitles}（裁决后才置位）互补：本字段覆盖**裁决前**的等待期。
+     *
+     * 【code 960】「不降级」≠「继续显示上一轨的字幕」：2.1.3 的实现是冻结显示，
+     *   于是切到**真正无字幕**的轨时旧字幕一直挂着（用例 7.2）。现在改为
+     *   **显示层清空、数据保留**（cues / subtitleLineSet 一个都不动），
+     *   但**窗口先留着**：实测假阴性是 1311ms / 5.5s / 11.1s，都在裁决窗内，
+     *   提前收窗只会给这些「其实有字幕」的轨凭空加一次窗口闪（2.1.3 换来的收益不能丢）。
+     *   收窗交给裁决窗到点的 {@code resolvePendingTrack}（软硬一律关），
+     *   JSON 晚到时 loadFromJsonArrayInternal 仍会把显示与窗口一起恢复回来。
      */
     private boolean pendingSoftSuspend = false;
     /**
@@ -226,7 +234,15 @@ public class SubtitleRepository {
 
     public void init(Context ctx, ClassLoader cl) {
         synchronized (lock) {
-            this.appContext = ctx;
+            // 【M1 隐患修复】这里只兜底设 appContext —— 只有当 attach 还没把真实宿主
+            // Application Context 塞进来时才用传入的 ctx（systemCtx）垫底。
+            // 正常时序是 Application#attach → setAppContext(真实宿主 Context) 先于
+            // onPackageReady → init(systemCtx)。若这里无条件覆盖，会把真实宿主 Context
+            // 又覆盖回 systemCtx，导致 getAppContext() 返回 system 的 Context（悬浮窗/状态栏
+            // 桥都会用错 context 类型）。只在空时兜底即可两全：attach 已设则保留，未设则垫底。
+            if (this.appContext == null) {
+                this.appContext = ctx;
+            }
             this.appClassLoader = cl;
         }
     }
@@ -546,9 +562,13 @@ public class SubtitleRepository {
                 //   而 JSON 往往几百毫秒~十几秒后才到（日志实证 1.3s / 5.5s / 11.1s）。
                 //   手上没有 cues 时才按旧口径清镜像（真无字幕作品）。
                 pendingSoftSuspend = cueCount > 0;
-                if (!pendingSoftSuspend) {
-                    currentSubtitles = new ArrayList<>(); // 丢掉抓屏镜像，避免旧文本溜进来
-                }
+                // 【code 960】**两种挂起都清掉抓屏镜像**。
+                //   原实现只在硬挂起（手上没 cues）时清，软挂起留着「继续显示」——
+                //   于是切到**真正无字幕**的音轨时，上一轨的字幕会一直挂在悬浮窗/状态栏上
+                //   （用例 7.2），最长能挂满整个 15s 裁决窗。
+                //   现在显示层一律清空：cues / subtitleLineSet **一个都不动**（防假阴性的初衷
+                //   原样保留），JSON 晚到时 loadFromJsonArrayInternal 照旧能恢复显示。
+                currentSubtitles = new ArrayList<>();
                 // 记录裁决用的位置基线：真换轨时位置会回退到 0 附近
                 pendingStartPosMs = playbackPositionMs;
                 pendingSawPositionReset = false;
@@ -566,7 +586,7 @@ public class SubtitleRepository {
                 + (suspended
                         ? " -> SUSPEND subtitles, wait " + grace + "ms"
                                 + (grace > NO_SUBTITLE_GRACE_MS ? " (had cues)" : "")
-                                + (pendingSoftSuspend ? " [soft: keep showing]" : "")
+                                + (pendingSoftSuspend ? " [soft: display cleared, data kept]" : "")
                         : " -> recent json, keep cues"));
         if (reopenedByTrack) {
             XposedCompat.log("[DLsiteSoundFloat] new track after playback end -> reopen floating window");
@@ -575,13 +595,21 @@ public class SubtitleRepository {
         if (suspended) {
             mainHandler.postDelayed(() -> resolvePendingTrack(token), grace);
             // 【code 942】提前收窗：比裁决窗更早把悬浮窗关掉（字幕 JSON 晚到会自动开回来）。
-            // 【2.1.3 问题 1】软挂起（手上有 cues）**不排**这个任务：此时字幕正在正常显示，
-            //   窗口没有任何理由关 —— 原实现照样 5s 关窗，用户看到的正是
-            //   「字幕突然消失 + 悬浮窗没了」（日志实证 20:37:35.966 / 20:18:45.928）。
-            //   只有硬挂起（手上一片空白、真可能无字幕）才保留提前收窗。
+            //
+            // 【2.1.3 问题 1 / code 960 折中】软挂起（手上有 cues）**不排**这个任务：
+            //   实测假阴性的 JSON 延迟是 1311ms / 5.5s / 11.1s，全部落在 15s 裁决窗内 ——
+            //   5s 就关窗只会给这些**其实有字幕**的轨凭空加一次「关窗 → 自动开回」的窗口闪，
+            //   而用例 7.2 要的是「立刻不再显示上一轨的字幕」，这点**显示层清空**已经做到了
+            //   （见上面 currentSubtitles），根本不需要动窗口。
+            //   于是最终时序：换轨 → 立刻清内容 → 窗口留着 → JSON 在裁决窗内到达就原地恢复
+            //   （无闪，2.1.3 的收益保住）→ 裁决窗到点仍无 JSON 才由 resolvePendingTrack 收窗。
+            //   硬挂起（手上一片空白、真可能无字幕）保留 code 942 的 5s 提前收窗，行为不变。
             if (!pendingSoftSuspend) {
                 mainHandler.postDelayed(() -> provisionalEarlyClose(token),
                         Math.min(NO_SUBTITLE_EARLY_CLOSE_MS, grace));
+            } else {
+                XposedCompat.log("[DLsiteSoundFloat] [code 960] soft suspend -> display cleared,"
+                        + " window kept (cues=" + cueCount + " kept), decide in " + grace + "ms");
             }
         }
     }
@@ -621,7 +649,6 @@ public class SubtitleRepository {
         boolean reopenedAfterSpurious = false; // 【code 942】假换轨回收提前收窗
         // 【2.1.3 问题 1】本次软裁决是否「忍住没降级」—— 仅用于日志取证
         boolean heldSoftVerdict = false;
-        boolean keptWindowForSoftSuspend = false;
         int cueCount = 0;
         int subCount = 0;
         int samples = 0;
@@ -682,16 +709,22 @@ public class SubtitleRepository {
                         //
                         // 【2.1.3 问题 1】软裁决也**不再**置 softNoSubtitles：
                         //   本次挂起是「手上有 cues」的软挂起 —— 本作品已被证明有字幕，
-                        //   「10s 没等到 JSON」不足以推翻这一点（实测冷请求可超 15s）。
+                        //   「没等到 JSON」不足以推翻这一点（实测冷请求可超 15s）。
                         //   置位会让三处 UI 一起变「无字幕」，正是用户报的现象。
-                        //   现在降级为「保持当前显示 + 留时间戳取证」：JSON 到了
+                        //   现在降级为「保持数据 + 留时间戳取证」：JSON 到了
                         //   loadFromJsonArrayInternal 会正常刷新，超时也不误报。
                         //   （真判无字幕只在**手上没有 cues** 的硬裁决路径发生。）
+                        //
+                        // 【code 960】显示层**保持已清空**：进入软挂起时 currentSubtitles
+                        //   就已经清了（用例 7.2 —— 切到真正无字幕的轨时不留上一轨的字幕），
+                        //   这里再清一次只为口径明确（期间不会有新的抓屏镜像写入：
+                        //   setCurrentSubtitles 在待确认期间直接 return）。
+                        currentSubtitles = new ArrayList<>();
                         currentCueIndex = -1;
                         lastScannedSecond = Integer.MIN_VALUE;
                         // 注意：**不**清 playbackPositionMs / lastFedMs —— 位置是位置，
                         // 与「有没有字幕」无关；清了反而会让恢复后的首帧字幕落错行。
-                        // 也**不**清 currentSubtitles：软挂起期间它要留着继续显示。
+                        // cues / subtitleLineSet 同样一个都不动（防假阴性）。
                         heldSoftVerdict = true;
                     } else {
                         // 手上本来就没有任何 cues（这部作品压根没加载过字幕）→ 硬裁决，
@@ -705,19 +738,17 @@ public class SubtitleRepository {
                         lastFedMs = -1L;
                     }
                     if (floatingWindowOpen) {
-                        // 【2.1.3 问题 1】手上有 cues（软挂起）时**不关窗**：
-                        //   cues 完好、字幕一直在正常显示，10s 只是「JSON 还没来」这一条
-                        //   信息不足以下「无字幕」结论 —— 何况实测 JSON 冷请求可拖到 15.6s
-                        //   （日志实证 FALSE NEGATIVE 1311ms / 5.5s / 11.1s）。
-                        //   关窗的代价是用户眼前字幕凭空消失，收益为零（窗口本来就在正确位置）。
-                        //   维持窗口显示到下一次 JSON 到达或用户离开播放页。
-                        if (cueCount <= 0) {
-                            floatingWindowOpen = false;
-                            autoClosedForNoSubtitle = true;
-                            closed = true;
-                        } else {
-                            keptWindowForSoftSuspend = true;
-                        }
+                        // 【2.1.3 问题 1】曾让软挂起（手上有 cues）**留着窗口不关**：
+                        //   那时软挂起仍在显示上一轨字幕，关窗 = 字幕凭空消失。
+                        // 【code 960 折中】前提已变：显示层在挂起瞬间就清空了，
+                        //   等满整个裁决窗仍无 JSON，窗口里已经空了这么久 —— 这时收窗是净收益。
+                        //   所以软硬一律关窗（软挂起先不排 5s 提前收窗，就是为了不在
+                        //   JSON 5.5s/11.1s 到达的那些轨上闪一下，见 onTrackChanged 的注释）。
+                        //   autoClosedForNoSubtitle 照旧置位：万一 JSON 在裁决窗之后才到，
+                        //   loadFromJsonArrayInternal 的自动开回路径仍然接得住。
+                        floatingWindowOpen = false;
+                        autoClosedForNoSubtitle = true;
+                        closed = true;
                     }
                 }
             } else {
@@ -740,12 +771,13 @@ public class SubtitleRepository {
                     + ") -> keep cues=" + cueCount);
         } else if (noSubtitles) {
             if (heldSoftVerdict) {
-                // 【2.1.3 问题 1】软裁决不再降级：手上有 cues ⇒ 判定「暂不确认」，
-                // 显示维持原样，等 JSON 到了自然刷新。不再出现「假阴性」误报。
-                XposedCompat.log("[DLsiteSoundFloat] track decision: no json within grace,"
-                        + " but cues=" + cueCount + " in hand -> KEEP showing"
-                        + " (soft verdict, UI not degraded, no false \"no subtitles\")"
-                        + (keptWindowForSoftSuspend ? ", window kept" : ""));
+                // 【2.1.3 问题 1 + code 960 折中】软裁决仍**不下**「本音轨无字幕」的结论
+                // （cues 保留、UI 不降级、不产生假阴性误报），但显示层早已清空、窗口里
+                // 空了整整一个裁决窗 —— 这时收窗。JSON 若晚到（>15s）仍会自动开回来。
+                XposedCompat.log("[DLsiteSoundFloat] [code 960] soft verdict -> no json within grace,"
+                        + " display stays cleared (cues=" + cueCount + " kept,"
+                        + " no false \"no subtitles\")"
+                        + (closed ? " -> auto-closed floating window" : ""));
             } else {
                 XposedCompat.log("[DLsiteSoundFloat] track decision: NO subtitles for this track"
                         + " (cues were " + cueCount + ")"

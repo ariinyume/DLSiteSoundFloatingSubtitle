@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  【M1 / v1.4】可视化设置页主题（PRD §八 NFR-01 / NFR-02）。
+
+  · 父主题 Theme.Material3.DayNight.NoActionBar：
+      - MD3 色槽（colorPrimaryContainer / colorErrorContainer / outline …）全部由它提供，
+        设置页**禁止硬编码十六进制色值**（PRD §15.2），状态卡底色一律走色槽；
+      - DayNight 自动跟随系统深浅色（NFR-02），不做手动模式选择（PRD §4.2）。
+  · 动态取色（跟随壁纸，Tonal Spot）在 SettingsActivity.onCreate 里用 DynamicColors 开启，
+    仅对 Android 12+ 生效，低版本自动回落到下面这组兜底色。
+  · ⚠️ 本主题只作用于**模块自己的进程**（设置页）。被注入到宿主 / SystemUI 的视图
+    用宿主 Context，取不到本模块资源，因此本文件与它们无关。
+
+  ── v1.4 §3.1.3 / §3.1.4 / §1.1.2 的三条硬要求，逐条落在这里 ──
+
+  ① 状态栏区域**不染色**（§3.1.3）：`android:statusBarColor` 必须与 app 背景同色。
+     ⚠️ 不要写 `?attr/colorPrimary`，也不要用 `colorPrimaryDark`（那是 MD2 的写法）——
+     用 `?attr/colorSurface`，这样它在浅色下是奶白、夜间是 MD3 的 #1C1B1F 系，
+     状态栏与页面**永远同色**、且自动跟随动态取色。
+  ② 夜间不要纯黑（§3.1.4）：MD3 DayNight 父主题自带的 surface 层级在暗色下就是
+     #1C1B1F / #211F26（surfaceContainerLow）这一族，**没有任何一档是 #000000**。
+     我们只在「没有动态取色」的设备上兜底这组值（values-night 里的同名资源会覆盖），
+     所以这里显式给 surface 三档兜底，避免继承到某些 ROM 上被改黑的 surface。
+  ③ 动态取色必须覆盖所有组件（§1.1.2）：因此这里**只在 values/ 里写兜底色**，
+     所有组件一律引用 `?attr/colorXxx` 色槽（见 activity_settings.xml 与 SettingsActivity）。
+     动态取色生效时 Material 会把这些色槽整体替换掉，兜底色只在 12 以下才露面。
+-->
+<resources xmlns:tools="http://schemas.android.com/tools">
+
+    <style name="Theme.DLsiteFloat" parent="Theme.Material3.DayNight.NoActionBar">
+        <!-- 兜底品牌色（无动态取色的设备上用） -->
+        <item name="colorPrimary">@color/settings_primary</item>
+        <item name="colorOnPrimary">@color/settings_on_primary</item>
+        <item name="colorPrimaryContainer">@color/settings_primary_container</item>
+        <item name="colorOnPrimaryContainer">@color/settings_on_primary_container</item>
+        <item name="colorErrorContainer">@color/settings_error_container</item>
+        <item name="colorOnErrorContainer">@color/settings_on_error_container</item>
+
+        <!-- ① 状态栏与导航栏与 app 背景同色（§3.1.3；禁止 primary 染色） -->
+        <item name="android:statusBarColor">?attr/colorSurface</item>
+        <item name="android:navigationBarColor">?attr/colorSurface</item>
+        <!-- 浅色底下状态栏图标要变深色，深色底下要变浅色 —— DayNight 会自动翻这两个布尔 -->
+        <item name="android:windowLightStatusBar" tools:targetApi="m">true</item>
+        <item name="android:windowLightNavigationBar" tools:targetApi="o_mr1">true</item>
+
+        <!-- ② 奶白分层（§1.1.2 / §3.1.4）：卡片一档、页面底一档、输入/凹陷再一档 -->
+        <item name="android:colorBackground">@color/settings_surface</item>
+        <item name="colorSurface">@color/settings_surface</item>
+        <item name="colorSurfaceContainerLow">@color/settings_surface_container_low</item>
+        <!--
+          【2.3.2 §2.8 / 2.1】兜底容器层级，避免首帧（refreshCardTints 之前）卡片透明。
+          浅色下 Low(#FFFFFF) < Container(#F3EDF7) < High(#ECE6F0) 逐档变深。
+          ⚠️ 浅色模式的取色口径**没有变**：页面底 = colorSurface（奶白）、
+             卡片 = colorSurfaceContainerLow（纯白）—— 只有夜间才换成 Low/High 那组
+             （见 values-night/themes.xml 的 §2.8 说明）。
+        -->
+        <item name="colorSurfaceContainer">@color/settings_surface_container</item>
+        <item name="colorSurfaceContainerHigh">@color/settings_surface_container_high</item>
+        <item name="colorSurfaceContainerHighest">@color/settings_surface_container_high</item>
+        <item name="colorSurfaceVariant">@color/settings_surface_variant</item>
+        <item name="colorOnSurface">@color/settings_on_surface</item>
+        <item name="colorOnSurfaceVariant">@color/settings_on_surface_variant</item>
+        <item name="colorOutlineVariant">@color/settings_outline_variant</item>
+    </style>
+
+    <!--
+      设置页分组卡片的统一外观（v1.4 §1.1.2：KernelSU 质感 —— 大圆角、低阴影、克制分隔）。
+      用 style 复用，避免每个 MaterialCardView 重复写 app:* 属性。
+      ⚠️ 底色不再写死：由代码按需要设 colorSurfaceContainerLow / 各 Container 色槽
+        （状态卡那种「按状态换色的卡」更必须由代码设，写在这里会被 XML 属性盖住）。
+    -->
+    <style name="Widget.DLsiteFloat.SettingsCard" parent="Widget.Material3.CardView.Filled">
+        <item name="cardCornerRadius">22dp</item>
+        <item name="cardElevation">0dp</item>
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_marginTop">10dp</item>
+        <item name="contentPadding">0dp</item>
+    </style>
+
+    <!-- 分组内每一行（标签 + 控件）的左侧标签样式 -->
+    <style name="TextAppearance.DLsiteFloat.RowLabel" parent="TextAppearance.Material3.BodyLarge">
+        <item name="android:textSize">15sp</item>
+    </style>
+
+    <!-- 「恢复默认」下方的小字说明（PRD DK-04） -->
+    <style name="TextAppearance.DLsiteFloat.Hint" parent="TextAppearance.Material3.BodySmall">
+        <item name="android:textSize">12sp</item>
+        <item name="android:alpha">0.7</item>
+        <item name="android:lineSpacingMultiplier">1.15</item>
+    </style>
+
+</resources>

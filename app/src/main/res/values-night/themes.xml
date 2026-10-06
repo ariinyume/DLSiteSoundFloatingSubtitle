@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  【v1.4 §3.1.4】夜间兜底色 —— 只覆盖「动态取色不可用」时要用的那几个 surface。
+
+  · 父主题 Theme.Material3.DayNight 在夜间会自动把色槽切到 MD3 标准暗色
+    （surface = #1C1B1F、surfaceContainerLow = #211F26），**本来就不是纯黑**；
+    这里显式写一遍是为了防两类意外：
+      ① 某些 ROM 把 `android:colorBackground` 兜成 #000000（纯黑大底 = Ari 报的「太黑」），
+         `android:colorBackground` 的**默认值**来自 framework，DayNight 管不到它；
+      ② 动态取色在夜间算出极暗色调时，至少 surface 这一档有确定值可依。
+  · ⚠️ 与 values/themes.xml 一样，这里**只写兜底色**；组件一律引用 `?attr/colorXxx`，
+    动态取色生效时会把它们整体替换掉（本文件只在没有动态取色的设备上起兜底作用）。
+  · ⚠️ 状态栏色继续引用 `?attr/colorSurface` —— 夜间它自然变成 #1C1B1F，
+    与页面背景同色，满足 §3.1.3「状态栏不要主题色染色」。
+-->
+<resources xmlns:tools="http://schemas.android.com/tools">
+
+    <style name="Theme.DLsiteFloat" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/settings_primary</item>
+        <item name="colorOnPrimary">@color/settings_on_primary</item>
+        <item name="colorPrimaryContainer">@color/settings_primary_container</item>
+        <item name="colorOnPrimaryContainer">@color/settings_on_primary_container</item>
+        <item name="colorErrorContainer">@color/settings_error_container</item>
+        <item name="colorOnErrorContainer">@color/settings_on_error_container</item>
+
+        <!-- 状态栏 / 导航栏与 app 背景同色（夜间 = MD3 深色，不是纯黑） -->
+        <item name="android:statusBarColor">?attr/colorSurface</item>
+        <item name="android:navigationBarColor">?attr/colorSurface</item>
+        <!-- 夜间状态栏图标必须是浅色，否则深底 + 深图标 = 看不见 -->
+        <item name="android:windowLightStatusBar" tools:targetApi="m">false</item>
+        <item name="android:windowLightNavigationBar" tools:targetApi="o_mr1">false</item>
+
+        <!-- KernelSU「月牙」代表的深色态：MD3 标准暗色分层，卡片比底亮一档 -->
+        <item name="android:colorBackground">@color/settings_surface_dark</item>
+        <item name="colorSurface">@color/settings_surface_dark</item>
+        <!--
+          【2.3.2 §2.8】夜间配色方案改了，读本段前先看结论：
+            页面大底 = **colorSurfaceContainerLow**（#211F26）
+            分组卡片 = **colorSurfaceContainerHigh**（#36343D）
+            状态栏 / 导航栏 = 页面大底（由代码写入，见 SettingsActivity#applyPageBackground）
+
+          ── 为什么要动（Ari 2026-10-05 code961 测试 2.8）────────────────────
+          原方案是「页面底 = colorSurface」。MD3 的 surface 在暗色下**极暗**
+          （有动态取色时约 #131316），Ari 的原话是「背景还是太黑」；
+          同时卡片用的 containerLow 只比 surface 亮 5 档 ⇒「卡片也没有底色」。
+          本版把整个页面层级整体上抬一档：底用 containerLow、卡片用 containerHigh，
+          两者都被提亮，且卡片与底的对比从 5 档拉开到 10 档 ⇒ 卡片一眼可见。
+
+          ⚠️ 这里仍然**只写兜底色**：有动态取色时 Material 会整体替换色槽，
+             上面这套「低/高」关系在动态色下同样成立（tone 10 / tone 17）。
+        -->
+        <item name="colorSurfaceContainerLow">@color/settings_surface_container_low_dark</item>
+        <item name="colorSurfaceContainer">@color/settings_surface_container_dark</item>
+        <item name="colorSurfaceContainerHigh">@color/settings_surface_container_high_dark</item>
+        <item name="colorSurfaceContainerHighest">@color/settings_surface_container_high_dark</item>
+        <item name="colorSurfaceVariant">@color/settings_surface_variant_dark</item>
+        <item name="colorOnSurface">@color/settings_on_surface_dark</item>
+        <item name="colorOnSurfaceVariant">@color/settings_on_surface_variant_dark</item>
+        <item name="colorOutlineVariant">@color/settings_outline_variant_dark</item>
+    </style>
+
+</resources>

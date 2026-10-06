@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  【2.3.2 §1.1.3】「导出」按钮图标（file_upload：向上箭头 + 托盘）。
+  需求原话：「导出 / 导入 文字前面需要加一个表示其含义的小图标」。
+  ⚠️ 与 ic_import 成对使用，两者只是箭头方向相反（上=导出、下=导入）。
+
+  ⚠️ 2.3.3 / code 963：本文件 v1 的 pathData 语法其实**合法**
+     （`M9,16h6v-6h4l-7,-7 -7,7h4v6zM5,18h14v2L5,20v-2z`，托盘用 L5,20+v-2 等价表达 H5），
+     但为与 ic_import 保持同一写法、避免后来者照抄时再漏坐标，
+     统一改用 MD 官方 file_upload 原文（H/V 保留）。
+     🔴 教训：pathData 里 **`L` 必须跟偶数个坐标**，`H`/`V` 只跟 1 个。
+        「把 H/V 手写成 L」是最容易漏参数的改写方式 —— 别做这种等价改写。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M9,16h6v-6h4l-7,-7 -7,7h4v6zM5,18h14v2H5z" />
+</vector>

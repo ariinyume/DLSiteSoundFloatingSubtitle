@@ -4373,7 +4373,9 @@ public class ActivityButtonHook {
     /**
      * 【code 941】状态栏钮是否该**显示**。
      *
-     * 判据 =「当下有字幕可显示」**且**「SystemUI 作用域已确认授权」。
+     * 判据 =「当下有字幕可显示」**且**「L1 功能级总闸开着」**且**「SystemUI 作用域已确认授权」。
+     *
+     * 【2.3.0 §2.1.1.4】中间那条是新增的：设置页关掉「状态栏字幕功能」后，本按钮整个消失。
      *
      * 后者为什么必须：没勾选 SystemUI 作用域时，状态栏那条链路
      * （{@link StatusBarSubtitleBridge#ACTION_LINE}）**没有接收方** —— 按钮点下去
@@ -4388,7 +4390,11 @@ public class ActivityButtonHook {
      *    （「文字变了底色没变」「底色比事实早 9.5 秒」都是这么来的）。
      */
     private static boolean statusBarButtonVisible(SubtitleRepository repo, boolean noSub) {
-        return !noSub && StatusBarSubtitleBridge.isSystemUiScopeAuthorized();
+        // 【2.3.0 §2.1.1.4】多一条 L1 功能级总闸：设置页把「状态栏字幕功能」关掉后，
+        //   播放页这个按钮**从界面上消失**（需求原话）。它表达的是 L2 会话开关，
+        //   功能本身都没开时给它一个按钮只会让用户点了没反应。
+        return !noSub && StatusBarSubtitleBridge.sFeatureEnabled
+                && StatusBarSubtitleBridge.isSystemUiScopeAuthorized();
     }
 
     /**

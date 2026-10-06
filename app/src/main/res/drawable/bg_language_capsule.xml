@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  【2.3.2 §1.1.2】语言胶囊底：主题色填充 + 全圆角（高 32dp ⇒ 半径 16dp）。
+  ⚠️ 这是「形状」不是「语义色」的硬编码 —— 颜色仍取色槽 ?attr/colorPrimary，
+     动态取色 / 深浅色切换时会跟着变。
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="?attr/colorPrimary" />
+    <corners android:radius="16dp" />
+</shape>

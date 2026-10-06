@@ -1,0 +1,468 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  【M1 / v1.6（2.3.2 返工）】可视化设置页骨架。
+
+  ┌ 设置页 ─────────────────────────────────┐
+  │ 【AppBarLayout 吸顶区】                   │
+  │  ① 页头行：DLsiteFloat + 副标题 │ [文A 简中]│  ← scroll（只有回到页面顶部才出现）
+  │  ② 状态卡（+引导小字）                   │  ← scroll（同上）
+  ├──────────── 吸顶分界线 ─────────────────┤
+  │  「调整预览窗」标题                      │  ← 第一个 noScroll ⇒ 可滚动高度到此截止
+  │  ③ 预览卡（壁纸 + 半透明面板 + 5 行字幕） │  ← noScroll（钉在顶部不动）
+  ├──────────── 吸顶分界线 ─────────────────┤
+  │ ④ 主字幕 / 活动行调整 + 卡片             │  ← 以下都在 NestedScrollView 里滚动
+  │ ⑤ 非活动行字幕调整 + 卡片                │
+  │ ⑥ 字幕排版 + 卡片                        │
+  │ ⑦ 其他 + 卡片                            │
+  └──────────────────────────────────────┘
+  ▓▓ ⑧ 吸底操作栏：[重启系统界面] [保存设置] ▓▓   ← bottom_bar（不参与滚动）
+
+  ── v1.6 相对 v1.5 的结构性改动（对应 2026-10-05 code961 测试报告）──
+
+  ① 【4.2 页头不再跟预览一起吸顶】页头行 / 状态卡 / 引导小字的 scrollFlags
+     由 `scroll|enterAlways` 改成 **`scroll`**。
+     · `enterAlways` 的语义是「只要往上滚一点就立刻回来」⇒ Ari 在 4.2 反馈
+       「页面往上拉时页头行 + 状态栏会一起显示出来，不需要和调整预览窗一起吸顶出现」；
+     · 改成 `scroll` 后它们只在**滚回页面最顶部**时才出现，符合要求，
+       同时也消除了 `enterAlways` 与 NestedScrollView 反复争夺滚动量导致的顿挫（4.1）。
+
+  ② 【2.1 状态卡不再贴边】status_card 补 `layout_marginStart/End = 16dp`
+     （v1.5 只在 settings_content 里有 16dp 内边距，而状态卡在 AppBarLayout 里 ⇒ 左右全出血）。
+
+  ③ 【2.2 / 2.7 预览卡改成三层叠加的「真窗同构」】preview_card 由 MaterialCardView
+     换成普通 FrameLayout（MaterialCardView 会把 `setBackground` 吃掉，v1.5 的半透明面板
+     其实**从来没画出来过**），内部三层：
+        preview_backdrop（**不透明**壁纸近似底）
+          ↓ preview_panel（配置基色 + 顶部 0x92 / 底部 0x5B 的垂直渐变，模拟悬浮窗背景）
+            ↓ preview_lines（5 行示例字幕）
+     · 2.7 的「吸顶后边缘变成卡片底色 / 内容透出来」根因就是那层参照底 alpha 只有 0.85、
+       整块卡片是半透明的 —— 现在壁纸层不透明 ⇒ 钉在顶部的内容不再透出底下滚动的行。
+     · 卡片自身 `clipToOutline="true"`，靠背景 GradientDrawable 的 20dp 圆角提供轮廓。
+
+  ④ 【2.7 吸顶后下方留 5dp】AppBarLayout 加 `android:paddingBottom="5dp"`，
+     preview_card 的 marginBottom 归零 —— 钉住时预览卡与下方滚动内容之间恒定留 5dp。
+
+  ⑤ 【1.1 语言胶囊自绘】原来用 MaterialButton + `app:icon` + `iconGravity="textStart"`，
+     真机上只画出图标、文字被吃掉。现在换成 LinearLayout（ImageView + TextView）自绘胶囊，
+     图标与短名（简中 / 繁中 / EN）各自都是独立子 View，不可能互相吞掉。
+
+  ⚠️ 状态栏区域不染色（§1.16）：状态栏 / 导航栏色由代码取「页面大底色」写入
+     （夜间是提亮一档的 surfaceContainerLow），不再依赖主题里的 android:statusBarColor。
+-->
+<!--
+  🔴🔴 2.1.4：根布局由 CoordinatorLayout 改为「垂直 LinearLayout 包一层」。
+  原因（Ari 2026-10-06 截图实证）：
+    旧结构里底栏是 CoordinatorLayout 的直接子 View（layout_gravity="bottom"），
+    它**不占**滚动区高度、浮在内容之上；滚动区靠「实测底栏高 → 写进内容 paddingBottom」让位。
+    这条链路有两个不肯定的环节：① 底栏高度要等 layout 才知道；② 滚动区的可滚动高度由
+    HeaderScrollingViewBehavior 按 `parentH + appbarScrollRange − appbarMeasuredH` 量出。
+    任一环节对不上，最后一行就会被压在栏下、**再也滚不出来**（就是「拉不到底」）。
+  新结构：底栏作为兄弟节点**真实占位**（wrap_content），滚动区高度 = 剩余空间，
+    滚到底时最后一行必然完整露在栏上方 —— **不再依赖任何时序或高度测量**。
+  ⚠️ id 保持 `settings_root`（页面底色仍打在它上面）与 `bottom_bar` 不变，
+      Java 侧只需删掉那段「让位补丁」，其余 findViewById 全部照旧。
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/settings_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="?attr/colorSurface"
+    android:orientation="vertical">
+
+<androidx.coordinatorlayout.widget.CoordinatorLayout
+    android:id="@+id/settings_coord"
+    android:layout_width="match_parent"
+    android:layout_height="0dp"
+    android:layout_weight="1">
+
+    <com.google.android.material.appbar.AppBarLayout
+        android:id="@+id/settings_appbar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="?attr/colorSurface"
+        android:paddingBottom="5dp"
+        android:stateListAnimator="@null"
+        app:elevation="0dp">
+
+        <!-- ① 页头行：左 = 大标题 + 副标题；右 = 语言胶囊（§1.1.1 / v1.6 ⑤） -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="16dp"
+            android:paddingTop="10dp"
+            android:paddingEnd="16dp"
+            android:paddingBottom="2dp"
+            app:layout_scrollFlags="scroll">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/header_title"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="DLsiteFloat"
+                    android:textColor="?attr/colorOnSurface"
+                    android:textSize="26sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/header_subtitle"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:textAppearance="?attr/textAppearanceBodySmall"
+                    android:textColor="?attr/colorOnSurfaceVariant" />
+            </LinearLayout>
+
+            <!--
+              【v1.6 ⑤ / §1.1.1 / §6.4】语言胶囊：LinearLayout 自绘，图标与短名各自是独立子 View。
+              · 背景 = 主题色填充（?attr/colorPrimary），文字 / 图标 = ?attr/colorOnPrimary；
+              · 高 32dp ⇒ 全圆角 16dp（bg_language_capsule.xml）；
+              · 文案由代码设成**当前语言的短名**（简中 / 繁中 / EN），见 applyStaticTexts；
+              · ⚠️ 不要退回 MaterialButton + app:icon：v1.5 真机上文字会被 icon 布局吃掉，只剩图标。
+            -->
+            <LinearLayout
+                android:id="@+id/language_button"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:layout_marginStart="10dp"
+                android:background="@drawable/bg_language_capsule"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center_vertical"
+                android:minWidth="0dp"
+                android:orientation="horizontal"
+                android:paddingStart="8dp"
+                android:paddingEnd="10dp">
+
+                <ImageView
+                    android:id="@+id/language_icon"
+                    android:layout_width="14dp"
+                    android:layout_height="14dp"
+                    android:contentDescription="@null"
+                    android:src="@drawable/ic_language"
+                    app:tint="?attr/colorOnPrimary" />
+
+                <TextView
+                    android:id="@+id/language_text"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="4dp"
+                    android:ellipsize="end"
+                    android:maxWidth="64dp"
+                    android:singleLine="true"
+                    android:textSize="12sp"
+                    android:textStyle="bold"
+                    android:textColor="?attr/colorOnPrimary" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!--
+          ② 状态卡（`scroll`，与页头行一起滚走 / 一起回来）。
+          v1.6 ②：补左右 16dp 外边距 —— 它与分组卡片同宽，不再贴屏幕两侧。
+          ⚠️ 必须排在 title_preview **之前**，否则它落在「不可滚动区」，滚动时不会让位。
+        -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/status_card"
+            style="@style/Widget.DLsiteFloat.SettingsCard"
+            android:layout_marginStart="16dp"
+            android:layout_marginTop="6dp"
+            android:layout_marginEnd="16dp"
+            app:cardBackgroundColor="?attr/colorPrimaryContainer"
+            app:cardCornerRadius="22dp"
+            app:layout_scrollFlags="scroll">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:padding="16dp">
+
+                <ImageView
+                    android:id="@+id/status_icon"
+                    android:layout_width="28dp"
+                    android:layout_height="28dp"
+                    android:contentDescription="@null"
+                    android:src="@drawable/ic_settings_status_on" />
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="14dp"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:id="@+id/status_title"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:textAppearance="?attr/textAppearanceTitleMedium" />
+
+                    <TextView
+                        android:id="@+id/status_subtitle"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:textAppearance="?attr/textAppearanceBodySmall" />
+                </LinearLayout>
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- 未激活 / 未知态的引导文案（PRD §12 E-01 / E-10），随状态卡一起滚走 -->
+        <TextView
+            android:id="@+id/status_guide"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="20dp"
+            android:layout_marginTop="6dp"
+            android:layout_marginEnd="20dp"
+            android:textAppearance="@style/TextAppearance.DLsiteFloat.Hint"
+            android:visibility="gone"
+            app:layout_scrollFlags="scroll" />
+
+        <!--
+          「调整预览窗」节标题：**第一个 noScroll 子 View** ⇒ AppBarLayout 的可滚动范围
+          到此截止（页头行 + 状态卡是唯一能滚走的部分），于是预览区被钉在顶部。
+        -->
+        <TextView
+            android:id="@+id/title_preview"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="20dp"
+            android:layout_marginTop="12dp"
+            android:layout_marginEnd="20dp"
+            android:textAppearance="?attr/textAppearanceTitleSmall"
+            android:textColor="?attr/colorPrimary"
+            android:textStyle="bold"
+            app:layout_scrollFlags="noScroll" />
+
+        <!--
+          ③ 预览卡（v1.6 ③）：**三层叠加**，与真悬浮窗同构 ——
+             壁纸近似底（不透明）→ 半透明悬浮窗面板 → 字幕文字。
+          ⚠️ 必须是普通 FrameLayout：MaterialCardView 会用自身的 MaterialShapeDrawable
+             顶掉 setBackground()，v1.5 那层「半透明面板」实际上一次都没画出来过。
+        -->
+        <FrameLayout
+            android:id="@+id/preview_card"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="16dp"
+            android:layout_marginTop="8dp"
+            android:layout_marginEnd="16dp"
+            android:clipToOutline="true"
+            app:layout_scrollFlags="noScroll">
+
+            <!-- 第 1 层：壁纸近似底（不透明；色彩层次模拟一张真实壁纸） -->
+            <View
+                android:id="@+id/preview_backdrop"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
+
+            <!-- 第 2 层：悬浮窗面板（配置基色 + 上深下浅的垂直渐变，20dp 圆角） -->
+            <View
+                android:id="@+id/preview_panel"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
+
+            <!-- 第 3 层：字幕 —— 逐行独立 View，与真悬浮窗（LinearLayout + 每行一个 TextView）同构 -->
+            <LinearLayout
+                android:id="@+id/preview_lines"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingStart="14dp"
+                android:paddingTop="18dp"
+                android:paddingEnd="14dp"
+                android:paddingBottom="18dp" />
+        </FrameLayout>
+    </com.google.android.material.appbar.AppBarLayout>
+
+    <androidx.core.widget.NestedScrollView
+        android:id="@+id/settings_scroll"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:fillViewport="true"
+        android:scrollbars="none"
+        android:overScrollMode="ifContentScrolls"
+        app:layout_behavior="@string/appbar_scrolling_view_behavior">
+
+        <LinearLayout
+            android:id="@+id/settings_content"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingStart="16dp"
+            android:paddingTop="8dp"
+            android:paddingEnd="16dp"
+            android:paddingBottom="20dp">
+
+            <!-- 「主字幕 / 活动行调整」节标题（在卡片外） -->
+            <TextView
+                android:id="@+id/title_main"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
+                android:layout_marginTop="26dp"
+                android:textAppearance="?attr/textAppearanceTitleSmall"
+                android:textColor="?attr/colorPrimary"
+                android:textStyle="bold" />
+
+            <!-- ④ 主字幕 / 活动行调整（PRD §FR-04） -->
+            <com.google.android.material.card.MaterialCardView
+                android:id="@+id/card_main"
+                style="@style/Widget.DLsiteFloat.SettingsCard">
+
+                <LinearLayout
+                    android:id="@+id/group_main"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingStart="16dp"
+                    android:paddingTop="6dp"
+                    android:paddingEnd="16dp"
+                    android:paddingBottom="6dp" />
+            </com.google.android.material.card.MaterialCardView>
+
+            <!-- 「非活动行字幕调整」节标题（在卡片外） -->
+            <TextView
+                android:id="@+id/title_inactive"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="30dp"
+                android:layout_marginStart="4dp"
+                android:textAppearance="?attr/textAppearanceTitleSmall"
+                android:textColor="?attr/colorPrimary"
+                android:textStyle="bold" />
+
+            <!-- ⑤ 非活动行字幕调整（PRD §FR-05） -->
+            <com.google.android.material.card.MaterialCardView
+                android:id="@+id/card_inactive"
+                style="@style/Widget.DLsiteFloat.SettingsCard">
+
+                <LinearLayout
+                    android:id="@+id/group_inactive"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingStart="16dp"
+                    android:paddingTop="6dp"
+                    android:paddingEnd="16dp"
+                    android:paddingBottom="6dp" />
+            </com.google.android.material.card.MaterialCardView>
+
+            <!-- 「字幕排版」节标题（在卡片外） -->
+            <TextView
+                android:id="@+id/title_typo"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="30dp"
+                android:layout_marginStart="4dp"
+                android:textAppearance="?attr/textAppearanceTitleSmall"
+                android:textColor="?attr/colorPrimary"
+                android:textStyle="bold" />
+
+            <!-- ⑥ 字幕排版（PRD §FR-06） -->
+            <com.google.android.material.card.MaterialCardView
+                android:id="@+id/card_typo"
+                style="@style/Widget.DLsiteFloat.SettingsCard">
+
+                <LinearLayout
+                    android:id="@+id/group_typo"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingStart="16dp"
+                    android:paddingTop="6dp"
+                    android:paddingEnd="16dp"
+                    android:paddingBottom="6dp" />
+            </com.google.android.material.card.MaterialCardView>
+
+            <!-- 「其他」节标题（在卡片外） -->
+            <TextView
+                android:id="@+id/title_misc"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="30dp"
+                android:layout_marginStart="4dp"
+                android:textAppearance="?attr/textAppearanceTitleSmall"
+                android:textColor="?attr/colorPrimary"
+                android:textStyle="bold" />
+
+            <!-- ⑦ 其他：状态栏字幕功能 / 备份恢复 -->
+            <com.google.android.material.card.MaterialCardView
+                android:id="@+id/card_misc"
+                style="@style/Widget.DLsiteFloat.SettingsCard">
+
+                <LinearLayout
+                    android:id="@+id/group_misc"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingStart="16dp"
+                    android:paddingTop="6dp"
+                    android:paddingEnd="16dp"
+                    android:paddingBottom="6dp" />
+            </com.google.android.material.card.MaterialCardView>
+        </LinearLayout>
+    </androidx.core.widget.NestedScrollView>
+
+</androidx.coordinatorlayout.widget.CoordinatorLayout>
+
+    <!--
+      ⑧ 吸底操作栏（§8.1 / §8.2 / §8.3）。
+      · §8.1：左「重启系统界面」= MD3 tonal（colorSecondaryContainer + colorOnSecondaryContainer）；
+        右「保存设置」= 填充主色（colorPrimary + colorOnPrimary）；各占一半宽、大圆角、高 ≥48dp。
+      · §8.2：无上沿分隔线。
+      · 🔴 2.1.4：**真实占位**的兄弟节点（不再是 CoordinatorLayout 里浮着的 layout_gravity=bottom）
+        ⇒ 滚动区自动在它上方收口，滚到底时最后一行不会被压住（见文件头说明）。
+    -->
+    <LinearLayout
+        android:id="@+id/bottom_bar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="?attr/colorSurface"
+        android:orientation="vertical">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:paddingStart="16dp"
+            android:paddingTop="10dp"
+            android:paddingEnd="16dp"
+            android:paddingBottom="12dp">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/restart_button"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="8dp"
+                android:layout_weight="1"
+                android:minHeight="48dp"
+                android:textAllCaps="false"
+                android:textColor="?attr/colorOnSecondaryContainer"
+                app:backgroundTint="?attr/colorSecondaryContainer"
+                app:cornerRadius="24dp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/save_button"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:minHeight="48dp"
+                android:textAllCaps="false"
+                android:textColor="?attr/colorOnPrimary"
+                app:backgroundTint="?attr/colorPrimary"
+                app:cornerRadius="24dp" />
+        </LinearLayout>
+    </LinearLayout>
+</LinearLayout>

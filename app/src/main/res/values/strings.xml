@@ -8,4 +8,13 @@
     <string name="channel_desc">Keep the floating subtitle window alive</string>
     <string name="service_notification_title">DLsiteSound Floating Subtitle</string>
     <string name="service_notification_text">Floating subtitle window is running</string>
+
+    <!--
+      【M1】可视化设置页的入口标题。
+      ⚠️ 设置页**正文文案不在这里**：按 PRD §FR-02 需要在页内即时切换简/繁/英三语
+      （不重建进程、不改系统语言），资源限定符做不到「运行时切」，因此正文统一走
+      ui/Strings.java 的三语表（与本模块既有 util/I18n.java 的做法一致）。
+      这里只放清单/桌面图标要用的静态标签。
+    -->
+    <string name="settings_label">DLsiteFloat 设置</string>
 </resources>

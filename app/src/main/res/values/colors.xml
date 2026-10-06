@@ -1,7 +1,73 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!--
+      悬浮窗（注入宿主进程、代码构建，见 res/layout/floating_subtitle_view.xml 的时代遗留）用的颜色。
+      ⚠️ 这些是 1.x 时期的历史遗留项，保留只为不破坏既有引用。
+    -->
     <color name="float_bg">#E6000000</color>
     <color name="float_text">#CCFFFFFF</color>
     <color name="float_text_dim">#66FFFFFF</color>
     <color name="float_current">#FFFFFFFF</color>
+
+    <!--
+      【M1】可视化设置页（模块自己进程）的兜底配色 —— 动态取色不可用（Android 12 以下 /
+      设备不支持）时由 Theme.DLsiteFloat 引用。设置页其余颜色一律取 MD3 色槽，不写死色值。
+      这组值取自 Material You 默认基色，仅为「没有动态取色」的回落，不在 UI 代码里硬编码。
+
+      【v1.4 §3.1.3 / §3.1.4】为了满足「状态栏区域与 app 背景同色」与「夜间不要纯黑」，
+      这里把 surface 三档一并兜底：状态栏色 = colorSurface，卡片 = colorSurfaceContainerLow，
+      夜间底色 = #1C1B1F 系的 MD3 暗色（不是 #000000）。有动态取色时这几项会被覆盖。
+    -->
+    <color name="settings_primary">#6750A4</color>
+    <color name="settings_on_primary">#FFFFFF</color>
+    <color name="settings_primary_container">#EADDFF</color>
+    <color name="settings_on_primary_container">#21005D</color>
+    <color name="settings_error_container">#F9DEDC</color>
+    <color name="settings_on_error_container">#410E0B</color>
+    <!-- 浅色：奶白底（KernelSU 管理器质感），卡片比底更亮一档 -->
+    <color name="settings_surface">#FDF8F6</color>
+    <color name="settings_surface_container_low">#FFFFFF</color>
+    <color name="settings_surface_container">#F3EDF7</color>
+    <color name="settings_surface_container_high">#ECE6F0</color>
+    <color name="settings_surface_variant">#E7E0EC</color>
+    <color name="settings_on_surface">#1C1B1F</color>
+    <color name="settings_on_surface_variant">#49454F</color>
+    <color name="settings_outline_variant">#E0E0E0</color>
+
+    <!--
+      色板预设（v1.4 §2.1.1：主字幕 8 预设 / 阴影 8 预设 / 悬浮窗 8 预设）。
+      ⚠️ 这里是**配置数据**（写进标准配置的候选取值），不是主题色 —— 色值必须与用户
+         实际配置一致，故允许在此定义具体 ARGB。
+    -->
+    <color name="swatch_white">#FFFFFFFF</color>
+    <color name="swatch_black">#FF000000</color>
+    <color name="swatch_green">#FF4CAF50</color>
+    <color name="swatch_red">#FFF44336</color>
+    <color name="swatch_orange">#FFFF9800</color>
+    <color name="swatch_gray">#FF9E9E9E</color>
+    <color name="swatch_blue">#FF2196F3</color>
+    <color name="swatch_purple">#FF9C27B0</color>
+    <color name="swatch_brown">#FF795548</color>
+    <color name="swatch_cyan">#FF00BCD4</color>
+    <!--
+      v1.4 §3.1.5：悬浮窗默认基色「深蓝黑」。它与 swatch_black 刻意分开 ——
+      「黑」面板纯黑会与系统夜间的深色背景糊在一起，深蓝黑保留一点色相可辨识。
+    -->
+    <color name="swatch_deep_blue_black">#FF0E1420</color>
+
+    <!--
+      【v1.4 §3.1.4】夜间（月牙态）兜底色 —— 供 res/values-night/themes.xml 引用。
+      全部取自 Material 3 标准暗色 token（与 KernelSU 管理器的深色态同族），
+      **没有任何一档是 #000000**：surface 用 #1C1B1F、卡片用 #211F26（比底亮一档）。
+      ⚠️ 只在「动态取色不可用」时露面；有动态取色的设备上 Material 会整体替换色槽。
+    -->
+    <color name="settings_surface_dark">#1C1B1F</color>
+    <!-- 卡片比页面底「亮一档」：Low #211F26 < Container #2B2930 < High/Highest #36343D -->
+    <color name="settings_surface_container_low_dark">#211F26</color>
+    <color name="settings_surface_container_dark">#2B2930</color>
+    <color name="settings_surface_container_high_dark">#36343D</color>
+    <color name="settings_surface_variant_dark">#49454F</color>
+    <color name="settings_on_surface_dark">#E6E1E5</color>
+    <color name="settings_on_surface_variant_dark">#CAC4D0</color>
+    <color name="settings_outline_variant_dark">#49454F</color>
 </resources>
