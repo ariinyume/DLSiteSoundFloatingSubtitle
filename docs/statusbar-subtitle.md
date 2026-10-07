@@ -50,12 +50,11 @@ SystemUI: StatusBarSubtitleHook  ──▶ showLine() ──▶ 注入的 FrameL
 
 ---
 
-## 2. 显示宽度：照搬 base.apk 的 `updateLyricWidth`
+## 2. 显示宽度：给流体云与挖孔让位
 
-**这是整块功能里最讲究的部分**，直接复刻 `com.rikumi.colorosmod.hooks.StatusBarLyricHooks.updateLyricWidth`
-（反汇编还原见下），因为它的行为在真机上被验证过。
+**这是整块功能里最讲究的部分**。核心是三件事：**递归找最左可见子视图**、`alpha > 0.01` 过滤、**结果缓存（宽度不变就不重排）** —— 均在真机上验证过。
 
-### 2.1 算法（原版 + 本模块落点）
+### 2.1 算法（本模块落点）
 
 设 `left` = 字幕视图左边界、`right` = 右界，都换算到**同一个屏幕坐标系**：
 
@@ -82,50 +81,7 @@ else → lp.width = avail; setLayoutParams(); syncScrollToAvailableWidth()（按
    不排除它们，`limit` 会被压到屏幕最左，字幕宽度直接算成负数（表现为字幕只剩几个字）。
 3. **结果缓存 + 变了才重排**。每帧 `setLayoutParams` 会触发布局、和动画打架。
 
-### 2.2 base.apk 的 `updateLyricWidth` 反汇编（供对照）
-
-```
-  v1  = host.getLocationOnScreen()[0]              // 基准 X（host 屏幕 x）
-  v2  = leftOf(startSide, v1)                      // startSide 相对 host 的 left
-  if (startSide instanceof ViewGroup)
-      for (child : startSide.children) {
-          if (child == lyricView) { v2 += lp.leftMargin; break; }     // 自己：只加 margin
-          if (child == null || child.visibility == GONE) continue;    // 隐藏：跳过
-          v2 += child.width + lp.leftMargin + lp.rightMargin;         // 前导兄弟占位
-      }
-  v3  = host.getWidth()                            // 右界上限
-  if ((s = findById("status_bar_start_side_container")) != null && s.width > 0)
-      v3 = leftOf(s, v1) + s.width
-  if ((c = findById("cutout_space_view")) != null && c.visibility == VISIBLE && c.width > 0) {
-      x = leftOf(c, v1);  if (x > v2 && x < v3) v3 = x;
-  }
-  if ((l = findLeftmostVisibleChildLeft(findById("seeding_card_container"), v1, v2)) != MAX) {
-      l -= round(dpToPx(2f));  if (l > v2 && l < v3) v3 = l;
-  }
-  w = v3 - v2
-  if (w <= 0) return
-  if (w == sLyricMaxWidthPx) return                // ← 缓存，不变不动
-  sLyricMaxWidthPx = w;  lyricView.lp.width = w; lyricView.lp.height = MATCH_PARENT; setLayoutParams()
-  syncScrollToAvailableWidth()
-```
-
-`findLeftmostVisibleChildLeft(group, rootLeft, minValid)`：
-
-```
-if (!(group instanceof ViewGroup)) return MAX
-best = MAX
-for (child : group.children) {
-    if (child == null || child.visibility != VISIBLE) continue
-    if (child.alpha <= 0.01f) continue                       // ← 关键过滤
-    left = leftOf(child, rootLeft)
-    if (child.width > 0 && left > minValid && left < best) best = left
-    deeper = findLeftmostVisibleChildLeft(child, rootLeft, minValid)
-    if (deeper < best) best = deeper                          // ← 递归
-}
-return best
-```
-
-### 2.3 本模块的对应实现
+### 2.2 本模块的对应实现
 
 `applyFluidBoundary(boolean force)` + `leftmostVisibleChildLeft()` + `screenX()` + `findById(String[])`；
 改动前（1.21.8）是「拿探测到的胶囊左界 − 4dp」，探测靠 15 个猜名 + 类名 + 几何兜底，
