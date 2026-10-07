@@ -1,8 +1,6 @@
 # 状态栏字幕（StatusBar Subtitle）
 
-> 从 1.21.4 起，本模块在 SystemUI 里注入一条常驻状态栏的字幕。
-> 机制源头是 `F:\Desktop\base.apk`（`com.rikumi.colorosmod` 1.0.36）—— 逆向报告见
-> 仓库外 `work_baseapk/StatusBarLyric_逆向分析.md`。本文只记**本模块自己的实现与踩坑**。
+> 从 1.21.4 起，本模块在 SystemUI 里注入一条常驻状态栏的字幕。本文只记**本模块自己的实现与踩坑**。
 
 ## 0. 一句话
 
