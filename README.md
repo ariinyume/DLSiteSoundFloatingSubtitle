@@ -46,7 +46,7 @@
   - **可单独使用悬浮窗字幕**：未授权 `com.android.systemui` 作用域时左侧`状态栏 开 / 状态栏 关`按钮不显示，用跨进程握手确认 SystemUI 是否已被注入（App 每 3s 发 PING、SystemUI 回 PONG，8s 内无回应即视为未授权）。
 - **按播放进度对齐字幕**：以播放器（`ExoPlayer` / expo 音频）真实播放进度为主轴对齐字幕行。
 - **自动抓取字幕**：拦截 DLsiteSound 的网络响应（okhttp3），直接扫描响应体是否包含 `webvtt` / `subtitles` 字幕 JSON 并解析——**不依赖 URL 关键词**，对混淆/重打包的 okhttp3 也能兜底。字幕源为 DLsiteSound 官方 `play.dl.dlsitesound.com/.../optimized/xxx.json`，按音轨下发。
-- **换轨智能处理**：切到无字幕音轨时先挂起、悬浮窗显示`无字幕`占位，等新音轨的字幕 JSON —— 无缓存 cues 时等 **5s**，已有缓存 cues 时放宽到 **10s**；**5s**内还没等到 JSON 就**提前收窗**，JSON 到了会**自动把窗口开回**；直到裁决窗到点仍无 JSON，才清空 cues 并判「无字幕」。详见 [docs/track-change.md](docs/track-change.md)。
+- **换轨智能处理**：切到无字幕音轨时先挂起、悬浮窗显示`无字幕`占位，等新音轨的字幕 JSON —— 无缓存 cues 时等 **5s**，已有缓存 cues 时放宽到 **15s**；**5s**内还没等到 JSON 就**提前收窗**，JSON 到了会**自动把窗口开回**；直到裁决窗到点仍无 JSON，才清空 cues 并判「无字幕」。详见 [docs/track-change.md](docs/track-change.md)。
   - **切到无字幕轨不再残留旧字幕（2.2.1 起）**：「数据保留」与「可否渲染」分开处理 —— 旧音轨的 cues 仍在内存里，但界面不再渲染它，切回去能立刻用上。
   - **判据改为「播放列表身份」（2.2.6 起）**：宿主切作品 / 切音轨时 `currentIndex` 恒为 0，靠序号判换轨根本不成立；改为按 **音轨数 + 总时长** 认身份，并只采信「音轨数 > 0、时长 > 0、未停止」的那份列表，避免多实例读数互相污染（表现为进度被拉回 0、匹配出上一轨的句子、`playing` 每秒横跳）。
   - **切回有字幕轨直接恢复（2.2.8 起）**：宿主对同一条音轨的字幕响应有缓存，切走再切回**不会重新发请求**，所以不能干等新 JSON。现在会给已加载的 cues 盖一个「归属印章」，切回来时身份对得上就直接按当前进度恢复渲染，不再卡在「无字幕」。
@@ -154,7 +154,12 @@
 | [docs/build.md](docs/build.md) | 环境要求与构建：运行环境、构建环境、构建命令、版本规则 |
 | [docs/statusbar-subtitle.md](docs/statusbar-subtitle.md) | 状态栏字幕：跨进程广播、时钟/通知让位、宽度与流体云避让、滚动、踩坑 |
 | [docs/api102-migration.md](docs/api102-migration.md) | libxposed API 102 迁移清单（2.0.0 已执行，留档备查） |
-| [docs/troubleshooting.md](docs/troubleshooting.md) | 日志与排查：完整日志对照表、排障顺序、版本确认 |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | 日志与排查：完整日志对照表、排障顺序、版本确认（含 **2.x 版本表**） |
+| [docs/字幕机制逆向分析.md](docs/字幕机制逆向分析.md) | 宿主字幕读取与显示机制的静态逆向分析（为什么它压根不解析 `.vtt`） |
+| [docs/设置页UI设计总结-2.2.1.md](docs/设置页UI设计总结-2.2.1.md) | 设置页 UI 设计总结：PRD v1.7 落地形态、布局与度量口径 |
+| [docs/修复说明/](docs/修复说明/) | 逐轮修复卷宗（2.2.1 ~ 2.2.8）：根因取证 + 改法 + 验证锚点 |
+| [docs/PRD-可视化设置页-v1.1.md](docs/PRD-可视化设置页-v1.1.md) | 可视化设置页 PRD（文件头为 v1.7） |
+| [docs/测试用例-可视化设置页-M1.md](docs/测试用例-可视化设置页-M1.md) | 设置页 M1 测试用例 |
 
 
 ---
