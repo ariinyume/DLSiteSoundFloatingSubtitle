@@ -155,7 +155,6 @@
 | [docs/statusbar-subtitle.md](docs/statusbar-subtitle.md) | 状态栏字幕：跨进程广播、时钟/通知让位、宽度与流体云避让、滚动、踩坑 |
 | [docs/api102-migration.md](docs/api102-migration.md) | libxposed API 102 迁移清单（2.0.0 已执行，留档备查） |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | 日志与排查：完整日志对照表、排障顺序、版本确认（含 **2.x 版本表**） |
-| [docs/字幕机制逆向分析.md](docs/字幕机制逆向分析.md) | 宿主字幕读取与显示机制的静态逆向分析（为什么它压根不解析 `.vtt`） |
 | [docs/设置页UI设计总结-2.2.1.md](docs/设置页UI设计总结-2.2.1.md) | 设置页 UI 设计总结：PRD v1.7 落地形态、布局与度量口径 |
 | [docs/修复说明/](docs/修复说明/) | 逐轮修复卷宗（2.2.1 ~ 2.2.8）：根因取证 + 改法 + 验证锚点 |
 | [docs/PRD-可视化设置页-v1.1.md](docs/PRD-可视化设置页-v1.1.md) | 可视化设置页 PRD（文件头为 v1.7） |
