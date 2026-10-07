@@ -168,12 +168,21 @@
           ② 状态卡（`scroll`，与页头行一起滚走 / 一起回来）。
           v1.6 ②：补左右 16dp 外边距 —— 它与分组卡片同宽，不再贴屏幕两侧。
           ⚠️ 必须排在 title_preview **之前**，否则它落在「不可滚动区」，滚动时不会让位。
+
+          【code 975 §7 / 976 §3】Ari 的两轮指令（同一条观感，两轮都在加宽）：
+          · 【975】「页头行、状态卡与实时预览窗标题三者之间距离太近，状态卡**上下间距各加宽 20%**」
+            ⇒ 上距 6→7.2dp、下距（title_preview 上距）12→14.4dp；
+          · 【976】「状态卡**上方加宽一倍**，下方**再加宽 50%**」（在 975 的基础上继续）
+            ⇒ 上距 7.2 × 2 = **14.4dp**（就是本行的 layout_marginTop）；
+              下距 14.4 × 1.5 = **21.6dp**（写在 title_preview 的 layout_marginTop 上）。
+          ⚠️ 口径：按「间距属性本身」算倍数，不叠加页头行 paddingBottom(2dp)
+             与 AppBarLayout paddingBottom(5dp) 这些旁路留白 —— 与 §2 / §6 同一套算法。
         -->
         <com.google.android.material.card.MaterialCardView
             android:id="@+id/status_card"
             style="@style/Widget.DLsiteFloat.SettingsCard"
             android:layout_marginStart="16dp"
-            android:layout_marginTop="6dp"
+            android:layout_marginTop="14.4dp"
             android:layout_marginEnd="16dp"
             app:cardBackgroundColor="?attr/colorPrimaryContainer"
             app:cardCornerRadius="22dp"
@@ -231,13 +240,18 @@
         <!--
           「调整预览窗」节标题：**第一个 noScroll 子 View** ⇒ AppBarLayout 的可滚动范围
           到此截止（页头行 + 状态卡是唯一能滚走的部分），于是预览区被钉在顶部。
+
+          【code 975 §7 / 976 §3】上距 12 → 14.4（975，+20%）→ **21.6dp**（976，再 +50%）
+          = 「状态卡与预览窗标题之间」的间距，也就是 §3 说的「状态卡下方」那一段。
+          ⚠️ 这个 marginTop 同时承担两个角色：① 状态卡下方的留白（§3 的「下距」）；
+             ② 预览卡与页头区的呼吸位。改这里不影响 AppBarLayout 的吸顶分界线（noScroll 不变）。
         -->
         <TextView
             android:id="@+id/title_preview"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginStart="20dp"
-            android:layout_marginTop="12dp"
+            android:layout_marginTop="21.6dp"
             android:layout_marginEnd="20dp"
             android:textAppearance="?attr/textAppearanceTitleSmall"
             android:textColor="?attr/colorPrimary"
@@ -304,13 +318,29 @@
             android:paddingEnd="16dp"
             android:paddingBottom="20dp">
 
-            <!-- 「主字幕 / 活动行调整」节标题（在卡片外） -->
+            <!-- 「主字幕 / 活动行调整」节标题（在卡片外）
+                 【code 974 §2】marginTop 由 26dp 拉齐到 30dp：另外三个节标题都是 30dp，
+                 只有这个是 26dp ⇒ 四张卡「上一张卡底边 → 下一张卡顶边」的总间距差 4dp。
+                 拉齐后 = 30(标题上距) + 约 20(标题行高) + 10(卡片上距) ≈ 60dp，
+                 与参考图实测的 180px(= 60.6dp @1272px/2.9688) 基本重合。
+
+                 【code 975 §6 / 976 §2】Ari 的两轮指令：
+                 · 【975】「预览调整窗的最下面与下一个卡片的主标题距离太远，**缩窄 20%**」
+                   ⇒ 30dp × 0.8 = 24dp；
+                 · 【976】「距离**还是太远**，再帮我**缩窄 30%**」（在 24dp 基础上继续）
+                   ⇒ 24dp × 0.7 = **16.8dp**。
+                 ⚠️ 口径与 §3 一致：按「间距属性本身」算倍数，不叠加 AppBarLayout 的
+                    paddingBottom(5dp) 与 settings_content 的 paddingTop(8dp)。
+                    折算「整体感知距离」= 5 + 8 + 16.8 = 29.8dp（975 时是 37dp，974 时是 43dp）。
+                    若真机仍觉偏大，下一步可再动 AppBarLayout 的 5dp（见本文件顶部 ④ 的说明）。
+                 ⚠️ 它与另外三个节标题的 30dp 从此**不再相等** —— 那三处上方是上一张卡片，
+                    而这里上方是**吸顶的预览区**，两者参照物不同，不必强行对齐。 -->
             <TextView
                 android:id="@+id/title_main"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="4dp"
-                android:layout_marginTop="26dp"
+                android:layout_marginTop="16.8dp"
                 android:textAppearance="?attr/textAppearanceTitleSmall"
                 android:textColor="?attr/colorPrimary"
                 android:textStyle="bold" />
@@ -411,6 +441,29 @@
                     android:paddingEnd="16dp"
                     android:paddingBottom="6dp" />
             </com.google.android.material.card.MaterialCardView>
+
+            <!--
+              【code 976 §5】页面底部彩蛋 —— 整页的**最后一个子 View**。
+              Ari 2026-10-07 晚：「当用户把滑到页面最底端（就是「其他」卡片的位置最下面），
+              如果用户此时再继续往下滑（手指运动动作向上拉），下面出现一行居中小字：SMILE! :D」
+
+              · **alpha=0 是「占位」而不是「隐藏」** —— 它必须是可见的（VISIBLE）才有布局高度，
+                这样「滚到底」时这一行已经完整落在视口里，再上拉就能原地淡入；
+                若用 GONE 去控制，用户根本滚不到它，彩蛋永远看不见。
+              · 触发与淡入/淡出由 SettingsActivity.setupScrollEgg() 的触摸监听驱动
+                （只看「是否已滚到底 + 手指是否继续上拉」，不动滚动位置、不消费事件）。
+              · 样式复用设置页小字（12sp / alpha 0.7），与「恢复默认」下方那行提示同源。
+            -->
+            <TextView
+                android:id="@+id/egg_smile"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:alpha="0"
+                android:gravity="center"
+                android:text="SMILE! :D"
+                android:textAppearance="@style/TextAppearance.DLsiteFloat.Hint"
+                android:textColor="?attr/colorOnSurfaceVariant" />
         </LinearLayout>
     </androidx.core.widget.NestedScrollView>
 

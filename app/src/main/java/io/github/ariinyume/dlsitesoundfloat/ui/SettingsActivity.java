@@ -22,7 +22,9 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.res.Configuration;
 import android.graphics.Color;
+import android.graphics.Rect;
 import android.graphics.Typeface;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
@@ -31,6 +33,7 @@ import android.provider.Settings;
 import android.util.Log;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.EditText;
@@ -185,6 +188,61 @@ public class SettingsActivity extends AppCompatActivity {
     private static final int HINT_BOTTOM_PAD_DP = 0;
     /** 行内控件（按钮 / 开关）的统一高度（dp）：MD3 按钮下限 40dp。 */
     private static final int CONTROL_H_DP = 40;
+    /**
+     * 【code 975 §4】小号 tonal 按钮高度（dp）—— 与页头的语言胶囊**完全同高**。
+     *
+     * 语言胶囊在 XML 里就是 {@code android:layout_height="32dp"}，这里取同值，
+     * 让「恢复默认」换上去之后和它一排看过去齐平（Ari §4 的原话：一样大）。
+     */
+    private static final int SMALL_CONTROL_H_DP = 32;
+    /**
+     * 【code 975 §5】M3E 标准按钮高度（dp）—— 只给底栏两枚（重启系统界面 / 保存设置）。
+     *
+     * 48dp 是 MD3 的标准档，也是 XML 里原有的 {@code minHeight}；这里在 Java 侧重申一次，
+     * 是为了把「内缩 / 圆角 / 水平内边距」这三样一起按 M3E 口径收口（见 applyM3eButtonMetrics）。
+     */
+    private static final int M3E_BUTTON_H_DP = 48;
+
+    // ── 【code 974 §1】M3 Expressive 滑块形态 ─────────────────────────────
+    //
+    // Ari 2026-10-07 指令：「优化滑块呈现形式：M3 Expressive 的粗轨道和竖长手柄。
+    // 手柄左侧为 primary，右侧为 secondaryContainer。可拖动改变数值。」
+    //
+    // 器材全部是 Material Slider 的**公开 API**（不需要自绘控件、也不碰反射）：
+    //   · setTrackHeight(int)                —— 公开，把 4dp 细轨改成 16dp 粗轨；
+    //   · setTrackActiveTintList(...)        —— 手柄**左侧**（已走过的一段）= colorPrimary；
+    //   · setTrackInactiveTintList(...)      —— 手柄**右侧**（还没走到的一段）= colorSecondaryContainer；
+    //   · setThumbRadius(int) + setCustomThumbDrawable(Drawable)
+    //     —— 后者在 **Slider** 上是 public（只有 BaseSlider 里才是包私有），
+    //        传一条 4dp×44dp 的圆角竖条进去就得到「竖长手柄」。
+    //
+    // ⚠️ 手柄的**实际绘制高度恒等于 2×thumbRadius**：BaseSlider 会把自定义手柄按
+    //    scale = 2r / max(手柄固有宽, 固有高) 等比缩放进 2r×2r 的方框
+    //    （见 BaseSlider#adjustCustomThumbDrawableBounds 的字节码：两个 bounds 都按它算）。
+    //    所以「44dp 高」只能由 setThumbRadius(22dp) 换来，竖条的宽度则按固有比例 = 4dp。
+    // ⚠️ 调用顺序不能反：**先 setThumbRadius 再 setCustomThumbDrawable** ——
+    //    缩放比例是设置手柄那一刻用当时的 thumbRadius 算的，反了就会按默认半径 10dp
+    //    算出一个小一圈的手柄。
+    // ⚠️ 别指望 app:thumbWidth / app:thumbHeight：Material 1.9.0 的 Slider 里
+    //    **没有**这两个属性（只有圆形的 thumbRadius），本项目也不升级 Material（离线构建）。
+    /** M3E 粗轨道高度（dp）。 */
+    private static final int SLIDER_TRACK_H_DP = 16;
+    /** M3E 竖长手柄宽度（dp）—— 只表达「手柄固有宽高比」，实际尺寸由 thumbRadius 推。 */
+    private static final int SLIDER_THUMB_W_DP = 4;
+    /** M3E 竖长手柄高度（dp）—— 必须与 setThumbRadius(本值 / 2) 配对。 */
+    private static final int SLIDER_THUMB_H_DP = 44;
+
+    // ── 【code 974 §2】卡内去掉 1dp 分隔线之后的等价留白 ─────────────────
+    //
+    // Ari 2026-10-07 指令：「参考图片优化卡片之间、卡片内选项、卡片内上下端的间距和
+    // 呈现方式（不要直接用分割线之间分开功能选项）」。参考稿是 LSPosed 那种
+    // 「一张卡里若干行、行间没有任何线、全靠留白分开」的形态。
+    //
+    // 旧版每行上方插一根「1dp 线 + 上下各 ROW_GAP_DP(4dp)」⇒ 实际留白 9dp。
+    // 现在整根线删掉、改插一个**透明留白**占位，总留白与旧版逐像素一致
+    // （Ari 在本次确认里明确选了「去线，留白维持现状」），只是不再有可见的分隔线。
+    /** 卡内行间纯留白高度（dp）= 旧版的「1dp 线 + 上下各 4dp 呼吸位」。 */
+    private static final int ROW_SPACER_DP = 9;
 
     // ── 状态 ──────────────────────────────────────────────────────────
     private ConfigStore mStore;
@@ -196,6 +254,17 @@ public class SettingsActivity extends AppCompatActivity {
     private UiLang mLang;
     /** 探测结果；null = 还在探测中。 */
     private ScopeProbe.Result mProbe;
+    /**
+     * 【code 975】本次打开设置页以来，是否**曾经**探测到宿主 DLsiteSound。
+     *
+     * <p>用途见 {@link #renderStatusCard()} 里的 {@code hostAuthorized}：
+     * 宿主在后台被系统降级/冻结时，偶尔会来不及应答（或来不及被唤醒），
+     * 单次超时就翻成「模块未激活」是 Ari 报的那个「经常检测不到程序在运行」。
+     * 只要本会话内成功过一次，就认为「模块确实装在宿主里且作用域已勾选」这一**事实**成立，
+     * 后续偶发超时不再降级；重新打开设置页（新 Activity）会重置，所以用户真去 LSPosed
+     * 取消勾选后，重进本页仍会正确显示「未激活」。
+     */
+    private boolean mHostSeenOnce;
     /** 程序性回灌控件值时置位，避免「一刷新就变脏」。 */
     private boolean mSyncing;
     /** 回收 {statusbar_button_tint} 用：上次应用到状态栏开关行的 tint（避免每次 renderStatusCard 重复改）。 */
@@ -249,6 +318,8 @@ public class SettingsActivity extends AppCompatActivity {
     private SwitchRow mRowBlurEnabled;
     private SwitchRow mRowInactiveScaleEnabled;
     private SwitchRow mRowStatusbar;
+    /** 【2.2.7 / code 979】「其他」卡片里的「调试日志」开关行。 */
+    private SwitchRow mRowDebugLog;
     private SegmentedRow mRowAlign;
     private ColorSwatchRow mSwatchSubtitle;
     private ColorSwatchRow mSwatchShadow;
@@ -613,6 +684,12 @@ public class SettingsActivity extends AppCompatActivity {
             mSaveButton.setTextColor(colorStateList(
                     attr(com.google.android.material.R.attr.colorOnPrimary, Color.WHITE)));
         }
+        // 【code 975 §5】底栏两枚补齐 M3E 度量（14sp / 无内缩 / 20dp 水平内边距 / 全圆角 48dp），
+        // 与卡片里的 M3E 控件（滑块粗轨、小号 tonal、对齐分段）收进同一条视觉语言。
+        // ⚠️ 必须放在上述 tint 设置**之后** —— applyM3eButtonMetrics 只碰度量与内缩，
+        //    不动配色；放在前面也不会被覆盖，但按「先配色后度量」的顺序读起来更清楚。
+        applyM3eButtonMetrics(mRestartButton);
+        applyM3eButtonMetrics(mSaveButton);
     }
 
     /**
@@ -652,15 +729,81 @@ public class SettingsActivity extends AppCompatActivity {
         b.setMinHeight(dp(CONTROL_H_DP));
         b.setMinimumHeight(dp(CONTROL_H_DP));
         b.setCornerRadius(dp(CONTROL_H_DP / 2f));
-        b.setPadding(dp(12), 0, dp(12), 0);
+        b.setPadding(dp(16), 0, dp(16), 0);
+        if (iconRes != null) {
+            b.setIconResource(iconRes);
+            b.setIconGravity(MaterialButton.ICON_GRAVITY_TEXT_START);
+            b.setIconPadding(dp(6));
+            b.setIconSize(dp(18));
+            b.setIconTint(colorStateList(fg));
+        }
+        return b;
+    }
+
+    /**
+     * 【code 975 §4 + §5】M3 Expressive 的**小号** tonal 按钮（XS/S 档）。
+     *
+     * ─────────────────────────────────────────────────────────────────────
+     * Ari 2026-10-07 晚指令：
+     *   · §4「重置按钮调整的和**语言切换按钮**一样大，现在的重置按钮占的位置有点太大了」；
+     *   · §5「查看页面内还有什么其他按钮或者控件可以修改为 M3E 形态 …一并改」。
+     *
+     * 语言胶囊（{@code R.id.language_button}）的实测度量就是本方法的规格：
+     *   高 32dp / 全圆角 16dp / 文字 12sp / 图标 14dp / 水平内边距 8~10dp。
+     * 而 974 的 tonal 按钮是 40dp 高 + 16dp 图标 —— 在每张卡片末行确实显得过大。
+     *
+     * ⚠️ 只用于「恢复默认」这类**行末辅助按钮**；导出/导入 与底栏仍是标准档，
+     *    因为它们在本轮没有被点名，且 40dp 已满足 MD3 的触达下限。
+     * ⚠️ 32dp 低于 MD3 的 40dp 建议高度，但它与页头语言胶囊完全对齐，
+     *    是 Ari 明确要的观感；点击热区仍靠父行的 {@link #ROW_MIN_H_DP} 补足。
+     */
+    private MaterialButton makeSmallTonalButton(@Nullable Integer iconRes) {
+        MaterialButton b = new MaterialButton(this);
+        int bg = attr(com.google.android.material.R.attr.colorSecondaryContainer, 0xFFE8DEF8);
+        int fg = attr(com.google.android.material.R.attr.colorOnSecondaryContainer, 0xFF1D192B);
+        b.setBackgroundTintList(colorStateList(bg));
+        b.setTextColor(colorStateList(fg));
+        b.setAllCaps(false);
+        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+        b.setMinWidth(0);
+        b.setMinimumWidth(0);
+        b.setInsetTop(0);
+        b.setInsetBottom(0);
+        b.setStrokeWidth(0);
+        b.setMinHeight(dp(SMALL_CONTROL_H_DP));
+        b.setMinimumHeight(dp(SMALL_CONTROL_H_DP));
+        b.setCornerRadius(dp(SMALL_CONTROL_H_DP / 2f));
+        b.setPadding(dp(10), 0, dp(12), 0);
         if (iconRes != null) {
             b.setIconResource(iconRes);
             b.setIconGravity(MaterialButton.ICON_GRAVITY_TEXT_START);
             b.setIconPadding(dp(4));
-            b.setIconSize(dp(16));
+            b.setIconSize(dp(14));
             b.setIconTint(colorStateList(fg));
         }
         return b;
+    }
+
+    /**
+     * 【code 975 §5】把一枚**底栏**按钮套上 M3 Expressive 度量。
+     *
+     * <p>底栏两枚（重启系统界面 / 保存设置）本来就是 48dp + 24dp 全圆角（XML 里写的），
+     * 但缺了 M3E 的三样：**更大的水平内边距**、**更大的字号**、**去掉控件内缩**。
+     * 这里统一补齐，让它们与滑块、与卡片里的 M3E 控件是同一条视觉语言。
+     */
+    private void applyM3eButtonMetrics(@Nullable MaterialButton b) {
+        if (b == null) {
+            return;
+        }
+        b.setAllCaps(false);
+        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f);
+        b.setInsetTop(0);
+        b.setInsetBottom(0);
+        b.setStrokeWidth(0);
+        b.setPadding(dp(20), 0, dp(20), 0);
+        b.setMinHeight(dp(M3E_BUTTON_H_DP));
+        b.setMinimumHeight(dp(M3E_BUTTON_H_DP));
+        b.setCornerRadius(dp(M3E_BUTTON_H_DP / 2f));
     }
 
     /** 见 {@link #styleBottomBar()}：把一枚已有按钮改造成 tonal 观感。 */
@@ -742,6 +885,9 @@ public class SettingsActivity extends AppCompatActivity {
         // 两枚的 tint 都显式写死（不依赖样式继承），见 styleBottomBar()。
         styleBottomBar();
 
+        // 【code 976 §5】底部彩蛋：滚到最底后继续上拉 ⇒ 淡入一行居中小字（SMILE! :D）。
+        setupScrollEgg();
+
         // 【2.1.4 真吸底】底栏现在是**真实占位**的兄弟节点（垂直 LinearLayout 的第二个孩子），
         // 滚动区高度 = 剩余空间 ⇒ 滚到底时最后一行必然完整露在栏上方。
         // ⚠️ 这里原先有一段「量底栏高 → 写进滚动内容 paddingBottom」的让位补丁，已整体删除：
@@ -757,6 +903,10 @@ public class SettingsActivity extends AppCompatActivity {
     private void startProbe() {
         ScopeProbe.probe(this, ScopeProbe.DEFAULT_WINDOW_MS, result -> {
             mProbe = result;
+            if (result.hostAuthorized) {
+                // 【code 975】记下「本会话内确实见过宿主」——后续偶发超时不降级（见字段注释）。
+                mHostSeenOnce = true;
+            }
             Log.i(TAG, "status probe -> " + result);
             if (isFinishing() || isDestroyed()) {
                 return;
@@ -801,7 +951,10 @@ public class SettingsActivity extends AppCompatActivity {
             return;
         }
         boolean probing = mProbe == null;
-        boolean hostAuthorized = !probing && mProbe.hostAuthorized;
+        // 【code 975】`|| mHostSeenOnce`：宿主在后台被降级时偶发不应答，不应把状态卡打回
+        // 「模块未激活」（Ari 报的「经常检测不到程序在运行」）。本会话成功过一次即认账，
+        // 重开本页会重置 ⇒ 真取消勾选仍能正确显示未激活。详见字段注释。
+        boolean hostAuthorized = !probing && (mProbe.hostAuthorized || mHostSeenOnce);
         /**
          * 宿主**当前真的在用**（播放页在前台 / 正在播放）。
          *
@@ -1250,6 +1403,10 @@ public class SettingsActivity extends AppCompatActivity {
      */
     private void buildMiscGroup(LinearLayout parent) {
         buildStatusbarRow(parent);
+        // 【2.2.7 / code 979】「调试日志」开关：诊断级日志的总闸。
+        // 摆在「状态栏字幕功能」下方、「备份与恢复」上方（备份那排按钮仍由
+        // pinCardLastBottom 钉为卡片最后一行，见本方法末尾）。
+        buildDebugLogRow(parent);
 
         // 【2.3.2 §1.1.3】备份与恢复：导出 / 导入两枚 **MD3 Tonal** 按钮，各自带方向小图标
         // （导出 = 向上箭头 + 托盘，导入 = 向下箭头 + 托盘）。
@@ -1298,6 +1455,9 @@ public class SettingsActivity extends AppCompatActivity {
         bar.addView(importBtn);
 
         parent.addView(bar);
+        // 【code 976 §1】「其他」卡片的最后一行是这排导出/导入按钮 —— 它是**容器**（盒底即视觉底边），
+        //   与前三张卡（末尾是「恢复默认」下方的小字）走同一个收敛函数，底距口径才统一。
+        pinCardLastBottom(parent, bar);
 
         // 【2.3.2 §2.5】v1.5 在按钮下方还挂了一个**空 TextView**（只有 8dp 内边距、没有任何文字），
         // 叠加卡片自身 6dp 下内边距 ⇒ 按钮下面凭空多出约 20dp 的空白，Ari 两次点名
@@ -1360,6 +1520,47 @@ public class SettingsActivity extends AppCompatActivity {
      */
     private void onStatusbarFeatureToggled(boolean enabled) {
         mDraft.statusbarSubtitleEnabled = enabled;
+        markDirty();
+    }
+
+    /**
+     * 【2.2.7 / code 979】「调试日志」开关（「其他」卡片）。
+     *
+     * ─────────────────────────────────────────────────────────────────────
+     * 为什么加这一个开关（Ari 2026-10-07 晚：日志里刷了**大量**这种行）：
+     *
+     *   为定位「切到无字幕音轨仍残留」这条 bug，977/978 在被注入进程里加了**只读诊断转储**
+     *   （{@code statusMap via=…} 把宿主状态 Map 原样打出来，按「来源 + 实例」节流 2.5s）。
+     *   它是那两轮排查的唯一证据来源，**必须**留着；但它与兜底轮询相乘（1s 一轮 × 多个实例）
+     *   ⇒ 真机上约 20~70 条/分钟，长时间开着会把有用日志淹没。
+     *
+     *   取舍：把诊断级日志**默认关**，需要排查时在设置页打开 —— 既保住「出问题随时能取证」，
+     *   又让日常运行的日志回到只含里程碑（钩子挂载 / 种基线 / {@code >>> track changed} / WARN）的安静状态。
+     *
+     *   闸门落在 hook 侧（{@code RemoteConfig.debugLog()}），关的是**诊断级**输出，
+     *   不影响任何判定逻辑 —— 本开关**不改变功能行为**，只改「打多少日志」。
+     * ─────────────────────────────────────────────────────────────────────
+     */
+    private void buildDebugLogRow(LinearLayout parent) {
+        beginRow(parent);
+        // 整行容器：开关 + 下方常驻说明小字（与状态栏字幕那一行的排布一致）
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+
+        mRowDebugLog = addSwitchRow(root, Strings.DEBUG_LOG, this::onDebugLogToggled);
+
+        TextView hint = new TextView(this);
+        hint.setText(Strings.DEBUG_LOG_HINT.get(mLang));
+        hint.setTextAppearance(R.style.TextAppearance_DLsiteFloat_Hint);
+        hint.setTextColor(attr(com.google.android.material.R.attr.colorOnSurfaceVariant, Color.GRAY));
+        hint.setPadding(0, 0, 0, dp(6));
+        root.addView(hint);
+
+        parent.addView(root);
+    }
+
+    private void onDebugLogToggled(boolean enabled) {
+        mDraft.debugLog = enabled;
         markDirty();
     }
 
@@ -1916,6 +2117,8 @@ public class SettingsActivity extends AppCompatActivity {
             // 状态栏字幕功能：真值来自草稿，但 SystemUI 未授权时会被 applyStatusbarSwitchEnabled
             // 覆盖成「关闭 + 置灰」（那个方法自己会再置一次 mSyncing）
             setSwitch(mRowStatusbar, mDraft.statusbarSubtitleEnabled);
+            // 【2.2.7 / code 979】调试日志开关（纯日志闸门，不影响功能行为）
+            setSwitch(mRowDebugLog, mDraft.debugLog);
         } finally {
             mSyncing = false;
         }
@@ -2252,6 +2455,9 @@ public class SettingsActivity extends AppCompatActivity {
         slider.setLayoutParams(new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         slider.setLabelFormatter(v -> formatter.format(Math.round(v)));
+        // 【code 974 §1】M3 Expressive 形态：16dp 粗轨道 + 4×44dp 竖长手柄，
+        // 手柄左侧 primary、右侧 secondaryContainer。见 applyExpressiveSlider 的注释。
+        applyExpressiveSlider(slider);
         slider.addOnChangeListener((s, value, fromUser) -> {
             row.refreshLabel();
             if (fromUser && !mSyncing) {
@@ -2264,6 +2470,69 @@ public class SettingsActivity extends AppCompatActivity {
 
         parent.addView(root);
         return row;
+    }
+
+    /**
+     * 【code 974 §1】把一枚 Material 滑块改成 **M3 Expressive** 形态。
+     *
+     * ─────────────────────────────────────────────────────────────────────
+     * Ari 2026-10-07 原话：「优化滑块呈现形式：M3 Expressive 的粗轨道和竖长手柄。
+     * 手柄左侧为 primary，右侧为 secondaryContainer。可拖动改变数值。」
+     *
+     * 目标形态（M3E 规格）：
+     *   · 轨道：**16dp 粗**的胶囊（旧版是 M3 的 4dp 细线）；
+     *   · 手柄：**4dp 宽 × 44dp 高**的竖长圆角条（旧版是 20dp 直径的圆）；
+     *   · 配色：手柄**左侧**已走过的一段 = {@code colorPrimary}；
+     *           手柄**右侧**未走过的一段 = {@code colorSecondaryContainer}；
+     *           手柄本体 = {@code colorPrimary}。
+     *
+     * ─────────────────────────────────────────────────────────────────────
+     * 🔴 三条实现约束（改本方法前必读）
+     *
+     *  ① **手柄高度由 thumbRadius 决定，不由 Drawable 决定。**
+     *     BaseSlider 的自定义手柄会被 `adjustCustomThumbDrawableBounds` 按
+     *     `scale = 2×thumbRadius / max(固有宽, 固有高)` 归一化后塞进 2r×2r 的方框，
+     *     所以固有尺寸只表达**宽高比**：本方法用 4:44 的竖条 + `thumbRadius = 22dp`
+     *     ⇒ 落地就是 4dp × 44dp。想改手柄尺寸，改的是
+     *     {@link #SLIDER_THUMB_H_DP}（半径跟着它走），不是 Drawable 的固有高。
+     *
+     *  ② **顺序：先 setThumbRadius，后 setCustomThumbDrawable。**
+     *     缩放比例在「设置手柄」那一刻用**当时**的 thumbRadius 算一次；反过来的话
+     *     会按默认半径（M3 是 10dp）算出一个小一圈的手柄。
+     *
+     *  ③ **不要给轨道描边 / 不要动 tick。**
+     *     tick（刻度点）的显隐沿用旧观感，本轮 Ari 没有要求改动，故不碰。
+     * ─────────────────────────────────────────────────────────────────────
+     *
+     * ⚠️ 参数随主题走：所有颜色都从 MD3 色槽现取（{@link #attr}），因此动态取色
+     *    （壁纸 Tonal Spot）与深浅色切换后重建行时会自动跟着换，不写死十六进制。
+     */
+    private void applyExpressiveSlider(Slider slider) {
+        int active = attr(com.google.android.material.R.attr.colorPrimary, 0xFF6750A4);
+        int inactive = attr(com.google.android.material.R.attr.colorSecondaryContainer, 0xFFE8DEF8);
+        // ① 16dp 粗轨道
+        slider.setTrackHeight(dp(SLIDER_TRACK_H_DP));
+        // ② 手柄左右两段的颜色
+        slider.setTrackActiveTintList(android.content.res.ColorStateList.valueOf(active));
+        slider.setTrackInactiveTintList(android.content.res.ColorStateList.valueOf(inactive));
+        // ③ 竖长手柄：半径先定，再装手柄（顺序不可换，见上面 ②）
+        slider.setThumbRadius(dp(SLIDER_THUMB_H_DP / 2f));
+        slider.setCustomThumbDrawable(makeExpressiveThumbDrawable(active));
+    }
+
+    /**
+     * M3E 竖长手柄的**固有形状**：4dp × 44dp 的圆角竖条（圆角 = 半宽 ⇒ 胶囊端头）。
+     *
+     * ⚠️ 这里给的尺寸只是**比例基准**：BaseSlider 会按 2×thumbRadius 把它等比缩放，
+     *    所以真正决定落地大小的是 {@code setThumbRadius}（见 {@link #applyExpressiveSlider}）。
+     */
+    private Drawable makeExpressiveThumbDrawable(int color) {
+        GradientDrawable bar = new GradientDrawable();
+        bar.setShape(GradientDrawable.RECTANGLE);
+        bar.setColor(color);
+        bar.setCornerRadius(dp(SLIDER_THUMB_W_DP / 2f));
+        bar.setSize(dp(SLIDER_THUMB_W_DP), dp(SLIDER_THUMB_H_DP));
+        return bar;
     }
 
     private SwitchRow addSwitchRow(LinearLayout parent, Strings label, OnBool onChange) {
@@ -2296,7 +2565,8 @@ public class SettingsActivity extends AppCompatActivity {
     }
 
     /**
-     * 【2.3.2 §1.1.2 / §1.2】「对齐」分段按钮 —— MD3 形态，且**选中态必须一眼可辨**。
+     * 【2.3.2 §1.1.2 / §1.2；code 974 §3 改配色】「对齐」分段按钮 —— MD3 形态，
+     * 且**选中态必须一眼可辨**。
      *
      * ─────────────────────────────────────────────────────────────────────
      * Ari 在 code961 反馈「**对齐** 按钮点选不可用」。真机截图里三段全是同一个深青底，
@@ -2304,11 +2574,14 @@ public class SettingsActivity extends AppCompatActivity {
      * 根因同 {@link #makeTonalButton}：v1.5 把 style 资源当 defStyleAttr 传，
      * MaterialButtonToggleGroup 的 checked 态色没落地。
      *
-     * 本版口径（与「MD3 浅色 Tonal」拍板一致）：
-     *   · 外层 = 一个 1dp {@code colorOutline} 描边的圆角「轨道」（40dp 高、半径 20dp）；
-     *   · 未选中段：透明底 + {@code colorPrimary} 文字；
-     *   · 选中段：{@code colorSecondaryContainer} 底 + {@code colorOnSecondaryContainer} 文字。
-     * 选中/未选中是「有底 vs 没底」，深浅模式都成立，不再可能看错。
+     * 【code 974 §3 改口径】Ari 2026-10-07 指令：「对齐按钮：做一个**已选项为深重点色、
+     * 未选项为浅重点色**的 Segmented。」于是两段**都有底**，深浅对比来自同一个「重点色」
+     * （primary）的两个色阶：
+     *   · 已选段：{@code colorPrimary} 底 + {@code colorOnPrimary} 字 —— 深重点色；
+     *   · 未选段：{@code colorSecondaryContainer} 底 + {@code colorOnSecondaryContainer} 字
+     *             —— 浅重点色（沿用旧版选中态那枚浅容器底，视觉语言不变）。
+     * ⚠️ 因为两段都不再是透明底，旧版那圈 1dp {@code colorOutline} 描边已无意义、反而
+     *    会在两段之间画出一道灰缝，故一并去掉（轨道背景保持全透明，只当圆角裁切用）。
      * ─────────────────────────────────────────────────────────────────────
      */
     private SegmentedRow addSegmentedRow(LinearLayout parent, Strings label, String[] options, OnInt onChange) {
@@ -2323,12 +2596,12 @@ public class SettingsActivity extends AppCompatActivity {
         track.setOrientation(LinearLayout.HORIZONTAL);
         track.setLayoutParams(new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(CONTROL_H_DP)));
+        // 【code 974 §3】两段现在都是实底，旧版那圈 1dp colorOutline 描边会在两段之间
+        // 画出一道灰缝，故去掉描边；轨道只保留「圆角裁切」这一个作用。
         GradientDrawable trackBg = new GradientDrawable();
         trackBg.setShape(GradientDrawable.RECTANGLE);
         trackBg.setCornerRadius(dp(CONTROL_H_DP / 2f));
         trackBg.setColor(Color.TRANSPARENT);
-        trackBg.setStroke(Math.max(1, dp(1)),
-                attr(com.google.android.material.R.attr.colorOutline, 0xFF79747E));
         track.setBackground(trackBg);
         track.setClipToOutline(true);
 
@@ -2355,14 +2628,17 @@ public class SettingsActivity extends AppCompatActivity {
             segs[i] = b;
             track.addView(b);
         }
-        // 选中态自己画：每次选中变化就把三段重刷一遍颜色（不依赖任何样式继承）
-        final int checkedBg = attr(com.google.android.material.R.attr.colorSecondaryContainer, 0xFFE8DEF8);
-        final int checkedFg = attr(com.google.android.material.R.attr.colorOnSecondaryContainer, 0xFF1D192B);
-        final int plainFg = attr(com.google.android.material.R.attr.colorPrimary, 0xFF6750A4);
+        // 两段自己画：每次选中变化就把三段重刷一遍颜色（不依赖任何样式继承）。
+        // 【code 974 §3】已选 = 深重点色（colorPrimary / colorOnPrimary）；
+        //               未选 = 浅重点色（colorSecondaryContainer / colorOnSecondaryContainer）。
+        final int checkedBg = attr(com.google.android.material.R.attr.colorPrimary, 0xFF6750A4);
+        final int checkedFg = attr(com.google.android.material.R.attr.colorOnPrimary, Color.WHITE);
+        final int plainBg = attr(com.google.android.material.R.attr.colorSecondaryContainer, 0xFFE8DEF8);
+        final int plainFg = attr(com.google.android.material.R.attr.colorOnSecondaryContainer, 0xFF1D192B);
         for (int i = 0; i < segs.length; i++) {
             final int idx = i;
             segs[i].setOnClickListener(v -> {
-                paintSegments(segs, idx, checkedBg, checkedFg, plainFg);
+                paintSegments(segs, idx, checkedBg, checkedFg, plainBg, plainFg);
                 if (!mSyncing) {
                     onChange.onChanged(idx);
                 }
@@ -2370,20 +2646,25 @@ public class SettingsActivity extends AppCompatActivity {
         }
         row.group = track;
         row.buttons = segs;
-        row.sync = index -> paintSegments(segs, index, checkedBg, checkedFg, plainFg);
-        paintSegments(segs, 1, checkedBg, checkedFg, plainFg);
+        row.sync = index -> paintSegments(segs, index, checkedBg, checkedFg, plainBg, plainFg);
+        paintSegments(segs, 1, checkedBg, checkedFg, plainBg, plainFg);
 
         parent.addView(track);
         return row;
     }
 
-    /** 把「第 index 段选中」这件事画到三段上（见 {@link #addSegmentedRow} 的口径）。 */
+    /**
+     * 把「第 index 段选中」这件事画到三段上（见 {@link #addSegmentedRow} 的口径）。
+     *
+     * 【code 974 §3】两段都是实底：已选走深重点色（checkedBg/checkedFg），
+     * 未选走浅重点色（plainBg/plainFg）。旧版「未选 = 透明底」已废弃 ——
+     * Ari 要的是「深浅两档重点色」，不是「有底 vs 没底」。
+     */
     private static void paintSegments(MaterialButton[] segs, int index,
-                                      int checkedBg, int checkedFg, int plainFg) {
+                                      int checkedBg, int checkedFg, int plainBg, int plainFg) {
         for (int i = 0; i < segs.length; i++) {
             boolean on = (i == index);
-            segs[i].setBackgroundTintList(on ? colorStateList(checkedBg)
-                    : android.content.res.ColorStateList.valueOf(Color.TRANSPARENT));
+            segs[i].setBackgroundTintList(colorStateList(on ? checkedBg : plainBg));
             segs[i].setTextColor(colorStateList(on ? checkedFg : plainFg));
             segs[i].setSelected(on);
         }
@@ -2481,9 +2762,14 @@ public class SettingsActivity extends AppCompatActivity {
         root.addView(labelView);
 
         // 【2.3.2 §1.1.1 / §1.1.2】重置按钮 = MD3 Tonal（浅容器底 + 深色字/图标），
-        // 与对齐分段、导出/导入、底栏「重启系统界面」同一套视觉语言；高度 40dp 起
-        // （§1.2 原文「上下距离过窄」⇒ v1.5 的 4dp 上下内边距只有 26dp 高）。
-        MaterialButton reset = makeTonalButton(R.drawable.ic_restore_default);
+        // 与对齐分段、导出/导入、底栏「重启系统界面」同一套视觉语言。
+        //
+        // 【code 975 §4】改用**小号**档（32dp，与页头语言胶囊同高）——
+        // Ari 2026-10-07 晚指令：「重置按钮调整的和语言切换按钮一样大，现在的重置按钮
+        // 占的位置有点太大了」。原来这里是 makeTonalButton（40dp 高 + 16dp 图标），
+        // 在整卡末行确实偏大；换成 makeSmallTonalButton 后字号 12sp、图标 14dp，
+        // 视觉重量与语言胶囊一致。点击热区仍由本行的 ROW_MIN_H_DP（40dp）补足。
+        MaterialButton reset = makeSmallTonalButton(R.drawable.ic_restore_default);
         reset.setText(Strings.RESET.get(mLang));
         reset.setOnClickListener(v -> onReset.run());
         root.addView(reset);
@@ -2498,37 +2784,312 @@ public class SettingsActivity extends AppCompatActivity {
         // 所以这里取 0，让整卡下留白恰好 6dp）；改用 ROW_GAP 上边距把提示与按钮行分开。
         hint.setPadding(0, dp(ROW_GAP_DP), 0, dp(HINT_BOTTOM_PAD_DP));
         parent.addView(hint);
+        // 【code 974 §4 / 976 §1】这行小字是「本卡最下方的那行文字」⇒ 按 Ari 的口径，
+        // 它的**字形底端**到卡片底边的距离 = 卡片首行字形顶距 × 2
+        // （976 在 975 的「上下对称」口径上再翻一倍 —— Ari：「还是很紧，再扩宽一倍」）。
+        pinCardLastBottom(parent, hint);
         return hint;
+    }
+
+    /**
+     * 【code 974 §4 / 976 §1】把「卡片里最下方那一行」的**视觉底边**压到距卡片底边
+     * {@code target} 处，其中 {@code target = 卡片首行文字的「字形顶」距卡片顶边的距离 × 2}。
+     *
+     * ─────────────────────────────────────────────────────────────────────
+     * Ari 的两轮指令（这是同一条观感的两次收敛，口径一路在变宽）：
+     *   · 【974】「所有卡片最下方选项文字距离卡片底端 改为 6dp。」（并明确指**字形**，不是控件盒）
+     *   · 【975】「调整的和卡片内最上端边缘与第一个选项文字相同的距离一致。」⇒ 上下对称
+     *   · 【976】「四个卡片内最下方的文字一直都和卡片底贴的**还是很紧**，**再扩宽一倍**。」
+     *     ⇒ 在对称口径上**再×2**：底距 = 首行字形顶距 × 2。
+     *
+     * ── 为什么只把卡片 paddingBottom 调大达不到这个观感 ──────────────────────
+     * 文本视图的**盒子底**与**墨迹底**之间天生隔着两段空档：
+     *   ① `includeFontPadding`：盒子底取字体包围盒的 bottom，它一般比 descent 更低
+     *      （CJK 字体尤其明显，多出约 2dp）；
+     *   ② `lineSpacingMultiplier`（本项目的 Hint 样式是 1.15）：倍数余量会被算进
+     *      **最后一行**的行高，于是又多在末行下方留出约 2.5dp。
+     * 所以「盒子底 N dp」在真机观感上是 N+3~4dp，必须按**墨迹**量。
+     *
+     * ── 做法 ─────────────────────────────────────────────────────────────
+     *   ① 先关掉 `includeFontPadding`（第 ① 段空档直接消失）；
+     *   ② **行距倍数不动**（改了会影响小字的换行可读性），改为在**布局完成后**
+     *      量出末行的真实墨迹底 / 盒底，用**底部外边距**把这个差补掉：
+     *          curGap + bottomMargin 增量 = target   ← 恒等
+     *      线性布局把 margin 计入总高 ⇒ 卡片高度随之变化，而文字/按钮的**位置**不受影响。
+     *      ⇒ target 比当前底距大时就加**正** margin（底部留白变宽，这正是 976 要的）；
+     *        比当前小时加**负** margin（等效于把内容下沉，975 曾用它做对称）。
+     *   ③ 负的那一侧夹住（`floor`），避免把文字推出卡片下沿被裁。
+     *
+     * ── 末行是「文字」还是「控件盒」────────────────────────────────────────
+     *   · **文字**（前三张卡：末尾是「恢复默认」下方的小字）⇒ 对齐**字形底**（要减掉
+     *     字体自身的下空档，否则观感偏大）；
+     *   · **容器 / 按钮行**（「其他」卡：末尾是导出+导入那排按钮）⇒ 对齐**盒底**，
+     *     因为按钮自带填充背景，盒底就是视觉底边；硬去追按钮内文字的字形底会压穿按钮。
+     *   两条路共用同一个 target 与同一套 margin 收敛，所以四张卡的底距口径完全一致。
+     *
+     * ⚠️ 这是**一次性**监听：量完立刻摘掉，否则「改外边距 ⇒ 再布局 ⇒ 再回调」会自激。
+     * ─────────────────────────────────────────────────────────────────────
+     */
+    private void pinCardLastBottom(final LinearLayout group, final View last) {
+        if (group == null || last == null) {
+            return;
+        }
+        final boolean inkMode = last instanceof TextView;
+        if (inkMode) {
+            ((TextView) last).setIncludeFontPadding(false);
+        }
+        last.getViewTreeObserver().addOnGlobalLayoutListener(
+                new android.view.ViewTreeObserver.OnGlobalLayoutListener() {
+                    @Override
+                    public void onGlobalLayout() {
+                        if (last.getViewTreeObserver().isAlive()) {
+                            last.getViewTreeObserver().removeOnGlobalLayoutListener(this);
+                        }
+                        ViewGroup.LayoutParams lp = last.getLayoutParams();
+                        if (!(lp instanceof LinearLayout.LayoutParams)) {
+                            return;
+                        }
+                        // ① 目标底距 = 卡片**首行文字**的「字形顶」到卡片顶边的距离 × 2
+                        //    （976：在 975 的「上下对称」口径上再翻一倍）
+                        int target = topInkGapOf(group) * 2;
+                        if (target <= 0) {
+                            target = (dp(CARD_PAD_TOP_DP) + dp(ROW_MIN_H_DP) / 3) * 2; // 量不到时的保守值
+                        }
+                        // ② 当前「视觉底边」到卡片底边的距离
+                        int bottomY;
+                        if (inkMode) {
+                            TextView tv = (TextView) last;
+                            android.text.Layout layout = tv.getLayout();
+                            if (layout == null || layout.getLineCount() <= 0) {
+                                return;
+                            }
+                            CharSequence cs = tv.getText();
+                            if (cs == null) {
+                                cs = "";
+                            }
+                            int line = layout.getLineCount() - 1;
+                            int start = Math.min(layout.getLineStart(line), cs.length());
+                            int end = Math.min(layout.getLineEnd(line), cs.length());
+                            if (end < start) {
+                                end = start;
+                            }
+                            Rect ink = new Rect();
+                            tv.getPaint().getTextBounds(cs, start, end, ink);
+                            int baseline = layout.getLineBottom(line) - layout.getLineDescent(line);
+                            bottomY = topRelativeTo(tv, group)
+                                    + tv.getPaddingTop() + baseline + ink.bottom;  // 字形底
+                        } else {
+                            bottomY = topRelativeTo(last, group) + last.getHeight();   // 盒底
+                        }
+                        int curGap = group.getHeight() - bottomY;
+
+                        // ③ 线性布局里「子 View 的 bottomMargin 增量」会等量变成「容器高度增量」，
+                        //    而 bottomY 不受影响 ⇒ 想要的底距与当前的差就是该加的 margin。
+                        int want = target - curGap;
+                        // 只夹住「不要把内容压出卡片下沿」这一侧（宁可多留白，也不能裁字）。
+                        int floor = -Math.max(dp(CARD_PAD_BOTTOM_DP), 0);
+                        if (want < floor) {
+                            want = floor;
+                        }
+                        LinearLayout.LayoutParams llp = (LinearLayout.LayoutParams) lp;
+                        if (llp.bottomMargin == want) {
+                            return;
+                        }
+                        llp.bottomMargin = want;
+                        last.setLayoutParams(llp);
+                    }
+                });
+    }
+
+    // ── 【code 976 §5】底部彩蛋 ────────────────────────────────────────────
+
+    /** 彩蛋行（滚到底后继续上拉才淡入），见 {@code activity_settings.xml} 的 {@code egg_smile}。 */
+    private View mEggRow;
+    /** 本次手势按下的 Y —— 「手指是否在继续上拉」用它与当前 Y 的差判断。 */
+    private float mGestureDownY;
+    /** 彩蛋当前是否已经淡入（避免同一手势里反复启动动画）。 */
+    private boolean mEggShown;
+    /** 触发彩蛋所需的**上拉距离**（dp）：太灵敏会误触，太大又要拉很久。 */
+    private static final int EGG_PULL_DP = 16;
+    /** 松手后彩蛋再保留多久才淡出（ms）—— 让用户看清这行小字。 */
+    private static final long EGG_LINGER_MS = 1600L;
+    /** 淡入 / 淡出的时长（ms）。 */
+    private static final long EGG_FADE_MS = 180L;
+    /** 松手后的延迟淡出任务（会被下一次手势取消）。 */
+    private final Runnable mEggHide = () -> setEggShown(false);
+
+    /**
+     * 【code 976 §5】底部彩蛋：滚到最底后**继续上拉**，淡入一行居中小字 {@code SMILE! :D}。
+     *
+     * <p>Ari 2026-10-07 晚：「当用户把滑到页面最底端（就是「其他」卡片的位置最下面），
+     * 如果用户此时再继续往下滑（手指运动动作向上拉），下面出现一行居中小字」。
+     *
+     * <p>── 为什么必须用**触摸监听**而不是滚动回调 ─────────────────────────
+     * 滚到最底之后，继续上拉只会走 {@code NestedScrollView} 的 EdgeEffect 回弹，
+     * **scrollY 一个像素都不再变** ⇒ 任何基于 scrollY / onScrollChange 的判断
+     * 都看不见这个动作。能反映它的只有手势位移本身。
+     *
+     * <p>── 不干扰既有滚动 ───────────────────────────────────────────────
+     * 监听器一律返回 {@code false}（不消费事件）⇒ NestedScrollView 的滚动、
+     * AppBarLayout 的吸顶联动、以及预览卡的钉住行为全部不受影响。
+     *
+     * <p>── 触发 / 收回 / 松手 ───────────────────────────────────────────
+     * · 已到底 且 上拉超过 {@link #EGG_PULL_DP} ⇒ 淡入；
+     * · 手指改为下拉（pull &lt; 0）⇒ 立刻淡出（跟手收回）；
+     * · 松手 ⇒ 延后 {@link #EGG_LINGER_MS} 再淡出（不是立刻消失，好让用户看清）。
+     */
+    private void setupScrollEgg() {
+        mEggRow = findViewById(R.id.egg_smile);
+        final View scroll = findViewById(R.id.settings_scroll);
+        final View content = findViewById(R.id.settings_content);
+        if (mEggRow == null || scroll == null || content == null) {
+            return;
+        }
+        scroll.setOnTouchListener((v, ev) -> {
+            switch (ev.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    mGestureDownY = ev.getY();
+                    mEggRow.removeCallbacks(mEggHide);
+                    break;
+                case MotionEvent.ACTION_MOVE: {
+                    // 手指「向上拉」⇒ y 减小 ⇒ pull 为正
+                    float pull = mGestureDownY - ev.getY();
+                    if (pull > dp(EGG_PULL_DP) && isScrolledToBottom(v, content)) {
+                        setEggShown(true);
+                    } else if (pull < 0) {
+                        setEggShown(false);   // 手指改往下拖 ⇒ 立刻收回
+                    }
+                    break;
+                }
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    mEggRow.removeCallbacks(mEggHide);
+                    if (mEggShown) {
+                        mEggRow.postDelayed(mEggHide, EGG_LINGER_MS);
+                    }
+                    break;
+                default:
+                    break;
+            }
+            return false;   // 不消费 ⇒ 滚动 / 吸顶一切照旧
+        });
+    }
+
+    /** 是否已经滚到内容最底（留 2dp 容差，抵消像素取整）。 */
+    private boolean isScrolledToBottom(View scrollView, View content) {
+        int contentH = content.getHeight();
+        int viewH = scrollView.getHeight();
+        if (contentH <= 0 || viewH <= 0) {
+            return false;
+        }
+        int max = contentH - viewH;
+        return max <= 0 || scrollView.getScrollY() >= max - dp(2);
+    }
+
+    /** 淡入 / 淡出彩蛋行（幂等：同一状态重复调用不会重启动画）。 */
+    private void setEggShown(boolean shown) {
+        if (mEggRow == null || mEggShown == shown) {
+            return;
+        }
+        mEggShown = shown;
+        mEggRow.animate().cancel();
+        mEggRow.animate().alpha(shown ? 1f : 0f).setDuration(EGG_FADE_MS).start();
+    }
+
+    /**
+     * 【code 975】卡片**首行文字**的「字形顶」到卡片顶边的距离（px）。
+     *
+     * <p>用于让卡片末行内容的底距与它对称、再翻倍（见 {@link #pinCardLastBottom}）。
+     * 首行可能是 {@code TextView}（色板行 / 分段行的标签直接挂在卡片上），
+     * 也可能是 {@code LinearLayout}（滑块行 / 开关行先建了一行容器）——
+     * 所以这里递归找**第一个可见的 TextView**。
+     *
+     * @return 距离（px）；找不到可量的文字时返回 -1
+     */
+    private int topInkGapOf(LinearLayout group) {
+        TextView first = findFirstTextView(group);
+        if (first == null || first.getLayout() == null || first.getLayout().getLineCount() <= 0) {
+            return -1;
+        }
+        CharSequence cs = first.getText();
+        if (cs == null || cs.length() == 0) {
+            return -1;
+        }
+        android.text.Layout lay = first.getLayout();
+        int start = Math.min(lay.getLineStart(0), cs.length());
+        int end = Math.min(lay.getLineEnd(0), cs.length());
+        if (end <= start) {
+            return -1;
+        }
+        Rect ink = new Rect();
+        first.getPaint().getTextBounds(cs, start, end, ink);
+        int inkTop = lay.getLineBaseline(0) + ink.top;   // 首行字形顶（相对内容区顶）
+        return topRelativeTo(first, group) + first.getPaddingTop() + inkTop;
+    }
+
+    /** 在子树里找第一个可见的 {@link TextView}（含自身）。 */
+    @Nullable
+    private static TextView findFirstTextView(View v) {
+        if (v == null || v.getVisibility() != View.VISIBLE) {
+            return null;
+        }
+        if (v instanceof TextView) {
+            return (TextView) v;
+        }
+        if (v instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                TextView t = findFirstTextView(g.getChildAt(i));
+                if (t != null) {
+                    return t;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** 累加 {@code v} 各层 {@code getTop()}，得到它相对祖先 {@code ancestor} 的纵向偏移。 */
+    private static int topRelativeTo(View v, View ancestor) {
+        int y = 0;
+        View c = v;
+        while (c != null && c != ancestor) {
+            y += c.getTop();
+            android.view.ViewParent p = c.getParent();
+            c = (p instanceof View) ? (View) p : null;
+        }
+        return y;
     }
 
     // ── 【2.3.2 §2.3 / §2.6】行与行的统一「起手式」 ────────────────────
 
     /**
-     * 每一行开始前调用：**非首行**先插一根 1dp 细分隔线。
+     * 每一行开始前调用：**非首行**先插一段纯留白。
      *
-     * §2.3 原话（Ari 连点三次）：「增加卡片内间隔效果」「每个选项之间有细微的页面底留白间隔」
-     * ——参考稿（KernelSU 那种列表）里一张卡内部是「若干行 + 行间极细分隔」，
-     * 而不是 v1.5 的「一整坨没有界限的控件」。所以这里把分隔线加回来
-     * （§1.14 只说「不要满屏分隔线」，卡**内**的细分隔正是它要的「间隔」）。
-     * ⚠️ 首行不能加 —— 否则卡片顶边会出现一根悬空的线。
+     * 【code 974 §2 改口径】旧版这里插的是「1dp 细分隔线 + 上下各 4dp 呼吸位」，
+     * Ari 2026-10-07 明确要求「**不要**直接用分割线分开功能选项」，参考稿
+     * （LSPosed 式列表）卡内也是「若干行 + 行间留白、一根线都没有」。
+     * 于是把线整根换掉，留白量与旧版一致（见 {@link #ROW_SPACER_DP}）。
+     * ⚠️ 首行仍然不加 —— 否则卡片顶边会凭空多出一段 9dp 的空白。
      */
     private void beginRow(LinearLayout parent) {
         if (parent.getChildCount() > 0) {
-            parent.addView(makeRowDivider());
+            parent.addView(makeRowSpacer());
         }
     }
 
-    /** 卡内行间细分隔线：1dp {@code colorOutlineVariant}，上下各 {@link #ROW_GAP_DP} 呼吸位。 */
-    private View makeRowDivider() {
-        View line = new View(this);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, Math.max(1, dp(1)));
-        lp.topMargin = dp(ROW_GAP_DP);
-        lp.bottomMargin = dp(ROW_GAP_DP);
-        line.setLayoutParams(lp);
-        line.setBackgroundColor(
-                attr(com.google.android.material.R.attr.colorOutlineVariant, 0xFFE0E0E0));
-        return line;
+    /**
+     * 【code 974 §2】卡内行间**纯留白**占位（替代旧版的 1dp 分隔线）。
+     *
+     * ⚠️ 为什么仍要用一个真的 View、而不是给行加 margin：{@link #beginRow} 是在
+     *    **那一行还没被造出来**的时候调用的，拿不到它未来的 LayoutParams，
+     *    所以留白只能由「前一行之后的这段占位」承担。
+     */
+    private View makeRowSpacer() {
+        View gap = new View(this);
+        gap.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(ROW_SPACER_DP)));
+        gap.setBackgroundColor(Color.TRANSPARENT);
+        return gap;
     }
 
     /**

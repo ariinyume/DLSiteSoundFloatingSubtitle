@@ -138,6 +138,17 @@ public enum Strings {
             "因功能限制，本開關無法直接撤銷已賦予外掛的 SystemUI 權限，請在 Xposed 外掛管理員中自行撤銷",
             "Due to a platform limitation, this switch cannot revoke the SystemUI permission already granted to the module. "
                     + "Please revoke it manually in your Xposed module manager"),
+    /**
+     * 【2.2.7 / code 979】「调试日志」开关的标签（摆在「其他」卡片：状态栏字幕功能 下方、备份恢复 上方）。
+     *
+     * 默认**关**。开启后被注入进程会输出诊断级日志（状态 Map 全量转储、轮询自证、
+     * 换轨闸门的抑制/忽略行）；关闭时只留里程碑日志与 WARN。
+     */
+    DEBUG_LOG("调试日志", "偵錯日誌", "Debug log"),
+    /** 「调试日志」开关下方的常驻说明小字（三语）。 */
+    DEBUG_LOG_HINT("排查问题时才需要打开，日常保持关闭可减少日志刷屏",
+            "排查問題時才需要開啟，日常保持關閉可減少日誌刷屏",
+            "Turn on only when debugging; keep it off to avoid log spam"),
     BACKUP_RESTORE("字幕配置备份与恢复", "字幕配置備份與恢復", "Backup & restore"),
     EXPORT("导出", "匯出", "Export"),
     IMPORT("导入", "匯入", "Import"),

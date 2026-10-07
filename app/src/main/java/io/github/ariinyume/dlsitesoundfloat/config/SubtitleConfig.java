@@ -94,6 +94,19 @@ public final class SubtitleConfig {
     public static final String K_KEEP_SCREEN_ON = "keep_screen_on";
     public static final String K_HOT_RELOAD = "hot_reload";
     /**
+     * 【2.2.7 / code 979】「调试日志」开关（默认**关**）。
+     *
+     * 口径：开启后被注入进程会输出**诊断级**日志 —— 状态 Map 全量转储
+     * （{@code statusMap via=…}）、兜底轮询自证（{@code poll tick}）、换轨闸门的
+     * 抑制/忽略行等。这些是排查「换轨残留」类问题的唯一证据来源，但频率高
+     * （状态 Map 转储按「来源+实例」约 2.5s 一条，宿主多实例时会成倍）⇒ 长时间开着
+     * 会淹没有用日志。关闭（默认）时只保留里程碑日志：钩子挂载、种基线、真正的换轨
+     * 上报（{@code >>> track changed}）与所有 WARN。
+     *
+     * ⚠️ 键名冻结（PRD §FR-09 规则 4）：本键为新增键，旧配置读不到时回落默认值（关），天然兼容。
+     */
+    public static final String K_DEBUG_LOG = "debug_log";
+    /**
      * 【2.3.0】悬浮窗底色（面板渐变基色）。
      *
      * 口径：存的是**基色**（{@code #AARRGGBB}，默认不透明深蓝黑 {@link #FLOAT_WINDOW_COLOR_DEF}），
@@ -216,6 +229,8 @@ public final class SubtitleConfig {
     public boolean keepScreenOn = true;
     /** PRD §5.3 A1：热重载开关（界面不展示）；关掉即退化成 A2「保存后需手动重启 SystemUI」。 */
     public boolean hotReload = true;
+    /** 【2.2.7 / code 979】诊断日志开关（界面展示于「其他」卡片）：默认关，仅排查时打开。 */
+    public boolean debugLog = false;
 
     public SubtitleConfig() {
     }
@@ -252,6 +267,7 @@ public final class SubtitleConfig {
         c.statusbarSubtitleEnabled = statusbarSubtitleEnabled;
         c.keepScreenOn = keepScreenOn;
         c.hotReload = hotReload;
+        c.debugLog = debugLog;
         return c;
     }
 
@@ -278,6 +294,7 @@ public final class SubtitleConfig {
                 && statusbarSubtitleEnabled == o.statusbarSubtitleEnabled
                 && keepScreenOn == o.keepScreenOn
                 && hotReload == o.hotReload
+                && debugLog == o.debugLog
                 && eq(uiLanguage, o.uiLanguage);
     }
 
@@ -363,6 +380,7 @@ public final class SubtitleConfig {
             o.put(K_STATUSBAR_SUBTITLE_ENABLED, statusbarSubtitleEnabled);
             o.put(K_KEEP_SCREEN_ON, keepScreenOn);
             o.put(K_HOT_RELOAD, hotReload);
+            o.put(K_DEBUG_LOG, debugLog);
         } catch (Throwable ignored) {
             // JSONObject.put 只在传 null 键时抛，本方法不传 null
         }
@@ -401,6 +419,7 @@ public final class SubtitleConfig {
         c.statusbarSubtitleEnabled = o.optBoolean(K_STATUSBAR_SUBTITLE_ENABLED, c.statusbarSubtitleEnabled);
         c.keepScreenOn = o.optBoolean(K_KEEP_SCREEN_ON, c.keepScreenOn);
         c.hotReload = o.optBoolean(K_HOT_RELOAD, c.hotReload);
+        c.debugLog = o.optBoolean(K_DEBUG_LOG, c.debugLog);
         c.clamp();
         return c;
     }
@@ -432,6 +451,7 @@ public final class SubtitleConfig {
         e.putBoolean(K_STATUSBAR_SUBTITLE_ENABLED, statusbarSubtitleEnabled);
         e.putBoolean(K_KEEP_SCREEN_ON, keepScreenOn);
         e.putBoolean(K_HOT_RELOAD, hotReload);
+        e.putBoolean(K_DEBUG_LOG, debugLog);
     }
 
     /** 从 SharedPreferences 读；未写过的键（{@code contains == false}）保留默认值。 */
@@ -461,6 +481,7 @@ public final class SubtitleConfig {
         c.statusbarSubtitleEnabled = p.getBoolean(K_STATUSBAR_SUBTITLE_ENABLED, c.statusbarSubtitleEnabled);
         c.keepScreenOn = p.getBoolean(K_KEEP_SCREEN_ON, c.keepScreenOn);
         c.hotReload = p.getBoolean(K_HOT_RELOAD, c.hotReload);
+        c.debugLog = p.getBoolean(K_DEBUG_LOG, c.debugLog);
         c.clamp();
         return c;
     }
@@ -521,7 +542,8 @@ public final class SubtitleConfig {
                 + ", scale=" + (inactiveScaleEnabled ? inactiveScalePct + "%" : "off") + "]"
                 + " weight=" + fontWeight + " align=" + textAlign
                 + " spacing=" + round1(lineSpacingDp) + "/" + round1(wrapExtraSpacingDp)
-                + " floatWindow=" + argbToHex(floatWindowColor);
+                + " floatWindow=" + argbToHex(floatWindowColor)
+                + " debugLog=" + debugLog;
     }
 
     @Override

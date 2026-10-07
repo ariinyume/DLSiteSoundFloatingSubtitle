@@ -437,7 +437,21 @@ public final class ConfigBus {
             return;
         }
         try {
-            ctx.sendBroadcast(new Intent(ACTION_HOST_PING));
+            // 【code 975】改成**显式广播**（带目标包名）。
+            //
+            // 为什么必须改 —— Ari 2026-10-07 报「DLsiteSound 一直开在后台，但插件经常检测
+            // 不到程序在运行、持续显示模块未激活」。根因是 Android 8.0 起的后台执行限制：
+            // **处于后台的进程，其动态注册的 BroadcastReceiver 收不到隐式广播**。
+            // DLsiteSound 退到后台（没有前台服务）后，本模块注入在它进程里的接收器就再也
+            // 收不到这条 `ACTION_HOST_PING` ⇒ 不回 PONG ⇒ 设置页把「在后台活着」误判成
+            // 「未运行 / 未激活」。日志佐证：19:16:27 的 PONG 里 hostAlive=false，
+            // 而 19:18:21~19:31:10 之间宿主连状态 Map 都不再被读（since=674458ms）。
+            //
+            // 显式广播（setPackage）**不受**该后台限制影响 —— 它有明确目标，系统会直接投递
+            // （必要时唤醒目标进程）。这是本次修复里最关键的一条。
+            Intent ping = new Intent(ACTION_HOST_PING);
+            ping.setPackage(HOST_PKG);
+            ctx.sendBroadcast(ping);
         } catch (Throwable t) {
             logWarn("sendHostScopePing failed: " + t);
         }

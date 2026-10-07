@@ -137,6 +137,24 @@ public final class RemoteConfig {
         return sSource;
     }
 
+    /**
+     * 【2.2.7 / code 979】诊断日志是否开启（供被注入进程的高频日志做闸门）。
+     *
+     * <p>语义 = 「用户是否在设置页打开了『调试日志』」。关闭（默认）时，
+     * 状态 Map 全量转储、轮询自证等**诊断级**日志一律不输出，只留里程碑与 WARN。
+     *
+     * <p>⚠️ 热路径友好：{@link #get()} 走的是 volatile 读（进程内缓存），
+     * 首次调用才会真正读一次配置，之后零成本 —— 可以放心在每次轮询/每次采样里调用。
+     */
+    public static boolean debugLog() {
+        try {
+            return get().debugLog;
+        } catch (Throwable t) {
+            // 读配置本身出异常时宁可少打日志，绝不让日志闸门把主流程拖下水
+            return false;
+        }
+    }
+
     /** 强制重读（收到配置变更广播时调用）。 */
     public static void reload() {
         synchronized (LOCK) {

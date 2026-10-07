@@ -2,8 +2,8 @@
 
 > 一个 LSPosed / Xposed 模块，在 DLsiteSound（DLsite 音频 App）的**播放页**上挂一个与播放进度同步的**悬浮字幕窗**；同时支持将字幕镜像到**系统状态栏**（在 SystemUI 进程内注入）。
 
-- 当前版本：**2.1.3**（`DLsiteFloat-2.1.3-code958-debug.apk`，包名 `io.github.ariinyume.dlsitesoundfloat`）
-- 📦 下载 APK：[Releases · v2.1.3](https://github.com/ariinyume/DLSiteSoundFloatingSubtitle/releases/tag/v2.1.3)
+- 当前版本：**2.2.8**（`DLsiteFloat-2.2.8-code980-debug.apk`，包名 `io.github.ariinyume.dlsitesoundfloat`）
+- 📦 下载 APK：[Releases · v2.2.8](https://github.com/ariinyume/DLSiteSoundFloatingSubtitle/releases/tag/v2.2.8)
 - 🕘 历史版本：[Releases · v2.1.0](https://github.com/ariinyume/DLSiteSoundFloatingSubtitle/releases/tag/v2.1.0)
 - 📝 开发进度：[DLsiteFloat插件开发进度管理](https://my.feishu.cn/wiki/CQoMwY4nFilzLkkrzG4cy44fnoh)
 - ⭐ Xposed 仓库：[DLsiteFloat - DLSiteSound悬浮窗/状态栏字幕模块](https://github.com/Xposed-Modules-Repo/io.github.ariinyume.dlsitesoundfloat)
@@ -32,6 +32,14 @@
   - **遮挡时钟 / 通知图标区**：显示期间隐藏状态栏时钟与通知图标区，通知换成数字徽标；结束时原样还原。
   - **流体云避让**：字幕右界动态卡在流体云（`seeding_card_container`）左边；流体云不在时按固定左界（38dp）铺满。宽度带 24px 迟滞，避免流体云进出时宽度来回跳。
 
+- **可视化设置页（2.2.0 起）**：模块自带设置页，桌面图标 **「DLsiteFloat 设置」** 直接进，改完点「保存设置」即时生效，不用再去 LSPosed 里翻。
+  - **状态卡**：一眼看出「模块是否已激活 / SystemUI 是否已授权 / DLsiteSound 是否在跑」；三种状态各给对应指引，未激活时整页控件禁用（避免白调一场）。
+  - **主字幕 / 活动行**：主字幕颜色、阴影颜色、阴影强度、阴影半径、活动行不透明度、主字幕放大倍数。
+  - **非活动行**：是否模糊非活动行 + 模糊半径、是否缩放非活动行 + 缩放比例。
+  - **字幕排版**：对齐（左 / 居中 / 右）、字幕间行距、长字幕内换行额外行距、悬浮窗颜色。
+  - **实时预览窗**：调参过程中预览窗同步渲染，所见即所得。
+  - **语言**：页内即时切换 **简体中文 / 繁體中文 / English**（可跟随系统，也可手动指定）。
+  - **其他**：状态栏字幕功能总闸、**调试日志**开关（2.2.7 起，默认关）、字幕配置备份与恢复（导出 / 导入 JSON）、重启系统界面。
 - **进程内悬浮窗**：窗口直接挂在 DLsiteSound 进程内（`WindowManager` + `TYPE_APPLICATION_OVERLAY`），与各个 Hook 共享同一个 `SubtitleRepository` 实例，**无需任何跨进程 IPC、无需独立 Service**。
   - **悬浮窗可拖动 / 可缩放**：面板任意处按住拖动移动；右下角手柄拖动缩放（默认 85% 屏宽 × 200dp，最小 140×72dp，**纵向最长不超过半屏**）。
   - **悬浮窗内关闭按钮两种收法**：点一次面板出现 ✕，**5s 内没点自动隐藏**；期间**再点面板空白处立即收回**。
@@ -39,6 +47,9 @@
 - **按播放进度对齐字幕**：以播放器（`ExoPlayer` / expo 音频）真实播放进度为主轴对齐字幕行。
 - **自动抓取字幕**：拦截 DLsiteSound 的网络响应（okhttp3），直接扫描响应体是否包含 `webvtt` / `subtitles` 字幕 JSON 并解析——**不依赖 URL 关键词**，对混淆/重打包的 okhttp3 也能兜底。字幕源为 DLsiteSound 官方 `play.dl.dlsitesound.com/.../optimized/xxx.json`，按音轨下发。
 - **换轨智能处理**：切到无字幕音轨时先挂起、悬浮窗显示`无字幕`占位，等新音轨的字幕 JSON —— 无缓存 cues 时等 **5s**，已有缓存 cues 时放宽到 **10s**；**5s**内还没等到 JSON 就**提前收窗**，JSON 到了会**自动把窗口开回**；直到裁决窗到点仍无 JSON，才清空 cues 并判「无字幕」。详见 [docs/track-change.md](docs/track-change.md)。
+  - **切到无字幕轨不再残留旧字幕（2.2.1 起）**：「数据保留」与「可否渲染」分开处理 —— 旧音轨的 cues 仍在内存里，但界面不再渲染它，切回去能立刻用上。
+  - **判据改为「播放列表身份」（2.2.6 起）**：宿主切作品 / 切音轨时 `currentIndex` 恒为 0，靠序号判换轨根本不成立；改为按 **音轨数 + 总时长** 认身份，并只采信「音轨数 > 0、时长 > 0、未停止」的那份列表，避免多实例读数互相污染（表现为进度被拉回 0、匹配出上一轨的句子、`playing` 每秒横跳）。
+  - **切回有字幕轨直接恢复（2.2.8 起）**：宿主对同一条音轨的字幕响应有缓存，切走再切回**不会重新发请求**，所以不能干等新 JSON。现在会给已加载的 cues 盖一个「归属印章」，切回来时身份对得上就直接按当前进度恢复渲染，不再卡在「无字幕」。
 - **权限引导与降级**：未授予悬浮窗权限时，首次点击会跳到"在其他应用上层显示"设置页，且**只提示一次**。
 
 
@@ -89,6 +100,7 @@
    - 离开播放页（回到首页 / 列表页等）按钮自动隐藏；悬浮窗与状态栏字幕都不随页面隐藏。
 5. **操作悬浮窗**：面板任意处按住拖动可移动；右下角手柄拖动可缩放。点面板（非手柄）可切换右上角关闭按钮（✕，30dp 显示 / 点击区）的显隐；点 ✕ 关闭窗口。
 6. 悬浮窗字幕和状态栏字幕可同时使用，二者相互不干扰。
+7. **调字幕外观**：桌面图标 **「DLsiteFloat 设置」** 进可视化设置页，改完点「保存设置」即生效（状态栏字幕的相关改动需要「重启系统界面」才会刷新）。
 
 
 ---
@@ -100,7 +112,8 @@
   1. 你的设备型号 / Android 版本 / ROM（尤其是否 ColorOS / 澎湃 / 原生 / 类原生 等）
   2. 使用的 DLsiteSound 的版本号
   3. 复现步骤 + LSPosed 日志（`DLsiteSoundFloat` 过滤）+ 必要时 `dlsitefloat_net.log`+ 录屏 / 截屏（请给敏感信息打码或进行截除）
-- **提交前请先确认**：装的是不是最新 APK（看 LSPosed 日志里 `==== BUILD 2.1.3 / code 958` 那一行）
+- **提交前请先确认**：装的是不是最新 APK（看 LSPosed 日志里 `==== BUILD 2.2.8 / code 980` 那一行）
+- **排查换轨 / 字幕抓取类问题时**：请在设置页「其他」里打开**调试日志**再复现一次（默认关闭，开久了会刷屏；复现完记得关掉），日志里 `>>> track changed` 那几行是关键证据。
 - 仓库地址：<https://github.com/ariinyume/DLSiteSoundFloatingSubtitle>
 - 提交 Issue：<https://github.com/ariinyume/DLSiteSoundFloatingSubtitle/issues>
 

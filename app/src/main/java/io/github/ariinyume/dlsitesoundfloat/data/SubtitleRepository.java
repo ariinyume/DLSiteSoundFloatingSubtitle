@@ -158,6 +158,38 @@ public class SubtitleRepository {
     /** 待确认窗口内收到的播放位置回调次数。 */
     private int pendingPosSamples = 0;
     /**
+     * 【973】本次换轨通知是否来自<b>权威序号门</b>（状态 Map 的 {@code currentIndex} 确实变了）。
+     *
+     * 为 true 时 {@link #resolvePendingTrack} 不再走「位置回退 / 位置一直往前走 ⇒ 疑似假换轨」那条兜底：
+     * 兜底是给<b>老信号路径</b>（按方法名挂换轨方法，信号本身不保证真的换了轨）准备的；
+     * 序号门不一样 —— 序号变了就是播放列表的当前项变了。若仍走兜底，真换轨会被撤销，
+     * 于是旧 cue 继续渲染 = 用户 2026-10-07 报的「切到无字幕音轨仍显示历史音轨字幕」。
+     * ⚠️ 真机实测（2026-10-07 两份日志）SPURIOUS 从未触发，说明这条兜底在序号门上本就不该参与。
+     */
+    private boolean pendingIndexVerified = false;
+    /**
+     * 【973】**上一音轨的 cue 不再参与渲染**（数据一个都不删）。
+     *
+     * ── 为什么光靠清显示层不够（用户 2026-10-07 报的现象）──
+     * 换轨瞬间清空 `currentSubtitles` 只能挡住裁决窗那一段（{@code pendingTrackDecision} 期间
+     * {@link #getCues()} 返回空）。裁决窗到点、新 JSON 仍没到时，旧实现会把
+     * {@code pendingTrackDecision} 放开 —— 于是<b>旧的 cue 列表又开始渲染</b>：
+     * 新音轨从 0 秒起播、走到几秒时 {@code computeIndexAtSecondLocked()} 拿旧列表匹配，
+     * 就把上一轨的字幕画了出来（截图：`00:04` 显示上一轨的 cue 1）。
+     *
+     * ── 本标志把「数据保留」与「可否渲染」彻底分开 ──
+     *   · {@code cues} / {@code subtitleLineSet} <b>原样保留</b>（防假阴性：JSON 只是晚到，
+     *     一到达就能立刻恢复，不需要用户重进页面）；
+     *   · 但只要本标志为 true，{@link #getCues()} / {@link #findCurrentCueIndex()} /
+     *     {@link #getCurrentSubtitles()} 一律按「空」返回 ⇒ 显示层不可能再画出上一轨的字幕；
+     *   · 任何一次新的 {@code loadFromJson} 成功都会清掉它（新 JSON = 新音轨的字幕）；
+     *   · 裁决为「假换轨」（SPURIOUS，仅老信号路径）时也清掉（同一轨，本来就没换）。
+     *
+     * ⚠️ 与 {@link #softNoSubtitles} 的区别：本标志<b>不</b>驱动 {@link #shouldShowNoSubtitles()}，
+     * 即<b>不</b>把三处 UI 降级成「无字幕」（那是 2.1.3 明令避免的假阴性观感），只掐掉渲染。
+     */
+    private boolean previousTrackCuesHidden = false;
+    /**
      * 【2.1.3 问题 1】进入待确认时手上**已有** cues（= 本作品此前已证明有字幕）。
      *
      * 真机日志（2.1.2 / code 954）实证两处假阴性：
@@ -188,6 +220,36 @@ public class SubtitleRepository {
      * 直接在日志里点名（见 {@link #loadFromJsonArrayInternal}），不用再靠人肉对时间线。
      */
     private volatile long lastNoSubtitleVerdictMs = 0L;
+    /**
+     * 【980】**宿主当前活跃播放列表的身份**（{@code PlayerSourceHook#makeIdentity} 的三元组打包；
+     * 0 = 未知）。由 {@code PlayerSourceHook.onPlaylistStateFromStatusMap} 在每次读到
+     * **活跃列表**时推送（幽灵列表 / 闲置 AudioPlayer 已被权威门挡在外面）。
+     *
+     * <p>只用于给「刚加载的 cues」盖主人印章（见 {@link #cuesOwnerIdentity}），
+     * <b>本身不触发任何状态变更</b> —— 避免把宿主的多实例交替读数变成 UI 抖动源。
+     */
+    private volatile long observedPlaylistIdentity = 0L;
+    /**
+     * 【980】**手上这份 cues 属于哪份播放列表**（身份同上；0 = 未知 / cues 已销毁）。
+     *
+     * <p>── 为什么需要它（Ari 2026-10-07 报的「反向切轨残留」）──
+     * 宿主对**同一轨**的字幕响应是有缓存的：切走再切回来时它**不会重新发请求**，
+     * 于是模块永远等不到新的字幕 JSON。旧实现把「新 JSON 到达」当成唯一恢复路径
+     * （{@link #loadFromJsonArrayInternal}），反向切回时就必然卡住：
+     * <pre>
+     *   22:23:18.215 Loaded 39 cues                    ← 这份 cues 属于轨 tc=7 dur=278.64s idx=0
+     *   22:23:38.481 track changed 7→1 → 软挂起，softNoSubtitles=true（三处 UI 变「无字幕」✅ 正确）
+     *   22:23:53.483 soft verdict（cues=39 kept，不再渲染）
+     *   22:23:58.746 track changed 1→7 → **又是**软挂起 ❌（本轨字幕其实就在手上）
+     *   此后宿主复用缓存、不再发 JSON ⇒ **永久**停在「无字幕」
+     * </pre>
+     * 有了本字段就能识别「这次换轨的目标正是手上 cues 的主人」⇒ 直接恢复渲染
+     * （见 {@link #tryResumeFromCache}），完全不必等宿主重发 JSON。
+     *
+     * <p>写入时机只有两处：① 一次成功的 JSON 加载（盖章）；② 硬裁决销毁 cues（清章）。
+     * 换轨时**不动它** —— cues 没变，主人就没变。
+     */
+    private volatile long cuesOwnerIdentity = 0L;
 
     // ---- 播放结束 → 自动关窗（v29）----
     /** Media3 {@code Player} 的播放状态取值（与 App 内部常量对齐）。 */
@@ -401,8 +463,14 @@ public class SubtitleRepository {
         boolean reopened = false;
         // 【1.21.16 问题 1】本次是否撤销了「软裁决」降级显示
         boolean softNoSubtitlesCleared = false;
+        // 【973】本次是否撤销了「上一轨 cue 禁止渲染」
+        boolean quarantineLifted = false;
         synchronized (lock) {
             cues = newCues;
+            // 【980】给这份 cues 盖「主人」印章 = 当前活跃播放列表的身份。
+            //   宿主对同一轨的响应有缓存（切走再切回不会重发 JSON），
+            //   有了印章才能在切回时直接恢复渲染，见 tryResumeFromCache。
+            cuesOwnerIdentity = observedPlaylistIdentity;
             // v18：重建「字幕行精确匹配集」，供 isKnownSubtitleText() 做 O(1) 精确判定
             subtitleLineSet.clear();
             for (SubtitleCue c : newCues) {
@@ -419,6 +487,11 @@ public class SubtitleRepository {
             // 新字幕到达 → 结束「换轨待确认」，并作废已排队的判定
             pendingTrackDecision = false;
             pendingSoftSuspend = false; // 【2.1.3 问题 1】与挂起同生命周期
+            // 【973】新 JSON = 新音轨的字幕 ⇒ 撤销「上一轨 cue 禁止渲染」。
+            //   数据从来没删（就是同一份 cues 被换了内容），所以这一步就足够让显示层立刻恢复。
+            quarantineLifted = previousTrackCuesHidden;
+            previousTrackCuesHidden = false;
+            pendingIndexVerified = false;
             pendingToken++;
             pendingStartPosMs = -1L;
             pendingSawPositionReset = false;
@@ -464,6 +537,10 @@ public class SubtitleRepository {
         if (reopened) {
             XposedCompat.log("[DLsiteSoundFloat] subtitles arrived -> reopen floating window"
                     + " (auto-closed earlier)");
+        }
+        if (quarantineLifted) {
+            XposedCompat.log("[DLsiteSoundFloat] [973] previous-track cues released"
+                    + " -> new json arrived, rendering restored");
         }
         // 【1.21.15 问题 1】把假阴性结论点出来：打出这行就说明刚才那次「本音轨无字幕」
         // 是误判 —— 该音轨其实有字幕，只是 JSON 比裁决窗来得更晚。裁决窗时长照这些数据调。
@@ -524,6 +601,30 @@ public class SubtitleRepository {
      * 撤销判定、保留 cues、按当前进度重算当前字幕行（日志 `SPURIOUS track change`）。
      */
     public void onTrackChanged(String where) {
+        onTrackChanged(where, false, 0L);
+    }
+
+    /**
+     * 【973】带「换轨来源是否权威」的入口。
+     *
+     * @param indexVerified true = 来自权威序号门（状态 Map 的 {@code currentIndex} 变了），
+     *                      数据层据此跳过「疑似假换轨」的旧兜底，见 {@link #pendingIndexVerified}。
+     */
+    public void onTrackChanged(String where, boolean indexVerified) {
+        onTrackChanged(where, indexVerified, 0L);
+    }
+
+    /**
+     * 【980】带「目标播放列表身份」的入口 —— 反向切轨残留修复的落点。
+     *
+     * @param newIdentity 本次换轨<b>目标</b>的播放列表身份（{@code PlayerSourceHook#makeIdentity}）。
+     *                    0 = 老信号路径给不出身份，此时行为与本版之前完全一致。
+     */
+    public void onTrackChanged(String where, boolean indexVerified, long newIdentity) {
+        // 【980】先看是不是「切回手上已有字幕的那条轨」——是就直接恢复，不进挂起/软裁决。
+        if (tryResumeFromCache(where, newIdentity)) {
+            return;
+        }
         long now = SystemClock.uptimeMillis();
         long token;
         boolean suspended;
@@ -537,6 +638,7 @@ public class SubtitleRepository {
             cueCount = cues.size();
             pendingToken++;                 // 作废上一次排队的判定
             token = pendingToken;
+            pendingIndexVerified = indexVerified;   // 【973】本次判定的来源
             lastScannedSecond = Integer.MIN_VALUE;
             // v29：窗口若是被「播放结束」自动关掉的，换轨说明又有新内容要播 → 恢复窗口
             if (autoClosedForPlaybackEnded) {
@@ -569,6 +671,21 @@ public class SubtitleRepository {
                 //   现在显示层一律清空：cues / subtitleLineSet **一个都不动**（防假阴性的初衷
                 //   原样保留），JSON 晚到时 loadFromJsonArrayInternal 照旧能恢复显示。
                 currentSubtitles = new ArrayList<>();
+                // 【973】上一轨的 cue 从此**不再参与渲染**（数据一个都不删，见字段说明）。
+                //   只清 currentSubtitles 挡不住裁决窗之后 —— 那时 pendingTrackDecision 会被放开，
+                //   旧 cues 又变成可渲染的 ⇒ 新轨 0 秒起播会按旧列表匹配出上一轨的字幕。
+                previousTrackCuesHidden = true;
+                // 【code 975】Ari 2026-10-07 晚真机复测：「从有字幕音轨切换到无字幕音轨时，
+                //   原先音轨的字幕还是会保留，**并没有切换到无音轨状态并关掉悬浮窗**」。
+                //   ⇒ 换轨瞬间就**立刻**把本音轨按「无字幕」呈现：
+                //     ① softNoSubtitles 置位 ⇒ 胶囊/状态卡/悬浮窗三处口径统一变成「无字幕」；
+                //     ② 上面的 previousTrackCuesHidden 保证旧 cue 一行都渲染不出来；
+                //     ③ 下面（见本方法末尾）软挂起也**排提前收窗**，5 秒内没有新 JSON 就关窗。
+                //   ⚠️ 这不是「永久结论」：任何一次字幕 JSON 到达都会由
+                //     loadFromJsonArrayInternal 自动清掉 softNoSubtitles 并把窗口开回来，
+                //     所以真机上 JSON 晚到 5.5s / 11.1s 的那些轨只表现为「先空后自动恢复」，
+                //     不会再出现「旧轨字幕一直挂着」这种**错误内容**。
+                softNoSubtitles = true;
                 // 记录裁决用的位置基线：真换轨时位置会回退到 0 附近
                 pendingStartPosMs = playbackPositionMs;
                 pendingSawPositionReset = false;
@@ -580,6 +697,7 @@ public class SubtitleRepository {
             }
         }
         XposedCompat.log("[DLsiteSoundFloat] track changed via " + where
+                + (indexVerified ? " [index-gate]" : " [legacy-signal]")
                 + " | lastJson=" + (ago == Long.MAX_VALUE ? "never" : ago + "ms ago")
                 + " | cues=" + cueCount
                 + " | pos=" + (playbackPositionMs < 0 ? "?" : playbackPositionMs + "ms")
@@ -587,6 +705,7 @@ public class SubtitleRepository {
                         ? " -> SUSPEND subtitles, wait " + grace + "ms"
                                 + (grace > NO_SUBTITLE_GRACE_MS ? " (had cues)" : "")
                                 + (pendingSoftSuspend ? " [soft: display cleared, data kept]" : "")
+                                + " [973 previous-track cues quarantined]"
                         : " -> recent json, keep cues"));
         if (reopenedByTrack) {
             XposedCompat.log("[DLsiteSoundFloat] new track after playback end -> reopen floating window");
@@ -604,14 +723,127 @@ public class SubtitleRepository {
             //   于是最终时序：换轨 → 立刻清内容 → 窗口留着 → JSON 在裁决窗内到达就原地恢复
             //   （无闪，2.1.3 的收益保住）→ 裁决窗到点仍无 JSON 才由 resolvePendingTrack 收窗。
             //   硬挂起（手上一片空白、真可能无字幕）保留 code 942 的 5s 提前收窗，行为不变。
-            if (!pendingSoftSuspend) {
-                mainHandler.postDelayed(() -> provisionalEarlyClose(token),
-                        Math.min(NO_SUBTITLE_EARLY_CLOSE_MS, grace));
-            } else {
-                XposedCompat.log("[DLsiteSoundFloat] [code 960] soft suspend -> display cleared,"
-                        + " window kept (cues=" + cueCount + " kept), decide in " + grace + "ms");
+            // 【code 975】软挂起**也**排提前收窗。
+            //   2.1.3 / code 960 的原设计是「软挂起不关窗」，理由是「关窗 = 字幕凭空消失」——
+            //   但那个前提在 960 里已经被自己推翻了：**挂起瞬间显示层就已清空**
+            //   （currentSubtitles = new ArrayList() + previousTrackCuesHidden），
+            //   窗口里本来就是空的，留着它只是「一块空白浮着」。
+            //   Ari 2026-10-07 晚明确要求「切换到无音轨状态**并关掉悬浮窗**」⇒ 两种挂起一视同仁。
+            //   代价：JSON 在 5s 之后才到（实测 5.5s / 11.1s）的那些轨会「先关窗、JSON 到了再自动开回」，
+            //   表现为一次轻微的窗口闪 —— 这是「错误内容一直挂着」与「偶尔闪一下」之间的取舍，
+            //   本轮按 Ari 的指令选后者。
+            mainHandler.postDelayed(() -> provisionalEarlyClose(token),
+                    Math.min(NO_SUBTITLE_EARLY_CLOSE_MS, grace));
+            if (pendingSoftSuspend) {
+                XposedCompat.log("[DLsiteSoundFloat] [code 975] soft suspend -> display cleared,"
+                        + " window closes in " + Math.min(NO_SUBTITLE_EARLY_CLOSE_MS, grace)
+                        + "ms unless json arrives (cues=" + cueCount + " kept)");
             }
         }
+    }
+
+    /**
+     * 【980】由 {@code PlayerSourceHook} 在每次读到<b>活跃播放列表</b>时推送其身份。
+     *
+     * <p>只用于给新加载的 cues 盖「主人」印章（见 {@link #cuesOwnerIdentity}），
+     * <b>不触发任何状态变更</b> —— 宿主会交替读到多个列表实例，若拿它直接驱动 UI，
+     * 就会把「多实例读数」变成字幕窗口的抖动源。
+     *
+     * @param identity 播放列表身份（{@code PlayerSourceHook#makeIdentity}）
+     */
+    public void noteObservedPlaylistIdentity(long identity) {
+        observedPlaylistIdentity = identity;
+    }
+
+    /**
+     * 【980】该身份是不是「手上这份 cues 的主人」—— 是的话，切回它可以直接恢复渲染。
+     *
+     * <p>无锁读（{@link #cuesOwnerIdentity} 是 volatile）：本方法会被
+     * {@code PlayerSourceHook} 的去抖闸门高频调用，不能有任何锁竞争。
+     */
+    public boolean ownsCuesFor(long identity) {
+        return identity != 0L && identity == cuesOwnerIdentity;
+    }
+
+    /**
+     * 【980】**反向切轨残留的根修**：切回的正是「手上 cues 的主人」时，直接恢复渲染。
+     *
+     * <p>── 旧实现错在哪 ──
+     * 恢复路径只有一条：{@link #loadFromJsonArrayInternal}（宿主重发 JSON）。
+     * 但宿主对**同一轨**的响应有缓存 —— 切走再切回来**不会重新发请求**，
+     * 于是「切到无字幕轨 → 切回有字幕轨」必然卡在「无字幕」：
+     * <pre>
+     *   软挂起 ⇒ softNoSubtitles=true（三处 UI 变「无字幕」）
+     *   ⇒ 15s 软裁决定案（cues 保留但 previousTrackCuesHidden 挡住渲染）
+     *   ⇒ 无新 JSON ⇒ **永久**停在「无字幕」，而数据其实一直在 cues 里
+     * </pre>
+     * 真机日志 {@code LSPosed_20261007_222354}（22:23:18 加载 39 cues → 22:23:38 切走 →
+     * 22:23:58.746 切回，仍是软挂起）。
+     *
+     * <p>── 本方法的判据为什么安全 ──
+     * {@link #cuesOwnerIdentity} 只在**一次成功的 JSON 加载**时盖章，所以
+     * 「身份一致」= 这份 cue 列表就是这条轨的字幕，渲染它不可能画错内容。
+     * 身份由 {@code (trackCount, durationMs, currentIndex)} 三元组打包，
+     * 跨轨 / 跨作品必变；三者全同才是同一条轨。
+     *
+     * @return true = 已按缓存恢复（调用方不必再走挂起 / 裁决流程）
+     */
+    private boolean tryResumeFromCache(String where, long newIdentity) {
+        if (newIdentity == 0L || newIdentity != cuesOwnerIdentity) {
+            return false;
+        }
+        int cueCount;
+        long posNow;
+        boolean reopened = false;
+        boolean wasBlocked;
+        synchronized (lock) {
+            cueCount = cues.size();
+            if (cueCount == 0) {
+                // 印章与数据应当同生同灭；真碰上不一致就放弃快路径，交回旧流程。
+                return false;
+            }
+            wasBlocked = previousTrackCuesHidden || softNoSubtitles || pendingTrackDecision;
+            // 撤销「挂起 / 软裁决 / 上一轨隔离」：数据一直是好的，只是被挡在渲染之外。
+            pendingTrackDecision = false;
+            pendingSoftSuspend = false;
+            softNoSubtitles = false;
+            previousTrackCuesHidden = false;
+            pendingIndexVerified = false;
+            pendingToken++;                 // 作废已排队的「裁决 / 提前收窗」任务
+            pendingStartPosMs = -1L;
+            pendingSawPositionReset = false;
+            pendingPosSamples = 0;
+            lastScannedSecond = Integer.MIN_VALUE;
+            currentCueIndex = -1;
+            posNow = playbackPositionMs;
+            if (posNow >= 0) {
+                int sec = (int) Math.floor(posNow / 1000.0);
+                lastScannedSecond = sec;
+                int idx = computeIndexAtSecondLocked(sec);
+                if (idx >= 0) {
+                    currentCueIndex = idx;
+                }
+            }
+            // 屏上镜像清掉：本轨内容由 cue 路径负责，下一帧就是正确的行
+            currentSubtitles = new ArrayList<>();
+            if (autoClosedForNoSubtitle) {
+                autoClosedForNoSubtitle = false;
+                floatingWindowOpen = true;
+                reopened = true;
+            }
+        }
+        XposedCompat.log("[DLsiteSoundFloat] [code 980] track changed via " + where
+                + " -> BACK to the playlist these cues belong to"
+                + " | cues=" + cueCount
+                + " | pos=" + (posNow < 0 ? "?" : posNow + "ms")
+                + " -> RESUME from cache (host reuses its own json, no need to wait)"
+                + (wasBlocked ? " [suspend/soft-verdict/quarantine revoked]" : ""));
+        if (reopened) {
+            XposedCompat.log("[DLsiteSoundFloat] [code 980] return to cached track"
+                    + " -> reopen floating window (auto-closed earlier)");
+        }
+        notifyObservers();
+        return true;
     }
 
     /**
@@ -660,6 +892,9 @@ public class SubtitleRepository {
                 return; // 期间又换轨、或新字幕已到达（都已作废本次判定）
             }
             pendingTrackDecision = false;
+            // 【973】本次判定的来源：权威序号门 ⇒ 不做假换轨兜底（见 pendingIndexVerified）
+            final boolean indexVerified = pendingIndexVerified;
+            pendingIndexVerified = false;
             pendingSoftSuspend = false; // 【2.1.3 问题 1】与挂起同生命周期
             cueCount = cues.size();
             samples = pendingPosSamples;
@@ -680,19 +915,26 @@ public class SubtitleRepository {
                 // 于是切到无字幕音轨时字幕不切、继续播旧字幕（问题 2）。
                 // 现在改成**严格要求观察到"位置确实大幅回退"**才算假换轨；
                 // 否则按真换轨处理（照旧判「无字幕」），把默认行为改回正确的一侧。
-                if (pendingSawPositionReset) {
+                // 【973】indexVerified（权威序号门）时**不做**这两条假换轨兜底：
+                //   序号变了就是换了轨，而兜底是为老信号路径写的；在真换轨上误判会直接
+                //   撤销挂起 ⇒ 上一轨的 cue 又变成可渲染 ⇒ 用户报的 bug 原样复现。
+                //   （真机 2026-10-07 两份日志里 SPURIOUS 从未触发，佐证它在序号门上本就不参与。）
+                if (!indexVerified && pendingSawPositionReset) {
                     spurious = true;
                     // 撤销挂起。**不**用 playbackPositionMs 重算字幕行 ——
                     // 那个值在换轨瞬间会被清零/残留旧值，据其重算会跳回已播过的字幕（问题 1）。
                     // 保留原有 currentCueIndex，交给后续正常的位置回调推进。
                     lastScannedSecond = Integer.MIN_VALUE;
-                } else if (samples > 0 && pendingStartPosMs > POSITION_RESET_TOLERANCE_MS
+                    previousTrackCuesHidden = false;   // 【973】没换轨 ⇒ 旧 cues 仍是本轨的
+                } else if (!indexVerified && samples > 0
+                        && pendingStartPosMs > POSITION_RESET_TOLERANCE_MS
                         && playbackPositionMs >= 0
                         && playbackPositionMs > pendingStartPosMs) {
                     // 位置基准明显大于 0（说明基线取到的是"旧轨还在播"的位置），
                     // 而当前位置比它还大 → 音频一直在往前走、从未重开 → 确实没换轨。
                     spurious = true;
                     lastScannedSecond = Integer.MIN_VALUE;
+                    previousTrackCuesHidden = false;   // 【973】同上
                 } else {
                     // 等待期内没有任何新的字幕 JSON → 该音轨没有字幕
                     // 【1.21.16 问题 1】这里原来无条件 `cues = new ArrayList<>()`，
@@ -731,6 +973,8 @@ public class SubtitleRepository {
                         // 行为与旧版一致：清空 + 关窗。
                         cues = new ArrayList<>();
                         subtitleLineSet.clear();
+                        // 【980】数据真被销毁了 ⇒ 撤销「主人」印章（否则会拿空 cues 去「恢复」）
+                        cuesOwnerIdentity = 0L;
                         currentSubtitles = new ArrayList<>();
                         currentCueIndex = -1;
                         lastScannedSecond = Integer.MIN_VALUE;
@@ -777,6 +1021,7 @@ public class SubtitleRepository {
                 XposedCompat.log("[DLsiteSoundFloat] [code 960] soft verdict -> no json within grace,"
                         + " display stays cleared (cues=" + cueCount + " kept,"
                         + " no false \"no subtitles\")"
+                        + " [973 prev-track cues quarantined, not renderable]"
                         + (closed ? " -> auto-closed floating window" : ""));
             } else {
                 XposedCompat.log("[DLsiteSoundFloat] track decision: NO subtitles for this track"
@@ -1015,14 +1260,17 @@ public class SubtitleRepository {
 
     public List<String> getCurrentSubtitles() {
         synchronized (lock) {
-            return (softNoSubtitles || (pendingTrackDecision && !pendingSoftSuspend))
+            // 【973】previousTrackCuesHidden 也按「空」返回：上一轨的 cue 一律不参与渲染
+            return (softNoSubtitles || previousTrackCuesHidden
+                    || (pendingTrackDecision && !pendingSoftSuspend))
                     ? new ArrayList<>() : new ArrayList<>(currentSubtitles);
         }
     }
 
     public List<SubtitleCue> getCues() {
         synchronized (lock) {
-            return (pendingTrackDecision || softNoSubtitles)
+            // 【973】previousTrackCuesHidden：数据保留，但一律按「空」返回（不参与渲染）
+            return (pendingTrackDecision || softNoSubtitles || previousTrackCuesHidden)
                     ? new ArrayList<>() : new ArrayList<>(cues);
         }
     }
@@ -1084,7 +1332,8 @@ public class SubtitleRepository {
      */
     public int findCurrentCueIndex() {
         synchronized (lock) {
-            if (pendingTrackDecision || cues.isEmpty()) {
+            // 【973】previousTrackCuesHidden：上一轨的 cue 不再定位（否则显示层会画出上一轨的句子）
+            if (pendingTrackDecision || previousTrackCuesHidden || cues.isEmpty()) {
                 return -1;
             }
             if (currentCueIndex >= 0 && currentCueIndex < cues.size()) {

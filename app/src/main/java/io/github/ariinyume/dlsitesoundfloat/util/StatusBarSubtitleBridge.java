@@ -184,13 +184,21 @@ public final class StatusBarSubtitleBridge {
      */
     public static final long SCOPE_FRESH_MS = 8000L;
 
+    /** 【code 975】SystemUI 包名 —— 作用域 PING 用它做**显式广播**的目标（见 sendScopePing）。 */
+    private static final String SYSTEMUI_PKG = "com.android.systemui";
+
     /** 【code 941】发一条作用域探测（App 侧心跳调用）。 */
     public static void sendScopePing(Context ctx) {
         if (ctx == null) {
             return;
         }
         try {
-            ctx.sendBroadcast(new Intent(ACTION_SCOPE_PING));
+            // 【code 975】同样改成显式广播（见 ConfigBus.sendHostScopePing 的注释）：
+            // 隐式广播在「目标进程处于后台」时会被系统拦下，SystemUI 虽为系统进程、
+            // 影响较小，但统一口径后行为更可预期，也避免被 ROM 的后台策略误伤。
+            Intent ping = new Intent(ACTION_SCOPE_PING);
+            ping.setPackage(SYSTEMUI_PKG);
+            ctx.sendBroadcast(ping);
         } catch (Throwable ignored) {
         }
     }

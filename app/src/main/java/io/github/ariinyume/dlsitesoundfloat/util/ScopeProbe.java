@@ -51,8 +51,27 @@ public final class ScopeProbe {
 
     private static final String TAG = "[DLsiteSoundFloat:ScopeProbe]";
 
-    /** 默认探测窗口：够跨进程广播一个来回，又不至于让状态卡长时间停在「检测中」。 */
-    public static final long DEFAULT_WINDOW_MS = 1200L;
+    /**
+     * 默认探测窗口：够跨进程广播一个来回，又不至于让状态卡长时间停在「检测中」。
+     *
+     * <p>【code 975】1200ms → 2800ms。原因见 {@link #PING_REPEAT_MS}。
+     */
+    public static final long DEFAULT_WINDOW_MS = 2800L;
+
+    /**
+     * 【code 975】窗口内**重发 PING** 的间隔。
+     *
+     * <p>为什么要重发 —— Ari 2026-10-07 报「DLsiteSound 一直开在后台，但插件经常检测不到
+     * 程序在运行、持续显示模块未激活」。真机日志里 PONG 时有时无：
+     * 19:16:27 那次带的是 {@code hostAlive=false}，而 19:18:21~19:31:10 整段宿主
+     * 连状态 Map 都不再读（{@code since=674458ms}）—— 后台进程被系统降级/冻结期间，
+     * 单发一次的广播很容易错过或者来不及应答。
+     *
+     * <p>所以窗口内每 {@code PING_REPEAT_MS} 重发一次（约 7 次），任一次收到 PONG 即算成功。
+     * 配合 {@link ConfigBus#sendHostScopePing} 的显式广播，覆盖「后台进程应答慢」这一整类情况。
+     * ⚠️ 收到 PONG 后**不提前收口** —— 还要等 SystemUI 那条通道的结果（两条通道分立判定）。
+     */
+    private static final long PING_REPEAT_MS = 400L;
 
     /** 探测结果。 */
     public static final class Result {
@@ -186,8 +205,26 @@ public final class ScopeProbe {
             return;
         }
 
-        ConfigBus.sendHostScopePing(appCtx);
-        StatusBarSubtitleBridge.sendScopePing(appCtx);
+        // 【code 975】窗口内**多轮重发** —— 单发一次在「目标进程处于后台」时太容易丢。
+        //   实测宿主退到后台后被系统降级，广播应答时有时无（真机日志里 PONG 时断时续），
+        //   一轮 400ms、共约 7 轮把整个窗口铺满，任一轮收到 PONG 即算授权成功。
+        final long deadline = android.os.SystemClock.uptimeMillis() + Math.max(200L, windowMs);
+        final Runnable[] pingLoop = new Runnable[1];
+        pingLoop[0] = new Runnable() {
+            @Override
+            public void run() {
+                if (finished[0]) {
+                    return;
+                }
+                ConfigBus.sendHostScopePing(appCtx);
+                StatusBarSubtitleBridge.sendScopePing(appCtx);
+                long now = android.os.SystemClock.uptimeMillis();
+                if (now + PING_REPEAT_MS <= deadline) {
+                    handler.postDelayed(pingLoop[0], PING_REPEAT_MS);
+                }
+            }
+        };
+        pingLoop[0].run();
         handler.postDelayed(finish, Math.max(200L, windowMs));
     }
 }
