@@ -663,3 +663,53 @@ PixelCopy 报错 …… 连续 3 次真失败即本会话放弃 → 面板自动
 砍掉"取背景色相"那套 —— 面板的颜色只由透出来的背景决定，霜只负责补亮度。
 · 保留不动：霜量固定（不再随背景摆动，切页不会"一会发白一会发暗"）、
 989 的留底基线与 991 的留底落盘、988 的噪声鲁棒过渡缓冲。
+
+### 2.2.14h / code 993 / label 1008.14 **架构重构：履历归档 + 几何内核可测试化**
+
+· 【履历归档】`app/build.gradle` 的 617 行履历注释整块搬进本文件，
+gradle 只留最近 3 条摘要 + 指针（690 → 202 行）。
+提取器 `tools/extract_changelog.py` 幂等，带断言（38 条 / 首 0921.1 /
+尾 2.2.14g / 必须含 code 978 那条），解析数不对即抛异常停手。
+· 【几何抽取】胶囊落位几何从 `ActivityButtonHook` 抽成 `CapsuleGeometry`
+（260 行纯计算内核 + hook 侧薄外壳，4780 → 4733 行）。
+⚠️ 动手前取证发现 `capsuleBottomForSlider` 有 **7 处静态字段写入**，
+且 `dip2px` 会懒锁定并写 `sCapsuleMetricsDensity` + `sDensityPx`
+⇒ 改为「纯内核 + 外壳」而非直搬。
+· 【补交入库】6 个长期未跟踪文件：`LiquidGlassDrawable`（965 行，液态玻璃
+系列核心绘制类）/ `BackdropBlur` / `BackdropBaseline` / `HostBackdrop` /
+`LogGate`（诊断日志统一闸门）/ `docs/日志类目梳理与调试分级-2.2.14-code992.md`。
+· 【版本口径】992 → 993（label 1008.13 → 1008.14），解决 `LogGate` 类头
+写「993 起」而 gradle 是 992 的口径打架。
+· 【验证】`rm -rf app/build` 后 `assembleDebug --offline` BUILD SUCCESSFUL，
+产物 5,574,460 B；几何黄金向量与真机日志逐值吻合
+（`sliderCy=1807→bottom=1066`、`1799→1074`）。
+· 【真机】Ari 15:0x 装机反馈无异常，日志审计 28,724 行**零异常**
+（`work_diag_993/993-真机日志审计.md`）：几何 275 次全走单分支、
+去抖状态完好；`v216-fix` 阶段 **1440/1440 零偏移**；滚动 rejected 0、方向反转 0。
+
+### 2.2.14i / code 994 / label 1008.15 **第 2 批重构：页面跟随判据抽成PageFollowPolicy**
+
+· 【先取证再动手】`ActivityButtonHook` 的页面跟随状态机在 **L1573~L1620**
+（1,048 行），涉及 36 个 `s*` 静态字段。逐字段扫描「区间内写 − 区间外写」后：
+**34 个在区间外也被读写**（L249/L301/L344/L356/L708/L716/L971/L1012/L3653~L3677
+—— 结构探针、心跳、宿主 `setTranslationY` 钩子都在用），
+只有 `sFollowRef` / `sHoldProbeRef` 2 个是区间独占。
+⇒ **上轮报告「静态字段 260 → ~120」这个估计不成立**，整体搬走会造成字段分裂
+成两份（明确的回归来源）。取证报告：`work_diag_993/994-第2批重构-取证报告.md`。
+· 【改为抽纯判定层】新建 `PageFollowPolicy`（160 行，**零状态**）：
+`isPageHeld`（五道门判据）/ `reportsStill`（v44 热待机语义）/
+`clampOffset`（钳制算术）。三个方法都是「只读状态 → 返回值」的纯函数，
+阈值仍由 hook 侧以常量入参传入，**判据顺序与阈值一字未改**。
+`ActivityButtonHook` 4733 → 4711 行。
+· 【为什么值得抽】五道门涉及 5 个阈值常量（`PAGE_MOTION_HOLD_MS=200` /
+`HOLD_SNAPSHOT_MS=2600` / `PAGE_HOLD_PX=24` / `PAGE_HOLD_MIN_AREA=0.12` /
+哨兵 `NO_BASELINE`）的组合，此前**只能真机试**。v36 复盘里
+「门③读错字段、从来没有生效过」正是这类组合判据的典型事故
+（门①②恰好都能通过，于是门③专门要防的场景原样发生）。
+· 【验证】`tools/geom/verify_page_follow_policy.py` 用**真机日志实测值**当向量：
+82 条 `hide suppressed: page held` 去重成 **79 个不同取值组合**（vis 全为 2772
+= 切后台后播放页停靠屏外，即门⓪ 注释记的那个值；snap 2767~2772 / 211~428ms），
+**79/79 判定为 True 与真机一致**；门序/边界 12 条、reportsStill 5 条（含 v44
+热待机 89/90 边界）、clampOffset 13 条 ⇒ **109/109 全通过**。
+· 【顺带发现】`clampOffset` 的上限 = 2772×1.6 = 4435，而**真机位移最大 2772
+（恰为屏高）** ⇒ 这道钳制从未在真机触发过，是纯保险（不是 bug，但值得记）。

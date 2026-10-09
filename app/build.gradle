@@ -37,7 +37,7 @@ plugins {
 def appVersionTag = '2.2.14'
 // ⚠️ 写成 int 字面量 925（不要写 0925 —— Groovy 可能按八进制/前导零解析）：
 //    versionCode 的**数值**是 925，管理器里显示 925，可读语义看 appVersionCodeLabel。
-// ── 版本履历（code 992 / label 1008.13）──
+// ── 版本履历（code 994 / label 1008.15）──
 //
 // ⚠️ **本文件不再是历史档案。** 完整 38 条履历（code 923 → 992）已搬至
 //    仓库根 `CHANGELOG.md`，用 `python tools/extract_changelog.py` 可从本文件重新生成。
@@ -127,8 +127,8 @@ def appVersionTag = '2.2.14'
 //        · 保留不动：霜量固定（不再随背景摆动，切页不会"一会发白一会发暗"）、
 //        989 的留底基线与 991 的留底落盘、988 的噪声鲁棒过渡缓冲。
 //
-def appVersionCode = 993
-def appVersionCodeLabel = '1008.14'
+def appVersionCode = 994
+def appVersionCodeLabel = '1008.15'
 def appVersionName = '2.2.14'
 
 android {
