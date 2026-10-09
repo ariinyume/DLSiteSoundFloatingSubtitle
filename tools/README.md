@@ -34,6 +34,71 @@ python tools/run_all_verify.py --list         # 只列清单不执行
 
 ## 脚本明细
 
+### `verify_997.py` — dex 字节码层（code 997 亮度锁定 + 第 5 批重构）
+
+```
+用法:  python tools/verify_997.py <apk_997> <apk_996>
+主验 = code 997 包；对照 = code 996 包
+```
+
+验两项，共 **11 项 / 7 个有区分力锚**：
+
+**A. 亮度锁定（LiquidGlassDrawable 填充常量）** —— ⚠️ **数值改动只有「dex 静态字段
+常量层」能验准**：javac 把 `static final` 基本类型常量内联进指令，字符串层查不到值。
+本脚本读 dexdump 的 `value :` 行：
+
+| 字段 | 996 | 997 |
+| --- | --- | --- |
+| `ADAPTIVE_BASE_BLACK` | `335544320`（0x14000000） | `-1157627904`（0xBB000000） |
+| `ADAPTIVE_VEIL_ALPHA` | `0.22` | `0.44` |
+| `LOCKED_VEIL_LUM` | （无此字段） | `0.72` |
+| `TARGET_LUM` | `0.42` | `0.42`（保持型） |
+
+**B. 第 5 批重构（PokeThrottle）**
+- `PokeThrottle` 类名 / `POKE_WINDOW_MS` 常量：997 有、996 无
+- **指令层锚**：`pokeStructureChanged` 的**方法体**里含 `PokeThrottle;.decide`
+  （dexdump 会把方法引用展开成完整字符串，这是最强的「真的在调」证据）
+- **负向锚**：`hasStats` 已绝迹（锁定后不再需要该条件）
+
+⚠️ 定位类切片前要先确定**类定义在哪个 dex** —— 类名在多个 dex 里作为「引用」
+出现，只有一个是定义。本脚本对候选 dex 逐个 dump 再找 `Class descriptor`。
+
+---
+
+### `verify_996.py` — dex 字节码层（code 996 第4 批重构）
+
+验作用域探测是否**真从 `ActivityButtonHook` 搬到 `ScopeWatcher`**。
+
+```
+用法:  python tools/verify_996.py <apk_996> <apk_995>
+主验 = code 996 包；对照 = code 995 包（重构前的上一交付包）
+```
+
+🔴 **本脚本贡献了一条新铁律：判据分三种类型，不能混用一个 `add()`**：
+
+| 类型 | 期望 | 用哪个方法 | 典型用途 |
+| --- | --- | --- | --- |
+| **正向锚** | 主验命中 / 对照未命中 | `ck.add()` | 「新代码已编进包」 |
+| **负向锚** | 主验**不**命中 / 对照命中 | `ck.add_negative()` | 「旧物已绝迹」 |
+| **保持型** | **两版都命中** | `ck.add_keep()` | 「功能没被搬丢」（日志串仍在） |
+| **区分型「值变化」** | 主验==新值 **且** 对照==旧值 **且** 新值≠旧值 | `ck.add_diff()` | 「常量值改了」（996 只归纳出三型，997 补上第四型） |
+
+996 首版只有 `add()`，结果：负向锚的**正确结果**（「主验=· 对照=Y」）
+被报成 FAIL，保持型被报「无区分力」⇒ **15 个假 FAIL**。
+
+⚠️ **第四型（997 补）为什么必须单列**：改**常量值**（如 `ADAPTIVE_BASE_BLACK`
+0x14→0xBB）时，两版**都有**这个字段 ⇒ 用 `add()` 判「存在性」会报
+「无区分力(两版都成立)」—— 可实际上「值变了」正是我们要的区分力。
+⇒ 判「值变化」要用 `add_diff()`，它额外要求新旧期望值**本身不同**。
+
+⚠️ 另两个坑：
+- **descriptor 带单引号**：dexdump 输出是 `Class descriptor  : 'Lfoo/Bar;'`。
+  按不带引号去 find 永远返回 -1 ⇒ 切片 None ⇒ 回落到全量匹配 ⇒ **两版都命中**的假象。
+- **类会跨 dex**：996 里 `ActivityButtonHook` 被拆进两个 dex，
+  按 `os.listdir` 顺序拼接会从一个 dex 中间截到另一个中间 ⇒ 必须按 dex 序号排序。
+
+---
+
 ### `verify_995.py` — dex 字节码层（code 995）
 
 验 code 995 六项改动是否**真的编进了 APK**，而不是只改了源码。

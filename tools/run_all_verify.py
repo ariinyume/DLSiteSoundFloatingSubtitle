@@ -29,6 +29,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # 脚本 → (类别, 一句话说明它验什么)
 # ⚠️ 说明必须与脚本内部判据一致；改判据时同步改这里，否则索引表本身就会骗人。
 SCRIPTS = [
+    ('verify_997.py', 'dex 字节码层',
+     'code 997 亮度锁定 + 第5批重构：常量值变化与 PokeThrottle 调用（11 项，7 个有区分力锚）'),
+    ('verify_996.py', 'dex 字节码层',
+     'code 996 第4批重构：作用域探测是否真搬到 ScopeWatcher（27 项，20 个有区分力锚）'),
     ('verify_995.py', 'dex 字节码层',
      'code 995 六项改动是否真编进 APK（28 项，22 个有区分力锚）'),
     ('verify_protocol_src.py', '源码层',
@@ -45,6 +49,8 @@ SCRIPTS = [
 # ⚠️ 只有**真正解析 APK/dex** 的脚本才登记在这里。
 #   不接包的脚本（如源码层校验、真机日志校验）不要登记，否则会被误判成「缺参数」。
 NEEDS_APK = {
+    'verify_997.py': (997, 996),   # <apk_997> <apk_996>
+    'verify_996.py': (996, 995),   # <apk_996> <apk_995>
     'verify_995.py': (995, 994),   # <apk_995> <apk_994>
     'verify_994.py': (994, 993),   # <apk_994> <apk_993>
 }

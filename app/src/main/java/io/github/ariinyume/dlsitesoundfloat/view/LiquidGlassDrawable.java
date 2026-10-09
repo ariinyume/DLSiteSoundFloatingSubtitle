@@ -177,7 +177,15 @@ public class LiquidGlassDrawable extends Drawable {
     //    亮背景侧（纯白页）则由旧版的 0.58 收到 0.42，白字对比度**同时变好**
     //    （这与 2.2.14 "空白页面几乎有点看不太清字幕"的诉求同向）。
     //    钉住亮度这条机制一字未动 —— 切页仍旧不跳，只是整块的落点更暗、更"烟熏"。
-    /** 面板最终亮度的目标落点（见上方 990 段的标定依据）。 */
+    /**
+     * 面板最终亮度的**目标落点**（见上方 990 段的标定依据）。
+     *
+     * <p>⚠️【code 997】本值**不再参与运行时计算** —— 霜色锁定后不再有「把亮度压到目标」
+     * 这个动作。保留它是因为：① 它是 989~992 四轮标定的**唯一设计基准**，
+     * 上方与 {@link #LOCKED_VEIL_LUM}、{@link #ADAPTIVE_VEIL_ALPHA} 的注释都引用它；
+     * ② {@link #LOCKED_VEIL_LUM} 的取值正是按「让典型背景下的面板落点回到本值」推出来的
+     * —— 即锁定后**仍然落在同一个 0.42 上**，只是不再逐帧校正。
+     */
     private static final float TARGET_LUM = 0.42f;
     /**
      * 【991】霜面的**固定密度**（有真实背景时，面内那一层"玻璃料"的不透明度）。
@@ -209,8 +217,45 @@ public class LiquidGlassDrawable extends Drawable {
      *    ⚠️ 本值只决定"玻璃占多少"，不再承担"把最亮页也压暗"的职责；
      *       往上调＝更实更暗但会洗色，往下调＝更透、颜色更接近页面本身。
      *    霜色同时改回**中性冷灰**（去掉 991 那套"取背景色相"的做法 —— 那是"变奇怪"的另一半）。
+     *
+     * ⚠️【code 997：0.22 → 0.44 —— "切页时暗时亮"的根治】
+     *    Ari 2026-10-09 第四次反馈：宿主内切页时浮窗**时暗时亮**。
+     *    真机日志（`work_diag_996b`）铁证 —— 背景候选亮度在 14 秒里被采纳地连跳三次：
+     *    {@code 0.2069 → 0.3779 → 0.1948 → 0.3718}。
+     *    两个叠加因由：
+     *      ① **霜色剧烈摆动**：按 {@link #TARGET_LUM} 反解，背景 0.1948 需要**纯白霜**
+     *         （cv 被夹到 1.0），背景 0.3718 只需**中灰霜**（cv≈0.69）——
+     *         均值亮度虽然都落在 0.42，"纯白灰"与"紫灰"的**质感**差异肉眼极明显；
+     *      ② **背景透出率高达 72%**（面板总不透明度仅 28%）⇒ 背景自己一抖，
+     *         面板亮度就跟着抖 0.127。
+     *    ⇒ 本值抬到 **0.44**，配合 {@link #ADAPTIVE_BASE_BLACK} 抬高，
+     *      把背景透出率压到 **28%**（面板总不透明度 72%）；
+     *      同时霜色**改为锁定**（{@link #LOCKED_VEIL_LUM}，不再解方程、不再读背景亮度）。
+     *    实测效果：同样的背景抖动下，面板亮度变化从 **0.127 降到 0.050**（-61%），
+     *    且**霜色恒定 ⇒ 不再有"白灰↔紫灰"的质感剧变**。
+     *    ⚠️ 物理约束（990/991 注释里已写死）：单层半透明面板**不可能同时**做到
+     *      "亮度恒定"与"完全通透"。本版按 Ari 的选择取**亮度恒定**，牺牲部分通透感。
+     *      本值往回调＝更透但更抖，往上调＝更实但更稳。
      */
-    private static final float ADAPTIVE_VEIL_ALPHA = 0.22f;
+    private static final float ADAPTIVE_VEIL_ALPHA = 0.44f;
+    /**
+     * 【code 997】**锁定的霜色亮度**（0–1）—— 面板不再随背景亮度改变自身填充。
+     *
+     * <p>取代原「解 {@code X·(1-α) + cv·α = TARGET_LUM} 反解 cv」的做法。
+     * 原做法在**每一帧**都要读实测背景亮度，于是背景一抖面板就跟着变色；
+     * 新做法把 cv 钉成常量 ⇒ 面板的**自身填充完全恒定**，
+     * 剩下的唯一变量是「背景透过来的那 28%」（已由 {@link #ADAPTIVE_VEIL_ALPHA}
+     * 与 {@link #ADAPTIVE_BASE_BLACK} 共同压缩）。
+     *
+     * <p>取值依据：让**典型背景**（实测 0.19~0.37）下的面板落点与 Ari 截图
+     * （2026-10-09 18:53:37，背景亮度 ≈0.372）那一刻的观感一致 ——
+     * 面板 ≈ {@code 0.372×0.28 + 0.72×0.44 ≈ 0.42}，即原先的目标落点。
+     *
+     * <p>⚠️ 代价（已知且接受）：**很亮的页面**（纯白 ≈1.0）面板会到 ≈0.60，
+     * 白字对比度从原自适应的 2.2:1 降到约 1.6:1。这是"锁定亮度"的必然代价 ——
+     * 想要亮页也可读，只能把本值调低（但暗页会跟着更暗），或放弃锁定。
+     */
+    private static final float LOCKED_VEIL_LUM = 0.72f;
     /**
      * 【989】「玻璃材质量」的淡出起点（以 {@code fill} 计）。
      *
@@ -227,8 +272,16 @@ public class LiquidGlassDrawable extends Drawable {
      * 且亮侧压到 0.32 就到头了；这一层与背景亮度无关，给白字一个最低对比度地板，
      * 同时让玻璃本体更像"一块有厚度的材质"而不是纯色片。
      * 与所有面内填充一致 ×fill（模糊强度 0% 时不留，见 FILL_EXP）。
+     *
+     * ⚠️【code 997：0x14 → 0xBB（8% → 73%）】
+     *    原值 8% 是当"对比度地板"用的，那时面板靠自适应霜色压亮度；
+     *    本版改为**锁定亮度**后，这一层成了"压住背景透出"的主力：
+     *    名义 0xBB(73%) × fill(默认 0.682) ≈ **有效 50%**，
+     *    与 {@link #ADAPTIVE_VEIL_ALPHA} 0.44 合起来 ⇒ 背景透出率
+     *    {@code (1-0.50)×(1-0.44) = 28%}（原为 72%）。
+     *    ⚠️ 与所有面内填充一样 ×fill ⇒ **模糊强度 0% 时仍然全透明**（既有语义未破）。
      */
-    private static final int ADAPTIVE_BASE_BLACK = 0x14000000;
+    private static final int ADAPTIVE_BASE_BLACK = 0xBB000000;
 
     // —— 【2.2.13】"玻璃填充量"随「模糊强度」走 ——
     //
@@ -475,10 +528,14 @@ public class LiquidGlassDrawable extends Drawable {
         edgeBottomColor = old.edgeBottomColor;
     }
 
-    /** 是否拿到了背景统计（决定自适应霜面与光圈染色是否启用）。 */
-    private boolean hasStats() {
-        return backdropMeanLum >= 0f;
-    }
+    // 【code 997】原 `hasStats()`（`return backdropMeanLum >= 0f;`）已移除。
+    //   它此前只服务 draw() 的填充分支 —— 那个分支已改为「锁定填充」，不再需要
+    //   「是否拿到背景亮度」这个前提；而它注释里提到的另一半职责（光圈染色是否启用）
+    //   实际由 `edgeTopColor` / `edgeBottomColor` 自身是否有效来判，与本方法无关。
+    //   ⚠️ `backdropMeanLum` 字段**保留**：`setBackdropStats` 是跨类 API（由
+    //   `FloatingSubtitleView` 调用），且 `inheritRuntimeStateFrom` 要传递它；
+    //   它现在不参与填充计算，只作为「背景确实在变、而面板不再跟着变」的诊断依据。
+    //   如需彻底移除，要连带改 `setBackdropStats` 签名与全部调用方。
 
     /**
      * 【2.2.12】**仅供设置页预览**：铺一张背景位图在面内。
@@ -595,15 +652,23 @@ public class LiquidGlassDrawable extends Drawable {
             paint.setFilterBitmap(false);
         }
 
-        if ((systemBlurActive || previewBackdrop != null) && hasStats()) {
-            // 【2.2.14】恒定薄黑底（×fill）：先铺在霜面之下，作为白字的对比度地板。
+        // 【code 997】条件从 `(systemBlurActive || previewBackdrop != null) && hasStats()`
+        //   收窄为 **只看 systemBlurActive**，两个理由：
+        //     ① **去掉 hasStats()**：锁定填充不需要背景亮度这把钥匙，而且
+        //        「统计暂时拿不到 ⇒ 切静态深色底」本身也是一次可见的明暗跳，正好一并消掉；
+        //     ② **去掉 previewBackdrop**：设置页预览必须让底图可见（用户要靠它看滑条效果），
+        //        而本配方的不透明度 72% 会把底图压到只剩 28% ⇒ 预览会变成一片近乎全黑，
+        //        滑条看不出变化。⇒ 预览**保留原静态档**（与改动前一致，行为不变）。
+        //   ⚠️ 已知代价：预览页的观感与真窗**不再同源**（原本也不同源，非本次引入）。
+        if (systemBlurActive) {
+            // 【2.2.14】恒定薄黑底（×fill）：压住背景透出的主力（code 997 起，见常量注释）。
             final int baseBlack = a(scaleAlpha(ADAPTIVE_BASE_BLACK, fill));
             if ((baseBlack >>> 24) != 0) {
                 paint.setShader(null);
                 paint.setColor(baseBlack);
                 canvas.drawRect(rect, paint);
             }
-            // ──【991 / 992】霜面：**密度写死，由霜色的亮度去补到目标落点** ──
+            // ──【code 997】霜面：**密度与霜色都写死** —— 面板自身填充完全恒定 ──
             //
             // 演进（每一版的反例都写在类头 ADAPTIVE_VEIL_ALPHA 段）：
             //   · 旧版：霜量 = 斜率 × 与目标的差 × fill ⇒ 密度随背景大幅摆动
@@ -611,23 +676,16 @@ public class LiquidGlassDrawable extends Drawable {
             //   · 989/990：霜色写死白/黑，反解**霜量**把亮度钉住 ⇒ 密度摆得更凶（到 58%）；
             //   · 991：霜量写死、反解**霜色** ⇒ 密度与亮度都稳，但密度取到 0.45 时
             //     只能用灰去补亮度，面板被洗成一片灰水洗色（"颜色变奇怪"）；
-            //   · 992（本版）：密度降到 0.22（背景色透出约 78%，回到用户认可的观感），
-            //     霜色回到**中性灰**（不再自己带背景色相），仍由它补亮度。
-            // 现在就一件事：解 X·(1-α) + cv·α = TARGET_LUM ⇒ cv = (TARGET − X·(1-α)) / α。
-            final float l = Math.max(0f, Math.min(1f, backdropMeanLum));
-            final float ab = ((baseBlack >>> 24) & 0xFF) / 255f;
-            final float cb = lum(ADAPTIVE_BASE_BLACK);
-            final float xAfterBase = l * (1f - ab) + cb * ab;
+            //   · 992：密度降到 0.22（背景色透出约 78%），霜色回到**中性灰**，仍由它补亮度
+            //     —— 但霜色每帧由实测背景亮度反解 ⇒ 背景在 0.19↔0.37 之间抖时，
+            //     霜色在「纯白 ↔ 中灰」之间跟着跳（= Ari 第四次反馈的"时暗时亮"）；
+            //   · **997（本版）**：霜色**锁定**为 {@link #LOCKED_VEIL_LUM}，**不解方程、
+            //     不读背景亮度**；同时把霜面密度抬到 0.44 + 薄黑底抬到 73%，
+            //     把背景透出率从 72% 压到 28% ⇒ 面板亮度变化 0.127 → 0.050。
             final float material = Math.min(1f, fill / MATERIAL_FADE_FILL);
             final float aFinal = ADAPTIVE_VEIL_ALPHA * material;
             if (aFinal > 0.004f) {
-                // 解 X·(1-α) + cv·α = TARGET_LUM ⇒ cv = (TARGET − X·(1-α)) / α
-                float cv = (TARGET_LUM - xAfterBase * (1f - aFinal)) / aFinal;
-                if (!(cv > 0f)) {
-                    cv = 0f;     // 背景比目标还亮、压不到 ⇒ 霜色到底（面板会略亮于目标）
-                } else if (cv > 1f) {
-                    cv = 1f;
-                }
+                final float cv = Math.max(0f, Math.min(1f, LOCKED_VEIL_LUM));
                 final int veilAdaptive =
                         (Math.round(aFinal * 255f) << 24) | veilRgb(cv);
                 paint.setShader(null);
@@ -782,18 +840,10 @@ public class LiquidGlassDrawable extends Drawable {
         paint.setStyle(Paint.Style.FILL);
     }
 
-    /**
-     * 【989】一个颜色的感知亮度（Rec.709 加权，0..1）。
-     *
-     * 自适应霜面用它把「薄黑底之后的背景亮度」与「霜色」放进同一条方程里反解霜量
-     * （见 {@link #draw}）。刻意与 {@code FloatingSubtitleView} / {@code HostBackdrop}
-     * 里那套加权口径保持一致（77/150/29 的整数近似等价）。
-     */
-    private static float lum(int color) {
-        return (0.2126f * ((color >> 16) & 0xFF)
-                + 0.7152f * ((color >> 8) & 0xFF)
-                + 0.0722f * (color & 0xFF)) / 255f;
-    }
+    // 【code 997】原 `lum(int)`（Rec.709 感知亮度）已移除 —— 它是「反解霜色方程」的
+    //   配套工具，霜色锁定后不再需要。⚠️ 若将来要恢复按背景亮度自适应，从 git 历史
+    //   取回该方法即可；`FloatingSubtitleView` / `HostBackdrop` 另有一套等价的加权换算，
+    //   与本次改动无关。
 
     /**
      * 【991 / 992】按目标亮度 {@code cv} 生成霜色（RGB，不含 alpha）—— **中性灰**。

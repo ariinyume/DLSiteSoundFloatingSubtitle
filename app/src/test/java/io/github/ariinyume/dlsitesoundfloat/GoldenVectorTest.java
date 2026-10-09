@@ -531,4 +531,131 @@ public class GoldenVectorTest {
         assertEquals(p + "STATUSBAR_SCOPE_PING", Protocol.ACTION_SCOPE_PING);
         assertEquals(p + "STATUSBAR_SCOPE_PONG", Protocol.ACTION_SCOPE_PONG);
     }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  PokeThrottle —— 结构探针三道闸（code 997 第 5 批重构）
+    // ══════════════════════════════════════════════════════════════════
+    //
+    // ⚠️ 参数用 ActivityButtonHook 里的**真实常量值**（不是随手编的数）——
+    //   否则测的是"另一个节流器"，与真机行为脱钩（铁律 28 的精神）。
+    private static final long PT_BURST_GAP = 1500L;
+    private static final long PT_QUIET_BYPASS = 400L;
+    private static final long PT_MIN_INTERVAL = 50L;
+    private static final long PT_WINDOW = 1000L;
+    private static final int PT_MAX_PER_SEC = 12;
+
+    private static TestAccessBridge.Poke poke(long now, long lastEvent, long burstStart,
+            long lastPoke, long windowStart, int windowCount) {
+        return TestAccessBridge.poke(now, lastEvent, burstStart, lastPoke,
+                windowStart, windowCount, PT_BURST_GAP, PT_QUIET_BYPASS, PT_MIN_INTERVAL,
+                PT_WINDOW, PT_MAX_PER_SEC);
+    }
+
+    /** 首次事件（lastEvent=0 ⇒ gap 视为无穷）必须走「安静期直通」并被放行。 */
+    @Test
+    public void poke_firstEventIsAlwaysAllowed() {
+        TestAccessBridge.Poke d = poke(10_000L, 0L, 0L, 0L, 0L, 0);
+        assertTrue(d.passedMerge);
+        assertTrue(d.allow);
+        assertTrue("首次事件必须走安静期直通", d.quietBypass);
+        assertEquals(10_000L, d.burstStartMs);
+        assertEquals(10_000L, d.lastPokeMs);
+    }
+
+    /** 距上次放行不足 minInterval ⇒ 合并掉，且**窗口状态一律不动**。 */
+    @Test
+    public void poke_withinMinIntervalIsMerged() {
+        TestAccessBridge.Poke d = poke(10_020L, 10_000L, 10_000L, 10_000L, 5_000L, 7);
+        assertFalse("20ms < 50ms ⇒ 必须被合并", d.passedMerge);
+        assertFalse(d.allow);
+        assertEquals("被合并时 lastPokeMs 不变", 10_000L, d.lastPokeMs);
+        assertEquals("被合并时窗口起点不变", 5_000L, d.windowStartMs);
+        assertEquals("被合并时窗口计数不变", 7, d.windowCount);
+    }
+
+    /**
+     * ⚠️ 顺序锚：<b>事件时间戳在合并闸「之前」就更新</b>。
+     *
+     * <p>挪到闸后 ⇒ 长转场的爆发起点会被反复重置 ⇒ latencySuffix 报出的端到端延迟失真。
+     * 这是抽取时逐行核对过、最容易改错的一处。
+     */
+    @Test
+    public void poke_eventTimestampUpdatesEvenWhenMerged() {
+        TestAccessBridge.Poke d = poke(10_020L, 10_000L, 10_000L, 10_000L, 0L, 0);
+        assertFalse(d.passedMerge);
+        assertEquals("即使被合并，事件时间戳也要更新", 10_020L, d.lastEventMs);
+    }
+
+    /** minInterval 边界：条件是 `< 50`（不含），恰好 50ms 必须放行。 */
+    @Test
+    public void poke_minIntervalBoundaryIsExclusive() {
+        assertFalse("49ms 应被合并", poke(10_049L, 10_000L, 10_000L, 10_000L, 0L, 0).passedMerge);
+        assertTrue("恰好 50ms 应放行", poke(10_050L, 10_000L, 10_000L, 10_000L, 0L, 0).passedMerge);
+    }
+
+    /** 间隔仍在 burstGap 内 ⇒ 属同一串爆发，起点保持不动。 */
+    @Test
+    public void poke_burstStartKeptWhileWithinGap() {
+        TestAccessBridge.Poke d = poke(10_300L, 10_000L, 10_000L, 9_000L, 0L, 0);
+        assertEquals("gap=300 ≤ 1500 ⇒ 起点保持", 10_000L, d.burstStartMs);
+        assertFalse("gap=300 < 400 ⇒ 不算安静期", d.quietBypass);
+    }
+
+    /** 间隔超出 burstGap ⇒ 新的一串爆发，起点重置为当前时刻。 */
+    @Test
+    public void poke_burstStartResetsBeyondGap() {
+        TestAccessBridge.Poke d = poke(11_600L, 10_000L, 10_000L, 9_000L, 0L, 0);
+        assertEquals("gap=1600 > 1500 ⇒ 起点重置", 11_600L, d.burstStartMs);
+    }
+
+    /** burstStart 为 0（从未有过）⇒ 初始化为当前时刻。 */
+    @Test
+    public void poke_burstStartInitializesWhenZero() {
+        TestAccessBridge.Poke d = poke(50_000L, 49_500L, 0L, 49_500L, 0L, 0);
+        assertEquals("burstStart=0 ⇒ 初始化为 now", 50_000L, d.burstStartMs);
+    }
+
+    /** 令牌桶封顶：窗口内已达上限且非安静期 ⇒ 拒绝，且 lastPokeMs 不变。 */
+    @Test
+    public void poke_tokenBucketCaps() {
+        TestAccessBridge.Poke d = poke(20_000L, 19_900L, 19_900L, 19_900L, 19_900L, PT_MAX_PER_SEC);
+        assertTrue("已过合并闸", d.passedMerge);
+        assertFalse("窗口内已满 ⇒ 拒绝", d.allow);
+        assertEquals("被桶拒绝时 lastPokeMs 不变", 19_900L, d.lastPokeMs);
+    }
+
+    /** 窗口过期（距窗口起点 ≥ 1000ms）⇒ 计数归零后 +1。 */
+    @Test
+    public void poke_tokenBucketWindowRollsOver() {
+        TestAccessBridge.Poke d = poke(21_000L, 20_900L, 20_900L, 20_900L, 20_000L, PT_MAX_PER_SEC);
+        assertTrue(d.allow);
+        assertEquals("窗口过期 ⇒ 归零后 +1", 1, d.windowCount);
+        assertEquals("窗口起点跟到 now", 21_000L, d.windowStartMs);
+    }
+
+    /** 安静期直通 ⇒ **整个令牌桶被跳过**，计数与窗口起点都不动（哪怕计数已远超上限）。 */
+    @Test
+    public void poke_quietBypassSkipsTokenBucket() {
+        TestAccessBridge.Poke d = poke(30_000L, 20_000L, 20_000L, 20_000L, 20_000L, 99);
+        assertTrue("gap=10000 > 400 ⇒ 安静期", d.quietBypass);
+        assertTrue(d.allow);
+        assertEquals("直通时不碰计数", 99, d.windowCount);
+        assertEquals("直通时不碰窗口起点", 20_000L, d.windowStartMs);
+    }
+
+    /** 首次进入时 windowStart=0 ⇒ 视为窗口早已过期，行为与新窗口一致。 */
+    @Test
+    public void poke_zeroWindowStartIsTreatedAsExpired() {
+        TestAccessBridge.Poke d = poke(5_000L, 4_900L, 4_900L, 4_900L, 0L, 0);
+        assertEquals(5_000L, d.windowStartMs);
+        assertEquals(1, d.windowCount);
+    }
+
+    /** 放行时 lastPokeMs 必须跟到 now（否则下一次合并闸会算错窗口）。 */
+    @Test
+    public void poke_allowUpdatesLastPoke() {
+        TestAccessBridge.Poke d = poke(40_000L, 39_000L, 39_000L, 39_000L, 0L, 0);
+        assertTrue(d.allow);
+        assertEquals(40_000L, d.lastPokeMs);
+    }
 }

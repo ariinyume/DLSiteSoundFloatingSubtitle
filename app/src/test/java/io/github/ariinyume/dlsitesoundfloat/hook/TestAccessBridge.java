@@ -155,4 +155,42 @@ public Win(long needMs, long sinceMs, boolean goneStill, boolean hasEvidence) {
                               boolean goneStill, int minSamples) {
         return AnchorDeadPolicy.shouldHide(deadFor, need, samples, goneStill, minSamples);
     }
+
+    // ── PokeThrottle（code 997 第 5 批重构）──────────────────────────────
+
+    /** 把 package-private 的 {@code PokeThrottle.Decision} 摊平供断言（同样只搬运、不换算）。 */
+    public static final class Poke {
+        public final boolean passedMerge;
+        public final boolean allow;
+        public final long burstStartMs;
+        public final long lastEventMs;
+        public final long lastPokeMs;
+        public final long windowStartMs;
+        public final int windowCount;
+        public final boolean quietBypass;
+
+        public Poke(boolean passedMerge, boolean allow, long burstStartMs, long lastEventMs,
+                    long lastPokeMs, long windowStartMs, int windowCount, boolean quietBypass) {
+            this.passedMerge = passedMerge;
+            this.allow = allow;
+            this.burstStartMs = burstStartMs;
+            this.lastEventMs = lastEventMs;
+            this.lastPokeMs = lastPokeMs;
+            this.windowStartMs = windowStartMs;
+            this.windowCount = windowCount;
+            this.quietBypass = quietBypass;
+        }
+    }
+
+    public static Poke poke(long now,
+                            long lastEventMs, long burstStartMs, long lastPokeMs,
+                            long windowStartMs, int windowCount,
+                            long burstGapMs, long quietBypassMs, long minIntervalMs,
+                            long windowMs, int maxPerSec) {
+        PokeThrottle.Decision d = PokeThrottle.decide(now, lastEventMs, burstStartMs, lastPokeMs,
+                windowStartMs, windowCount, burstGapMs, quietBypassMs, minIntervalMs,
+                windowMs, maxPerSec);
+        return new Poke(d.passedMerge, d.allow, d.burstStartMs, d.lastEventMs,
+                d.lastPokeMs, d.windowStartMs, d.windowCount, d.quietBypass);
+    }
 }
