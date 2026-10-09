@@ -27,17 +27,17 @@
     | 简体中文 | `状态栏 开 / 关`、`悬浮窗 开 / 关` | `无字幕` | `无字幕` |
     | 繁體中文 | `狀態欄 開 / 關`、`懸浮窗 開 / 關` | `無字幕` | `無字幕` |
     | 其它语言 | `Status ON / OFF`、`Popup ON / OFF` | `No Sub` | `No Subtitles` |
-- **状态栏字幕（2.0.1 起）**：把当前字幕行**镜像到系统状态栏** —— 在 SystemUI 进程里注入一个常驻 `FrameLayout`，由 App 进程**跨进程广播**推送字幕行（所以关掉悬浮窗，状态栏字幕照样在）。默认**关**，由播放页左侧的`状态栏 开 / 状态栏 关`胶囊按钮单击切换。详见 [docs/statusbar-subtitle.md](docs/statusbar-subtitle.md)。
+- **状态栏字幕（2.0.1 起）**：把当前字幕行**镜像到系统状态栏** —— 在 SystemUI 进程里注入一个常驻 `FrameLayout`，由 App 进程**跨进程广播**推送字幕行。由播放页左侧的`状态栏 开 / 状态栏 关`胶囊按钮单击切换。详见 [docs/statusbar-subtitle.md](docs/statusbar-subtitle.md)。
   - **单程左移滚动**（替代系统跑马灯的循环回弹）：按 cue 时长滚动，新行先静置再起滚，长字幕不再来回弹。
-  - **遮挡时钟 / 通知图标区**：显示期间隐藏状态栏时钟与通知图标区，通知换成数字徽标；结束时原样还原。
+  - **遮挡时钟 / 通知图标区**：显示期间隐藏状态栏时钟与通知图标区，通知换成数字徽标；结束时还原。
   - **流体云避让**：字幕右界动态卡在流体云（`seeding_card_container`）左边；流体云不在时按固定左界（38dp）铺满。宽度带 24px 迟滞，避免流体云进出时宽度来回跳。
 
-- **可视化设置页（2.2.0 起）**：模块自带设置页，桌面图标 **「DLsiteFloat 设置」** 直接进，改完点「保存设置」即时生效，不用再去 LSPosed 里翻。
-  - **状态卡**：一眼看出「模块是否已激活 / SystemUI 是否已授权 / DLsiteSound 是否在跑」；三种状态各给对应指引，未激活时整页控件禁用（避免白调一场）。
+- **可视化设置页（2.2.0 起）**：模块自带设置页，改完点「保存设置」即时生效。
+  - **状态卡**：「模块是否已激活 / SystemUI 是否已授权 / DLsiteSound 是否在跑」三种状态各给对应指引，未激活时整页控件禁用。
   - **主字幕 / 活动行**：主字幕颜色、阴影颜色、阴影强度、阴影半径、活动行不透明度、主字幕放大倍数。
   - **非活动行**：是否模糊非活动行 + 模糊半径、是否缩放非活动行 + 缩放比例。
   - **字幕排版**：对齐（左 / 居中 / 右）、字幕间行距、长字幕内换行额外行距、悬浮窗颜色。
-  - **实时预览窗**：调参过程中预览窗同步渲染，所见即所得。
+  - **实时预览窗**：调参过程中预览窗同步渲染。
   - **语言**：页内即时切换 **简体中文 / 繁體中文 / English**（可跟随系统，也可手动指定）。
   - **其他**：状态栏字幕功能总闸、**调试日志**开关（2.2.7 起，默认关）、字幕配置备份与恢复（导出 / 导入 JSON）、重启系统界面。
 - **进程内悬浮窗**：窗口直接挂在 DLsiteSound 进程内（`WindowManager` + `TYPE_APPLICATION_OVERLAY`），与各个 Hook 共享同一个 `SubtitleRepository` 实例，**无需任何跨进程 IPC、无需独立 Service**。
@@ -47,9 +47,6 @@
 - **按播放进度对齐字幕**：以播放器（`ExoPlayer` / expo 音频）真实播放进度为主轴对齐字幕行。
 - **自动抓取字幕**：拦截 DLsiteSound 的网络响应（okhttp3），直接扫描响应体是否包含 `webvtt` / `subtitles` 字幕 JSON 并解析——**不依赖 URL 关键词**，对混淆/重打包的 okhttp3 也能兜底。字幕源为 DLsiteSound 官方 `play.dl.dlsitesound.com/.../optimized/xxx.json`，按音轨下发。
 - **换轨智能处理**：切到无字幕音轨时先挂起、悬浮窗显示`无字幕`占位，等新音轨的字幕 JSON —— 无缓存 cues 时等 **5s**，已有缓存 cues 时放宽到 **15s**；**5s**内还没等到 JSON 就**提前收窗**，JSON 到了会**自动把窗口开回**；直到裁决窗到点仍无 JSON，才清空 cues 并判「无字幕」。详见 [docs/track-change.md](docs/track-change.md)。
-  - **切到无字幕轨不再残留旧字幕（2.2.1 起）**：「数据保留」与「可否渲染」分开处理 —— 旧音轨的 cues 仍在内存里，但界面不再渲染它，切回去能立刻用上。
-  - **判据改为「播放列表身份」（2.2.6 起）**：宿主切作品 / 切音轨时 `currentIndex` 恒为 0，靠序号判换轨根本不成立；改为按 **音轨数 + 总时长** 认身份，并只采信「音轨数 > 0、时长 > 0、未停止」的那份列表，避免多实例读数互相污染（表现为进度被拉回 0、匹配出上一轨的句子、`playing` 每秒横跳）。
-  - **切回有字幕轨直接恢复（2.2.8 起）**：宿主对同一条音轨的字幕响应有缓存，切走再切回**不会重新发请求**，所以不能干等新 JSON。现在会给已加载的 cues 盖一个「归属印章」，切回来时身份对得上就直接按当前进度恢复渲染，不再卡在「无字幕」。
 - **权限引导与降级**：未授予悬浮窗权限时，首次点击会跳到"在其他应用上层显示"设置页，且**只提示一次**。
 
 
@@ -65,7 +62,7 @@
 | **作用域** | 需勾选**两个**：`jp.co.eisys.dlsitesound`（宿主 App：悬浮窗 + 播放页按钮）与 `com.android.systemui`（状态栏字幕） |
 | **libxposed API** | `minApiVersion=101` / `targetApiVersion=102`，配置在 `META-INF/xposed/module.prop`。2.0.0 起**不再**使用 `de.robv.android.xposed:api:82` 与四个 `xposed*` meta-data |
 | **Android 版本** | `minSdk 24`（Android 7.0）起；`targetSdk / compileSdk 34`。Android 8.0+ 用 `TYPE_APPLICATION_OVERLAY`，更低版本回退 `TYPE_PHONE` |
-| **机型 / ROM** | 针对 **ONEPLUS / ColorOS 16** 做了测试与适配，理论上支持 OxygenOS/RealmeUI；其它厂商 ROM 若悬浮窗/权限逻辑正常也应可用 |
+| **机型 / ROM** | 针对 **ONEPLUS / ColorOS** 做了测试与适配，理论上支持 OxygenOS/RealmeUI；其它厂商 ROM 若悬浮窗/权限逻辑正常也应可用 |
 | **生效条件** | 仅当该音轨由官方服务端提供字幕（optimized 字幕 JSON）时生效 |
 | **不适用** | 非 DLsiteSound 的 App；未 root 或未安装 Xposed 框架的设备；DRM 受限内容本身无字幕的情况 |
 
@@ -78,10 +75,10 @@
 
 ## 测试环境
 
-- 软件版本：DLsiteSound 2.20.0
+- 软件版本：DLsiteSound 2.20.2
 
-- 设备 1 ： 一加 15 ColorOS 17.0.0.102 (CN01B110P02) KSU 3.3.0 (32601-2) · LSPosed 2.2.0 (7854)
-- 设备 2 ： 一加 12 ColorOS 16.0.10.501 (CN01) APatch 0.13.3 (11224) · LSPosed 2.2.0 (7854)
+- 设备 1 ： 一加 15 ColorOS 17.0.0.102 (CN01B110P02) KernelSU 3.3.0 (32601-2) · LSPosed 2.2.1 (7912)
+- 设备 2 ： 一加 12 ColorOS 16.0.10.501 (CN01B110P02) SukiSU 4.2.0 (40900-2) · LSPosed 2.2.1 (7912)
 
 ---
 
@@ -91,7 +88,7 @@
 1. **获取模块**：自行构建（见 [docs/build.md](docs/build.md)），或从发布页下载 `DLsiteFloat-<版本>-debug.apk`。
 2. **安装并启用**：把 APK 装到已 root 设备 → 打开 **LSPosed Manager** 或同类插件管理器 → 启用本模块 → 作用域**两个都勾**：**`jp.co.eisys.dlsitesound`** + **`com.android.systemui`** → **强制停止** DLsiteSound，并**重启 SystemUI 或重启手机**。
 3. **授予悬浮窗权限**：
-   - 设置 → 应用 → DLsiteSound / DLsiteFloat → 权限管理 → 特殊应用权限 → `悬浮窗`。
+   - 设置 → 应用 → DLsiteSound & DLsiteFloat → 权限管理 → 特殊应用权限 → `悬浮窗`。
    - 如有需要，可允许`后台弹出界面`
 4. **打开有字幕的播放页**：播放控制条上方出现两个胶囊按钮。
    - 左`状态栏 开 / 状态栏 关`：单击开关**状态栏字幕**（默认关）；无字幕或未授权 `com.android.systemui` 作用域时该按钮不出现。
@@ -100,7 +97,7 @@
    - 离开播放页（回到首页 / 列表页等）按钮自动隐藏；悬浮窗与状态栏字幕都不随页面隐藏。
 5. **操作悬浮窗**：面板任意处按住拖动可移动；右下角手柄拖动可缩放。点面板（非手柄）可切换右上角关闭按钮（✕，30dp 显示 / 点击区）的显隐；点 ✕ 关闭窗口。
 6. 悬浮窗字幕和状态栏字幕可同时使用，二者相互不干扰。
-7. **调字幕外观**：桌面图标 **「DLsiteFloat 设置」** 进可视化设置页，改完点「保存设置」即生效（状态栏字幕的相关改动需要「重启系统界面」才会刷新）。
+7. **调字幕外观**：桌面图标 **「DLsiteFloat 设置」** / 插件管理器中找到本插件 进可视化设置页，改完点「保存设置」即生效（状态栏字幕的相关改动需要「重启系统界面」才会刷新）。
 
 
 ---
@@ -113,7 +110,7 @@
   2. 使用的 DLsiteSound 的版本号
   3. 复现步骤 + LSPosed 日志（`DLsiteSoundFloat` 过滤）+ 必要时 `dlsitefloat_net.log`+ 录屏 / 截屏（请给敏感信息打码或进行截除）
 - **提交前请先确认**：装的是不是最新 APK（看 LSPosed 日志里 `==== BUILD 2.2.8 / code 980` 那一行）
-- **排查换轨 / 字幕抓取类问题时**：请在设置页「其他」里打开**调试日志**再复现一次（默认关闭，开久了会刷屏；复现完记得关掉），日志里 `>>> track changed` 那几行是关键证据。
+- **排查换轨 / 字幕抓取类问题时**：请在设置页「其他」里打开**调试日志**再复现一次（默认关闭，开久了会刷屏；复现完记得关掉）。
 - 仓库地址：<https://github.com/ariinyume/DLSiteSoundFloatingSubtitle>
 - 提交 Issue：<https://github.com/ariinyume/DLSiteSoundFloatingSubtitle/issues>
 
@@ -141,70 +138,3 @@
 
 
 ---
-
-
-## 文档
-
-详细的机制说明与排查手册已拆到 `docs/`，首页只保留概览：
-
-| 文档 | 内容 |
-| --- | --- |
-| [docs/page-detection.md](docs/page-detection.md) | 页面判定：三态判定、播放页锚点、三道证据门、响应节奏 |
-| [docs/track-change.md](docs/track-change.md) | 换轨判定：序号二次确认、基线种入、列表重置识别、v28 判据修正 |
-| [docs/build.md](docs/build.md) | 环境要求与构建：运行环境、构建环境、构建命令、版本规则 |
-| [docs/statusbar-subtitle.md](docs/statusbar-subtitle.md) | 状态栏字幕：跨进程广播、时钟/通知让位、宽度与流体云避让、滚动、踩坑 |
-| [docs/api102-migration.md](docs/api102-migration.md) | libxposed API 102 迁移清单（2.0.0 已执行，留档备查） |
-| [docs/troubleshooting.md](docs/troubleshooting.md) | 日志与排查：完整日志对照表、排障顺序、版本确认（含 **2.x 版本表**） |
-| [docs/设置页UI设计总结-2.2.1.md](docs/设置页UI设计总结-2.2.1.md) | 设置页 UI 设计总结：PRD v1.7 落地形态、布局与度量口径 |
-| [docs/修复说明/](docs/修复说明/) | 逐轮修复卷宗（2.2.1 ~ 2.2.8）：根因取证 + 改法 + 验证锚点 |
-| [docs/PRD-可视化设置页-v1.1.md](docs/PRD-可视化设置页-v1.1.md) | 可视化设置页 PRD（文件头为 v1.7） |
-| [docs/测试用例-可视化设置页-M1.md](docs/测试用例-可视化设置页-M1.md) | 设置页 M1 测试用例 |
-
-
----
-
-
-## 目录结构（简）
-
-```
-DLsiteSound_FloatSubtitle/
-├── app/src/main/
-│   ├── AndroidManifest.xml          # 模块元数据（模块名 / 简介走 android:label / android:description）
-│   ├── resources/META-INF/xposed/   # 入口与作用域：java_init.list / scope.list / module.prop
-│   └── java/io/github/ariinyume/dlsitesoundfloat/
-│       ├── DlsiteSoundSubtitleModule.java   # 入口（extends XposedModule），注册各 Hook
-│       ├── data/
-│       │   ├── SubtitleRepository.java      # 字幕数据中枢（播放进度 / 换轨判定 / 假换轨兜底）
-│       │   └── SubtitleCue.java             # 单条字幕（起止时间 + 文本）
-│       ├── hook/
-│       │   ├── NetworkHook.java             # 拦截 okhttp3 响应，抓字幕 JSON
-│       │   ├── PlayerSourceHook.java        # 音轨切换监听（序号二次确认 + 基线种入 + 列表重置识别）
-│       │   ├── PlayerPositionHook.java      # 播放进度（getCurrentPosition）监听
-│       │   ├── SubtitleViewHook.java        # 视图树扫描器 + 页面三态判定（三道门）
-│       │   ├── StructureWatcher.java        # 宿主视图树结构监听（显隐改事件驱动）
-│       │   ├── ActivityButtonHook.java      # 播放页双胶囊按钮（状态栏 / 悬浮窗）+ 定位
-│       │   └── StatusBarSubtitleHook.java   # SystemUI 侧状态栏字幕（注入 / 避让 / 滚动）
-│       ├── view/
-│       │   ├── FloatingSubtitleView.java    # 悬浮窗视图（布局/居中/平滑上滚）
-│       │   ├── GlassPanelDrawable.java      # 玻璃磨砂底自绘
-│       │   ├── GripIndicatorView.java       # 右下角缩放手柄
-│       │   └── CloseButtonView.java         # 右上角关闭按钮（✕）
-│       ├── window/FloatingWindowManager.java # 进程内悬浮窗管理（拖拽/缩放）
-│       └── util/
-│           ├── Utils.java                   # dp/sp 换算等
-│           ├── NetLogFile.java              # 网络诊断日志落盘
-│           ├── StatusBarSubtitleBridge.java # 跨进程广播桥（App → SystemUI：字幕行 / 开关）
-│           └── XposedCompat.java            # libxposed API 102 兼容门面
-├── docs/                            # 详细机制文档（从 README 拆出）
-│   ├── page-detection.md            # 页面判定与响应机制
-│   ├── track-change.md              # 换轨判定与假换轨保护
-│   ├── statusbar-subtitle.md        # 状态栏字幕实现与踩坑
-│   ├── api102-migration.md          # libxposed API 102 迁移清单（已执行）
-│   ├── build.md                     # 环境要求与构建
-│   └── troubleshooting.md           # 日志与排查
-├── tools/version_code.py            # 版本 code 生成器（MMDD 规则）
-├── gradle/wrapper/                  # Gradle Wrapper 8.4
-├── build.gradle / settings.gradle
-├── LICENSE                          # GPL-3.0 许可证全文
-└── README.md
-```
