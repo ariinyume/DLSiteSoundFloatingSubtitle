@@ -1924,36 +1924,19 @@ public class ActivityButtonHook {
      *      把门撑过那段空窗；页面真被卸载时参考点会 detach → 立即放行。
      */
     private static boolean isPageHeld(long now) {
-        // ⓪ v43 总闸：本次前台会话里**还没确认过播放页** → 这道门一律不放行。
-        // 门的意义是「别在用户拖播放页时把按钮藏了」，前提是播放页确实在眼前；
-        // 切后台再回前台时屏幕上可能是首页/书架，播放页容器只是**停靠在屏外**
-        // （translateY=2772px），此时按「拖开」处理会让 hide 被永久压制
-        // —— 按钮就挂在非播放页上不走了（详见 pageVisualOffset() 的 v43 复盘）。
-        // 放行不会误伤：真的在播放页上时锚点很快就会被确认存活（同帧或下一次扫描），
-        // 确认之后门照常生效；拖动本来也来不及在确认之前开始。
-        if (!sPlayerConfirmedInSession) {
-            return false;
-        }
-        if (sLastPageMotionMs != 0L && now - sLastPageMotionMs < PAGE_MOTION_HOLD_MS) {
-            return true;
-        }
-        // 判据③：先于②判断 —— ②在「拖到极限」时必然失效，③正是为那一刻准备的。
-        if (sHeldOffsetMs != 0L && now - sHeldOffsetMs < HOLD_SNAPSHOT_MS
-                && Math.abs(sHeldOffset) >= PAGE_HOLD_PX
-                && holdProbeStillAttached()) {
-            return true;
-        }
-        int held = pageVisualOffset();
-        if (held == FOLLOW_NO_BASELINE) {
-            return false;
-        }
-        if (Math.abs(held) < PAGE_HOLD_PX) {
-            return false;
-        }
-        if (sLastScreenW <= 0 || sLastScreenH <= 0) {
-            return true; // 拿不到屏幕尺寸 → 宁可维持现状
-        }
-        return anchorAreaRatio(sLastScreenW, sLastScreenH) >= PAGE_HOLD_MIN_AREA;
+        // 【2.2.14 / code 994】判据本体已抽到 {@link PageFollowPolicy#isPageHeld}。
+        //   本方法只做两件事：①把状态按值传进去 ②把结果原样返回。
+        //   状态字段与副作用一律留在这里 —— 取证结论：这 36 个 s* 字段里 34 个在
+        //   跟随区间之外也被读写（L249/L301/L344/L356/L708/L716/L971/L3653~L3677），
+        //   搬走会分裂成两份状态。详见 work_diag_993/994-第2批重构-取证报告.md。
+        return PageFollowPolicy.isPageHeld(
+                sPlayerConfirmedInSession,
+                sLastPageMotionMs, now,
+                sHeldOffsetMs, sHeldOffset, holdProbeStillAttached(),
+                pageVisualOffset(),
+                sLastScreenW, sLastScreenH, anchorAreaRatio(sLastScreenW, sLastScreenH),
+                PAGE_MOTION_HOLD_MS, HOLD_SNAPSHOT_MS,
+                PAGE_HOLD_PX, PAGE_HOLD_MIN_AREA);
     }
 
     /**
@@ -1968,7 +1951,8 @@ public class ActivityButtonHook {
      * 所以这个判据只回答「页面还在不在动」。
      */
     private static boolean followReportsStill() {
-        return !sFollowing || sFollowStill >= FOLLOW_STILL_FRAMES;
+        // 【2.2.14 / code 994】判据本体已抽到 {@link PageFollowPolicy#reportsStill}。
+        return PageFollowPolicy.reportsStill(sFollowing, sFollowStill, FOLLOW_STILL_FRAMES);
     }
 
     /**
@@ -2551,23 +2535,16 @@ public class ActivityButtonHook {
      * 防的是坐标读错 / 通道打架这类**异常值**——正常拖动永远碰不到它。
      */
     private static int clampFollowOffset(int delta) {
+        // 【2.2.14 / code 994】钳制算术已抽到 {@link PageFollowPolicy#clampOffset}。
+        //   取屏幕高这一步仍留这里（要碰 sButton 的 Resources），取不到就传 0
+        //   —— 由 policy 原样放行，保持原「不钳制」语义。
         int h;
         try {
             h = sButton.getResources().getDisplayMetrics().heightPixels;
         } catch (Throwable e) {
             return delta;
         }
-        if (h <= 0) {
-            return delta;
-        }
-        int lim = (int) (h * FOLLOW_SANITY_RATIO);
-        if (delta > lim) {
-            return lim;
-        }
-        if (delta < -lim) {
-            return -lim;
-        }
-        return delta;
+        return PageFollowPolicy.clampOffset(delta, h, FOLLOW_SANITY_RATIO);
     }
 
     /** 把位移写到按钮上。用 {@code setTranslationY} —— **不 requestLayout**，因此不可能形成 v31 那种布局回环。 */
