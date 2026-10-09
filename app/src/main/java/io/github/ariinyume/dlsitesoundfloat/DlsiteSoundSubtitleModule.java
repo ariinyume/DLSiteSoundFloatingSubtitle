@@ -21,6 +21,7 @@ package io.github.ariinyume.dlsitesoundfloat;
 import android.content.Context;
 
 import io.github.ariinyume.dlsitesoundfloat.config.ConfigBus;
+import io.github.ariinyume.dlsitesoundfloat.config.Protocol;
 import io.github.ariinyume.dlsitesoundfloat.config.RemoteConfig;
 import io.github.ariinyume.dlsitesoundfloat.data.SubtitleRepository;
 import io.github.ariinyume.dlsitesoundfloat.hook.ActivityButtonHook;
@@ -76,8 +77,8 @@ import io.github.ariinyume.dlsitesoundfloat.util.LogGate;
  * ─────────────────────────────────────────────────────────────────────
  */
 public class DlsiteSoundSubtitleModule extends XposedModule {
-    private static final String TARGET_PKG = "jp.co.eisys.dlsitesound";
-    private static final String SYSTEMUI_PKG = "com.android.systemui";
+    private static final String TARGET_PKG = Protocol.HOST_PKG;
+    private static final String SYSTEMUI_PKG = Protocol.SYSTEMUI_PKG;
 
     /** 业务初始化是否已做过 —— 同一进程内两个回调可能都被调用，必须去重。 */
     private static volatile boolean sInitialized = false;

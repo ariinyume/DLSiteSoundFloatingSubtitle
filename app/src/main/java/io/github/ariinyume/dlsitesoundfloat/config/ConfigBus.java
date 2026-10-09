@@ -60,26 +60,26 @@ public final class ConfigBus {
 
     private static final String TAG = "[DLsiteSoundFloat:ConfigBus]";
 
+    // ── 【code 995】以下全部转发自 {@link Protocol}（跨进程契约的唯一字符串真源）。
+    //    本类保留同名 public 常量，作**转发壳** —— 现有约 40 处 {@code ConfigBus.XXX}
+    //    调用点一行都不用改，同时两处字面量彻底合并。改值只许去 Protocol。
+
     /** 设置页 → 各被注入进程：配置已变更，请重载。 */
-    public static final String ACTION_CONFIG_CHANGED =
-            "io.github.ariinyume.dlsitesoundfloat.action.CONFIG_CHANGED";
+    public static final String ACTION_CONFIG_CHANGED = Protocol.ACTION_CONFIG_CHANGED;
 
     /** 设置页 → SystemUI 进程：请求重启系统界面（模块收到后自杀，系统会自动把 SystemUI 拉起来）。 */
-    public static final String ACTION_RESTART_SYSUI =
-            "io.github.ariinyume.dlsitesoundfloat.action.RESTART_SYSUI";
+    public static final String ACTION_RESTART_SYSUI = Protocol.ACTION_RESTART_SYSUI;
 
     /** 设置页 → DLsiteSound 进程：作用域探测。 */
-    public static final String ACTION_HOST_PING =
-            "io.github.ariinyume.dlsitesoundfloat.action.SCOPE_HOST_PING";
+    public static final String ACTION_HOST_PING = Protocol.ACTION_HOST_PING;
 
     /** DLsiteSound 进程 → 设置页：探测应答。 */
-    public static final String ACTION_HOST_PONG =
-            "io.github.ariinyume.dlsitesoundfloat.action.SCOPE_HOST_PONG";
+    public static final String ACTION_HOST_PONG = Protocol.ACTION_HOST_PONG;
 
     /** PONG 携带的模块构建号（与 {@code BuildConfig.VERSION_CODE} 同源，用于版本一致性告警）。 */
-    public static final String EXTRA_BUILD = "build";
+    public static final String EXTRA_BUILD = Protocol.EXTRA_BUILD;
     /** PONG 携带的进程标识（"host" / "systemui"）。 */
-    public static final String EXTRA_TAG = "tag";
+    public static final String EXTRA_TAG = Protocol.EXTRA_TAG;
     /**
      * 【2.3.0】宿主 PONG 携带的「DLsiteSound 当前真的在用」标志（boolean）。
      *
@@ -89,7 +89,7 @@ public final class ConfigBus {
      *   不含「未知」）—— 见 {@link #isHostAlive()}。
      * 只表示「正在用」，**不**表示「已授权」；授权仍由「收到带 tag=host 的 PONG」证明。
      */
-    public static final String EXTRA_HOST_ALIVE = "host_alive";
+    public static final String EXTRA_HOST_ALIVE = Protocol.EXTRA_HOST_ALIVE;
 
     /**
      * {@link #ACTION_CONFIG_CHANGED} 携带的**完整配置 JSON**（{@link SubtitleConfig#toJson()} 产物）。
@@ -103,7 +103,7 @@ public final class ConfigBus {
      * {@code getRemotePreferences().edit()}（hook 侧持有 XposedInterface，可写）持久化，
      * 下次进程冷启动也有配置可读。
      */
-    public static final String EXTRA_CONFIG_JSON = "config_json";
+    public static final String EXTRA_CONFIG_JSON = Protocol.EXTRA_CONFIG_JSON;
 
     /** 已挂过接收器的进程标识（同一进程只挂一次）。 */
     private static final Set<String> sInstalled = ConcurrentHashMap.newKeySet();
@@ -243,9 +243,9 @@ public final class ConfigBus {
     }
 
     /** 宿主包名（仅用于进程名比对，见 {@link #isHostProcess(Context)}）。 */
-    private static final String HOST_PKG = "jp.co.eisys.dlsitesound";
+    private static final String HOST_PKG = Protocol.HOST_PKG;
     /** SystemUI 包名（显式配置广播的第二目标，见 {@link #sendConfigChanged}）。 */
-    private static final String SYSTEMUI_PKG = "com.android.systemui";
+    private static final String SYSTEMUI_PKG = Protocol.SYSTEMUI_PKG;
 
     /**
      * 应答作用域 PING。

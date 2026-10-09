@@ -23,6 +23,7 @@ import android.content.Intent;
 import android.os.SystemClock;
 import android.text.TextUtils;
 
+import io.github.ariinyume.dlsitesoundfloat.config.Protocol;
 import io.github.ariinyume.dlsitesoundfloat.data.SubtitleCue;
 import io.github.ariinyume.dlsitesoundfloat.data.SubtitleRepository;
 
@@ -52,10 +53,10 @@ import java.util.List;
  *    恢复播放后 line 自动回来，只要开关还开着就继续显示。
  */
 public final class StatusBarSubtitleBridge {
-    public static final String ACTION_LINE =
-            "io.github.ariinyume.dlsitesoundfloat.action.STATUSBAR_SUBTITLE_LINE";
-    public static final String ACTION_ENABLED =
-            "io.github.ariinyume.dlsitesoundfloat.action.STATUSBAR_SUBTITLE_ENABLED";
+    // ── 【code 995】以下全部转发自 {@code Protocol}（跨进程契约的唯一字符串真源）。
+    //    保留同名 public 常量作转发壳，现有约 65 处调用点零改动。改值只许去 Protocol。
+    public static final String ACTION_LINE = Protocol.ACTION_LINE;
+    public static final String ACTION_ENABLED = Protocol.ACTION_ENABLED;
     /**
      * 【code 924】反向通道：**SystemUI -> App** 的「请求关闭状态栏字幕」。
      *
@@ -68,8 +69,7 @@ public final class StatusBarSubtitleBridge {
      *   「关了又自己开」。所以 SystemUI 只发请求，真正翻开关留在 App 进程，
      *   与胶囊按钮点击共用同一条执行路径。
      */
-    public static final String ACTION_DISMISS_REQUEST =
-            "io.github.ariinyume.dlsitesoundfloat.action.STATUSBAR_SUBTITLE_DISMISS_REQUEST";
+    public static final String ACTION_DISMISS_REQUEST = Protocol.ACTION_DISMISS_REQUEST;
     /**
      * 【code 941】作用域探测：**App -> SystemUI** 的探测广播。
      *
@@ -80,8 +80,7 @@ public final class StatusBarSubtitleBridge {
      * 「SystemUI 里到底有没有本模块在跑」变成可观测量：
      * 发一条 PING，被注入的 SystemUI 会回 {@link #ACTION_SCOPE_PONG}；没被注入则永远收不到。
      */
-    public static final String ACTION_SCOPE_PING =
-            "io.github.ariinyume.dlsitesoundfloat.action.STATUSBAR_SCOPE_PING";
+    public static final String ACTION_SCOPE_PING = Protocol.ACTION_SCOPE_PING;
     /**
      * 【code 941】作用域探测应答：**SystemUI -> App**。
      *
@@ -89,18 +88,17 @@ public final class StatusBarSubtitleBridge {
      *    理论上任何应用都能伪造 PONG，但伪造的后果只是「状态栏按钮多显示一个」，
      *    无实质风险，不值得为此引入签名校验的复杂度。
      */
-    public static final String ACTION_SCOPE_PONG =
-            "io.github.ariinyume.dlsitesoundfloat.action.STATUSBAR_SCOPE_PONG";
+    public static final String ACTION_SCOPE_PONG = Protocol.ACTION_SCOPE_PONG;
     /** 关闭原因（仅用于日志/取证）。 */
-    public static final String EXTRA_DISMISS_REASON = "reason";
-    public static final String EXTRA_LINE = "line";
-    public static final String EXTRA_ENABLED = "enabled";
+    public static final String EXTRA_DISMISS_REASON = Protocol.EXTRA_DISMISS_REASON;
+    public static final String EXTRA_LINE = Protocol.EXTRA_LINE;
+    public static final String EXTRA_ENABLED = Protocol.EXTRA_ENABLED;
     /** 当前字幕行的播放时长（毫秒）。0 = 未知，状态栏侧退回默认时长。 */
-    public static final String EXTRA_DURATION_MS = "duration_ms";
+    public static final String EXTRA_DURATION_MS = Protocol.EXTRA_DURATION_MS;
     /** 当前是否在播放。false 时 line 一定是空串。 */
-    public static final String EXTRA_PLAYING = "playing";
+    public static final String EXTRA_PLAYING = Protocol.EXTRA_PLAYING;
     /** 【code 941】PONG 携带的 SystemUI 侧构建号（见 {@link #ACTION_SCOPE_PONG}）。 */
-    public static final String EXTRA_PONG_BUILD = "pong_build";
+    public static final String EXTRA_PONG_BUILD = Protocol.EXTRA_PONG_BUILD;
 
     /** App 进程侧的开关状态（唯一真源）。默认关闭；只由长按 1s 翻转。 */
     public static boolean sAppEnabled = false;
@@ -185,7 +183,7 @@ public final class StatusBarSubtitleBridge {
     public static final long SCOPE_FRESH_MS = 8000L;
 
     /** 【code 975】SystemUI 包名 —— 作用域 PING 用它做**显式广播**的目标（见 sendScopePing）。 */
-    private static final String SYSTEMUI_PKG = "com.android.systemui";
+    private static final String SYSTEMUI_PKG = Protocol.SYSTEMUI_PKG;
 
     /** 【code 941】发一条作用域探测（App 侧心跳调用）。 */
     public static void sendScopePing(Context ctx) {
@@ -362,8 +360,10 @@ public final class StatusBarSubtitleBridge {
         sLastSentPlaying = playing;
         sendLine(ctx, line, dur, playing);
         if (playingChanged) {
-            android.util.Log.i("DLsiteSoundFloat",
-                    "status bar subtitle -> " + (playing ? "playing" : "paused(clear)")
+            // 【code 995】切 playing 每次拖进度条都会触发，属诊断噪声 → 走 LogGate。
+            // 上面 feature gate 那条是**功能开关跃迁**，按铁律 3 保持常开。
+            LogGate.debug("[DLsiteSoundFloat] status bar subtitle -> "
+                    + (playing ? "playing" : "paused(clear)")
                             + ", line=" + (line.isEmpty() ? "<empty>" : line)
                             + ", dur=" + dur + "ms");
         }
