@@ -68,7 +68,9 @@ import io.github.ariinyume.dlsitesoundfloat.R;
 import io.github.ariinyume.dlsitesoundfloat.config.ConfigBus;
 import io.github.ariinyume.dlsitesoundfloat.config.ConfigStore;
 import io.github.ariinyume.dlsitesoundfloat.config.SubtitleConfig;
+import io.github.ariinyume.dlsitesoundfloat.util.LogGate;
 import io.github.ariinyume.dlsitesoundfloat.util.ScopeProbe;
+import io.github.ariinyume.dlsitesoundfloat.util.Utils;
 import io.github.ariinyume.dlsitesoundfloat.view.LiquidGlassDrawable;
 import io.github.ariinyume.dlsitesoundfloat.view.SubtitleStyle;
 
@@ -952,7 +954,8 @@ public class SettingsActivity extends AppCompatActivity {
                 // 【code 975】记下「本会话内确实见过宿主」——后续偶发超时不降级（见字段注释）。
                 mHostSeenOnce = true;
             }
-            Log.i(TAG, "status probe -> " + result);
+            // 【code 995】诊断级 → 走 LogGate（探测每 3s 一轮，常开会刷屏）。
+            LogGate.debug(TAG, "status probe -> " + result);
             if (isFinishing() || isDestroyed()) {
                 return;
             }
@@ -3493,7 +3496,8 @@ public class SettingsActivity extends AppCompatActivity {
     // ==================================================================
 
     private int dp(float v) {
-        return (int) (v * getResources().getDisplayMetrics().density + 0.5f);
+        // 【code 995】dp→px 口径收敛到 {@link Utils#dip2px}（本类原有 57 处调用）。
+        return Utils.dip2px(this, v);
     }
 
     private int color(int resId) {

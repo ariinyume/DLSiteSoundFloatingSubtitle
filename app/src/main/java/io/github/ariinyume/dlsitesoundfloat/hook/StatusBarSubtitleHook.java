@@ -48,10 +48,12 @@ import android.widget.TextView;
 
 import io.github.ariinyume.dlsitesoundfloat.BuildConfig;
 import io.github.ariinyume.dlsitesoundfloat.config.ConfigBus;
+import io.github.ariinyume.dlsitesoundfloat.config.Protocol;
 import io.github.ariinyume.dlsitesoundfloat.config.RemoteConfig;
 import io.github.ariinyume.dlsitesoundfloat.config.SubtitleConfig;
 import io.github.ariinyume.dlsitesoundfloat.view.NotificationBadgeView;
 import io.github.ariinyume.dlsitesoundfloat.util.StatusBarSubtitleBridge;
+import io.github.ariinyume.dlsitesoundfloat.util.Utils;
 import io.github.ariinyume.dlsitesoundfloat.util.XposedCompat;
 
 import java.lang.reflect.Method;
@@ -110,7 +112,7 @@ import io.github.ariinyume.dlsitesoundfloat.util.LogGate;
  */
 public class StatusBarSubtitleHook {
     private static final String TAG = "[DLsiteSoundFloat:StatusBar]";
-    private static final String SYSTEMUI_PKG = "com.android.systemui";
+    private static final String SYSTEMUI_PKG = Protocol.SYSTEMUI_PKG;
 
     // 状态栏根视图类：AOSP 优先，再试 ColorOS 变体（ColorOS 16 可能改名/挪包）。
     private static final String[] STATUS_BAR_VIEW_CLS = {
@@ -3240,9 +3242,8 @@ public class StatusBarSubtitleHook {
     }
 
     private static int dp(Context ctx, float dp) {
-        if (ctx == null) {
-            return (int) (dp * 3f + 0.5f);
-        }
-        return (int) (dp * ctx.getResources().getDisplayMetrics().density + 0.5f);
+        // 【code 995】dp→px 口径收敛到 {@link Utils#dip2pxOrDefault}：
+        // 本方法有 null 兜底（sRoot 还没挂上时按 3f 算），故用 OrDefault 变体。
+        return Utils.dip2pxOrDefault(ctx, dp);
     }
 }

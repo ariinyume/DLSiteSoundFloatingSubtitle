@@ -49,6 +49,7 @@ import io.github.ariinyume.dlsitesoundfloat.util.BackdropBaseline;
 import io.github.ariinyume.dlsitesoundfloat.util.BackdropBlur;
 import io.github.ariinyume.dlsitesoundfloat.util.HostBackdrop;
 import io.github.ariinyume.dlsitesoundfloat.util.I18n;
+import io.github.ariinyume.dlsitesoundfloat.util.Utils;
 import io.github.ariinyume.dlsitesoundfloat.util.XposedCompat;
 import io.github.ariinyume.dlsitesoundfloat.util.LogGate;
 
@@ -1757,7 +1758,8 @@ public class FloatingSubtitleView extends FrameLayout {
     }
 
     private int dp(float v) {
-        return (int) (v * getContext().getResources().getDisplayMetrics().density + 0.5f);
+        // 【code 995】dp→px 口径收敛到 {@link Utils#dip2pxOrDefault}（本类原有 20 处调用）。
+        return Utils.dip2pxOrDefault(getContext(), v);
     }
 
     /**

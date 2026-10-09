@@ -25,7 +25,6 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.SystemClock;
 import android.provider.Settings;
-import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -36,6 +35,7 @@ import io.github.ariinyume.dlsitesoundfloat.view.FloatingSubtitleView;
 
 import io.github.ariinyume.dlsitesoundfloat.util.XposedCompat;
 import io.github.ariinyume.dlsitesoundfloat.util.LogGate;
+import io.github.ariinyume.dlsitesoundfloat.util.Utils;
 
 /**
  * 进程内悬浮窗管理器（单例）。
@@ -347,8 +347,11 @@ public class FloatingWindowManager {
     }
 
     private static int dp(Context ctx, float v) {
-        return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v,
-                ctx.getResources().getDisplayMetrics());
+        // 【code 995】dp→px 口径收敛到 {@link Utils#applyDimensionDip}。
+        // ⚠️ 本类走的是**截断**口径（TypedValue.applyDimension 官方实现，无 +0.5f），
+        // 与 Utils.dip2px 的四舍五入口径最多差 1px —— 这里**只搬不改**，
+        // 换口径属像素级行为变更，不能混在同一次重构里（见 Utils 类头注释）。
+        return Utils.applyDimensionDip(ctx, v);
     }
 
     private static int clampInt(int v, int lo, int hi) {

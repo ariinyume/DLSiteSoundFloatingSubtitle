@@ -32,6 +32,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import io.github.ariinyume.dlsitesoundfloat.config.SubtitleConfig;
+import io.github.ariinyume.dlsitesoundfloat.util.Utils;
 
 /**
  * 【M1】色板行（PRD §FR-04 标注 3；参考稿紧凑化；v1.4 §3.1.2 / §3.1.5 补两件事）。
@@ -252,7 +253,10 @@ public class ColorSwatchRow extends LinearLayout {
     }
 
     private int dp(float v) {
-        return (int) (v * getResources().getDisplayMetrics().density + 0.5f);
+        // 【code 995】dp→px 口径收敛到 {@link Utils#dip2pxOrDefault}。
+        // ⚠️ 传 getContext() 而不是 this —— 本类是 ViewGroup 不是 Context；
+        // 用 OrDefault 变体保住原 getResources() 那种「拿不到就兜底」的健壮性。
+        return Utils.dip2pxOrDefault(getContext(), v);
     }
 
     /** 棋盘格画笔：只在给定区域内绘制（用例 6.8：底纹不得溢出到色点之外）。 */
