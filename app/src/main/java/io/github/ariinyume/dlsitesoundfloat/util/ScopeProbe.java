@@ -178,7 +178,9 @@ public final class ScopeProbe {
                                 + " != app build " + self + " -> 建议重启 DLsiteSound");
                     }
                 }
-                Log.i(TAG, "probe done in " + windowMs + "ms: " + result);
+                // 【code 995】诊断级 → 走 LogGate（每 3s 一轮探测，常开会刷屏）。
+                // 上面几条 Log.w 是**告警**（PONG tag 不符 / 构建号不一致），按铁律 3 常开。
+                LogGate.debug(TAG, "probe done in " + windowMs + "ms: " + result);
                 if (cb != null) {
                     try {
                         cb.onResult(result);

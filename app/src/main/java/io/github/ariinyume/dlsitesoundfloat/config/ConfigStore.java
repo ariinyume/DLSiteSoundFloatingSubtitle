@@ -24,6 +24,8 @@ import android.util.Log;
 
 import org.json.JSONObject;
 
+import io.github.ariinyume.dlsitesoundfloat.util.LogGate;
+
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
@@ -165,7 +167,10 @@ public final class ConfigStore {
         try {
             SharedPreferences ui = appCtx.getSharedPreferences(UI_PREFS_NAME, Context.MODE_PRIVATE);
             boolean ok = ui.edit().putString(SubtitleConfig.K_UI_LANGUAGE, lang).commit();
-            Log.i(TAG, "ui language saved only (" + (ok ? "ok" : "commit false") + "): " + lang);
+            // 【code 995】诊断级 → 走 LogGate（仅「调试日志」开关打开时输出）。
+            // 下方 catch 块里的 Log.w 是**告警**，按 LogGate 类头铁律 3 保持常开不动。
+            LogGate.debug(TAG, "ui language saved only ("
+                    + (ok ? "ok" : "commit false") + "): " + lang);
             return ok ? null : "ui language commit failed";
         } catch (Throwable t) {
             Log.w(TAG, "saveUiLanguageOnly failed: " + t);
@@ -237,7 +242,8 @@ public final class ConfigStore {
         if (jsonErr != null && !prefsOk) {
             return jsonErr;
         }
-        Log.i(TAG, "saved (" + (jsonErr == null ? "json ok" : "json failed: " + jsonErr)
+        // 【code 995】诊断级 → 走 LogGate（配置保存是里程碑，但逐次输出会刷屏）。
+        LogGate.debug(TAG, "saved (" + (jsonErr == null ? "json ok" : "json failed: " + jsonErr)
                 + ", prefs " + (prefsOk ? "ok" : "failed") + ") " + c.summary());
         // 保存成功 → 把**完整配置 JSON** 广播给被注入的进程（PRD §9.2 的热重载路径）。
         // ⚠️ 广播必须带负载（M1 真机返工根修）：设置页写的 MODE_PRIVATE prefs 与
@@ -264,7 +270,8 @@ public final class ConfigStore {
             }
             SubtitleConfig c = load();
             ConfigBus.sendConfigChanged(appCtx, c.toJson().toString());
-            Log.i(TAG, "saved config pushed to hooks: " + c.summary());
+            // 【code 995】诊断级 → 走 LogGate。
+            LogGate.debug(TAG, "saved config pushed to hooks: " + c.summary());
         } catch (Throwable t) {
             Log.w(TAG, "pushSavedConfigToHooks failed: " + t);
         }
