@@ -713,3 +713,145 @@ gradle 只留最近 3 条摘要 + 指针（690 → 202 行）。
 热待机 89/90 边界）、clampOffset 13 条 ⇒ **109/109 全通过**。
 · 【顺带发现】`clampOffset` 的上限 = 2772×1.6 = 4435，而**真机位移最大 2772
 （恰为屏高）** ⇒ 这道钳制从未在真机触发过，是纯保险（不是 bug，但值得记）。
+
+### code 994 真机日志审计（`LSPosed_20261009_155338.zip`，窗口 20.0 min）—— 零回归
+
+· 【重点排查项结论】**「`Button` 日志 1668 → 145（−91%）」是假回归**。三条独立证据：
+① 窗口长度差 **14.5x**（993 = 291.3 min，994 = 20.0 min）⇒ 绝对条数不可比；
+速率归一化后 `Button` **5.73 → 7.24/分（反升 1.26x）**。
+② 只取 993 活跃桶（≥1000 行/10min）对比 994 全量：`Pos` **209.4 vs 210.6/分 = 1.01x**
+（`Pos` 是每帧位置上报的最稳定采样源，同时排除「新版意外加大日志量」）。
+③ `structure event -> instant scan` 239 → **0** 是**配额打满**：`MAX_POKE_LOGS = 40`
+（`ActivityButtonHook.java:787`）且 `sPokeLogged` **全库无重置点**；实测 239 条的 `#N`
+**max 恰好 40、0 条越界、最后一条 13:45:36**，而两窗口 App pid **同为 10433**
+⇒ 进程 5h 未重启 ⇒ 配额无法重置 ⇒ 该通道必然为 0。
+固化脚本 `tools/verify_994_log_window.py`（**8/8**）。
+· 【几何零回归】35 条 `[几何4] capsuleBottom` 逐字段离线复算 **35/35 精确命中**：
+`branch` 全 `SLIDER_TOP-25dp`、`bottomMargin=1074` 全程恒定（`calls` 120→2160 ⇒ 胶囊零漂移）。
+`descBottom=1713` 是 993 未有过的新组合，**已证明零风险** —— `usedMid` 分支
+`centerY = sliderTop - aboveTop - capsuleH/2` **完全不含 `descBottom`**
+（993 独占时 `descBottom` 已在 1633~1763 间逐帧翻转而 `bottomMargin` 恒为 1074）。
+density 取 2.9688 / 2.9750001 分别复算，结果相同。
+· 【居中零回归】`v216-fix` **518/518 = 100% 精确居中**，对齐 993 的 1440/1440；
+`v216-layout` 的 `|OFF|>50` 由 16 降到 2。
+· 【`PageFollowPolicy`】黄金向量 **109/109**；994 真机 5 条 `hide suppressed` 离线复算 **5/5**
+（全走门③「快照有效 + 锚点附着」，保守策略按预期生效）。判据区分力自检：
+drift 23px→True、**24px→True、25px→False** ⇒ 24/25px 是真实分界。
+· 【异常扫描】模块级 `E/`/`F/`/`Exception`/`WARN` **全 0**；本模块宿主 FATAL/native crash **0**
+—— 全包 **66 次 FATAL 全属 `com.tencent.soter.soterserver`**（微信支付 SOTER `setupAngle` NPE），
+6 次 `Fatal signal 6` 全是 `pid init` 自身。
+· 【字幕链】`first subtitle JSON hit len=49326 (ALIVE)` → `cues=323`；
+**980 的切回恢复真机触发并通过**（`back to the playlist our cues belong to -> pass through
+(no 20000ms silence)`）；978 换轨判据正常（`tc=4 dur=2746896ms idx=0 -> tc=36 dur=4089730ms idx=4`）；
+铁律 29 身份标识生效，本窗口 6 个不同 `ihc=`。
+· 【待办】🔴 `MAX_POKE_LOGS` 配额永不重置，打满后该诊断通道对整个进程生命周期静默失效，
+且保留的是**最早** 40 条。改法：Activity 重建时重置，或改环形缓冲保留最近 N 条。**本轮不动代码。**
+· 报告 `work_diag_994/994-真机日志审计.md`。
+
+### 2.2.14i / code 995 / label 1008.16 **架构第3 批+ 口径收敛**（纯工程，无功能行为变更）
+
+（Ari 2026-10-09 指令「P1+P2 一起做」；源起上一条履历末尾那条待办）
+· 【根因修复 1/6】**`sPokeLogged` 配额打满后永久静默失效**。原 logic
+`if (sPokeLogged < MAX_POKE_LOGS) { sPokeLogged++; 打 }` ⇒ 打满 40 条后
+`structure event -> instant scan` 通道对**整个进程生命周期**失效，
+且保留的恰是最没用的最早 40 条；`ActivityButtonHook.java:787` 定为 `static final int`、
+**全库无重置点**，而实测两轮 App 进程 pid **同为 10433**（5h 未重启）⇒ 无法自然恢复。
+取证（code 993/994 两个真机窗口）：**50 个 onResume 段里 46 段见过播放页，
+只有 6 段有该通道证据 ⇒ 87% 的回合证据丢失**；单次进播放页就吃掉 37/40 的配额。
+改法（三处）：① 每条都打，上游 `POKE_MIN_INTERVAL_MS=50ms`（20/秒）+
+`POKE_MAX_PER_SEC=12` 令牌桶（12/秒）双闸门封顶 **12 行/秒**，刷屏风险已封死；
+② `sPokeLogged` 改**环形计数**；③ `ensureButton` 入口重置环形计数。
+⚠️ **不碰 `sPokeCount`**（进程级累计值，跨轮次对齐 `#N` 靠它，两次日志包要能接上）。
+· 【重构 2/6】**第 3 批：抽出 `AnchorDeadPolicy`**（锚点死亡三档确认窗的纯判定层）。
+**先取证再动手**：扫 8 个候选区间（`detectAndLayout`/`ensureButton`/`captureFollowBaseline`/
+`applyButtonText`/`doFrame`/`showButton`/`createButtonGroup`/`removeButton`）的
+**独占静态字段全部为 0** ⇒ **整体搬移在任何候选上都不成立**（共享字段整体搬会形成双份状态）⇒
+改用第 2 批成功路径：找纯算术子段，锁定 `detectAndLayout` 里那段三档确认窗算术 +
+`needSamples` 判定。新类零状态、4 处静态字段读由调用方以入参传、阈值全走入参、判据顺序一字不改。
+⚠️ 写作时**误加过一道v37 的 `stillMs` 门限并自我修正** —— 「已静止」只参与**选档**
+（`goneStill` → `need=0`），收起前的最后一道门是 `isPageHeld(now)`，两者不能混淆。
+· 【收敛 3/6】**dp→px 口径收敛到 `util/Utils`**。⚠️ **实测推翻了初稿「9 处内联」的说法**：
+`HsvColorPicker` 那 4 处全是 **float 中间量**（strokeWidth/gap/hueW/r/slop）不是 dp→px；
+`StatusBarSubtitleHook:3246` 是 helper **函数体**且多一层 `ctx==null→dp*3f` 兜底。
+真实重复 = **5 个私有 `dp()` helper**，已收敛（`SettingsActivity` 57 处 /
+`FloatingSubtitleView` 20 / `StatusBarSubtitleHook` 21 / `ColorSwatchRow` / `FloatingWindowManager` 7）。
+**保留两套口径只搬不改**：`dip2px`（四舍五入 `+0.5f`）与 `applyDimensionDip`
+（`TypedValue` 官方截断），最多差 1px，换口径属像素级行为变更、不能混在同一次重构里。
+⚠️ **`ActivityButtonHook.dip2px` 严禁并入**（它是 `capsuleDip` 的转发壳 = 首次锁定密度，
+code 955「按钮大小随显示大小变化」的 bugfix 语义）。本类此前是**死代码**（零调用）。
+· 【收敛 4/6】**抽 `config/Protocol.java`**：8 个 action + 10 个 extra + 2 个包名 +
+2 个 tag 值收成**唯一字符串真源**，加 `PROTOCOL_VERSION=1` 与纯函数 `selfCheck()`。
+`ConfigBus` / `StatusBarSubtitleBridge` **保留同名 `public static final` 作转发壳**
+⇒ 现有约 **105 处调用点一行都不用改**。源码层全仓 action 字面量归零。
+⚠️ **字节码层归不了零**（实测）：`static final String X = Protocol.X` 被 **javac 编译期
+常量内联**，dex 里每个类常量池各自留一份、也**看不到转发关系** ⇒ 字节码层只验
+「Protocol 类存在且字面量齐全」，「单点真源」改由**源码层**验证脚本兜（`tools/verify_protocol_src.py`）。
+跨进程广播串**只许加不许改值**（改一个字符即静默断链，不报错不崩溃）⇒ 换协议要加新 action + 版本号 +1。
+· 【测试 5/6】**补 `app/src/test/`**：把 `CapsuleGeometry` / `PageFollowPolicy` /
+`AnchorDeadPolicy` 三个纯函数内核的**真机黄金向量**固化成 JUnit **22 个测试**，
+让「改一个比较符就只在真机复现」这类改动在离线期就被拦住（v36 就是这种形状）。
+junit 4.13.2制品已预置 `toolchain/maven-local` ⇒ `--offline` 也能跑；不进 APK、不影响包体。
+桥类 `TestAccessBridge` 必须放 **`hook` 包且为 public**（package-private 跨包不可达）。
+首次跑**挂 3 项，全是我自己写错的向量**（不是内核回归）：① `clampRight/clampBottom` 是
+「**越界才钳**」且钳到 `screenH − btnH − edgePad`；② 门⑤ 的测试必须让
+`pageVisualOffset ≥ 24` 穿过门④，否则测的是门④不是门⑤（**假覆盖**）；③ 变量名笔误。
+· 【日志 6/6】**诊断级日志接 `LogGate`**。⚠️ 原描述「7 个文件补 LogGate 接入」建立在一个
+错误前提上：实测那 7 个文件**没有一处用 `X.log`**，走的是 `android.util.Log`，而 `LogGate`
+的闸门只作用在 `XposedCompat.log`(=`X.log`) 通道上 ⇒ 按字面做**一行都不生效**。
+且按 `LogGate` 类头铁律 3（「全部 WARN / failed 必须留在**常开**那一侧」），
+21 条 `Log.w` 告警**本就不该**接 `debug`。真正该迁的诊断级只有 **5 条 `Log.i`**
+（`ConfigStore` 3 / `ScopeProbe` 1 / `StatusBarSubtitleBridge` 1 / `SettingsActivity` 1）—— 已迁。
+迁移安全：`XposedCompat.log` 在 `sApi == null` 时退化成 `Log.println`（等于原状），
+App 进程行为**一行不变**，hook 进程才进 LSPosed 日志包。
+· 【验证】三层齐过：**JUnit 22/22** + **源码层 10/10**（`verify_protocol_src.py`）
++ **dex 字节码层 28/28、22 个有区分力锚**（`verify_995.py`，对照 code 994 包）。
+· APK `DLsiteFloat-2.2.14-code995-debug.apk`，5,576,196 B，
+sha256 `f2bf4948c7c97b6f7beb4e92bfb669733b75325a6a99f51ddd689105c07c0d14`。
+· ⚠️ 本版**未发版、未 commit**，待Ari 上机确认真机表现后再入库。
+
+---
+
+## [2.2.14 / code 995] — P3 文档与工具补齐（2026-10-09）
+
+> 同属 code 995 的一批**纯文档 + 纯工具 + 纯盘点**，代码零行为变更。
+> 触发：995 真机验证通过（零回归）→ 架构报告三轮复核 → P3 清单出。
+
+### 文档
+
+·🆕 **`docs/settings.md`** —— 面向使用者的设置项说明（26 项设置 + 6 个操作按钮）。
+  键名与范围取自 `config/SubtitleConfig.java`、界面标签取自 `ui/Strings.java`（103 条三语enum）、
+  控件行为取自 `ui/SettingsActivity.java`，**默认值全部读源码而非猜**。
+  重点收录了三处「用户最容易踩」的误解：① 状态卡「DLsiteSound未运行」≠「未授权」
+  （宿主不是常驻进程，启动一次即可）② 液态玻璃开启后「悬浮窗颜色」不可调整
+  ③ 状态栏字幕开关关不掉已注入的 SystemUI 权限（**系统限制，非 bug**，要去插件管理器撤）。
+· 🆕 **`docs/静态字段归属图.md`** —— `ActivityButtonHook` **195 个静态字段**的九组归属
+  （逐行正则口径，含 `final`；⚠️ 历史上同一文件曾报 260 / 177 三个数，是口径不同）。
+  交叉引用分析给出**搬移可行性**：G7 结构探针（13 字段/跨 2 方法）最干净、
+  G8 作用域探测（11 字段/跨 3 方法）宜合并进已有 `util/ScopeProbe`；
+  而 G2 页面跟随（跨 18 方法）/ G4 心跳 / G9宿主杂项（跨 17 方法）**不可整体搬** ——
+  三轮重构已证明「**行数不是边界，共享字段才是**」。
+  另标出 **3 个零引用字段**（死字段候选，未删）。
+· 📝 **`docs/日志类目梳理与调试分级-2.2.14-code992.md`** 加「⚠️ 部分作废」告示 + **§10 code 995 增量**。
+  原§1 / §5-C-7 判定「`ConfigStore` / `SettingsActivity` 用 `android.util.Log`，**无需处理**」
+  **方向是反的**（照做不生效，但确实该处理）；**原「无需处理」作废**。
+  最关键的认知修正：**`LogGate` 的闸门只作用在 `XposedCompat.log` 一条通道**，
+  `android.util.Log` 是另一条 —— 判断「某日志点会不会刷屏」必须先看它走哪条通道，不能按文件名猜。
+
+### 工具
+
+· 🆕 **`tools/run_all_verify.py`** —— 一键跑全部 `verify_*.py`，汇总 PASS/FAIL 表，
+  任一 FAIL ⇒ **退出码非 0**。自动按每个 dex 脚本期望的 code 精确配包
+  （⚠️ **不能按文件名取最新两个** —— 会把 995 当成 993 的对照，判据必假失败）。
+· 🆕 **`tools/README.md`** —— 验证脚本索引：五层验证链 ↔ 脚本对照表、
+  每个脚本「验什么 / 判据是什么 / 有没有区分力锚」、以及**三个已被实测推翻的判据**。
+  含一条诚实说明：`verify_994.py` 属「单版本差异判据」，**预期会随轮次失效**，
+  验 995 应以 `verify_995.py` 为准。
+
+### 验证
+
+· `python tools/run_all_verify.py` ⇒ **✅ 全绿 4/4，exit=0**
+  （`verify_995` 28/28 锚 22 · `verify_protocol_src` 10/10 · `verify_994` 18/18 · `log_window` 8/8）
+· ⚠️ 开发这个一键入口时自己踩了三个坑，恰好印证了它存在的意义：
+  ① 「取最新两个包」配错对照 ⇒ 假 FAIL；② 返回 `None` 与空列表混用 ⇒ 误报 SKIP；
+  ③ 结论正则漏了「通过 28/28，有区分力锚 28 个」这个格式 ⇒ 判据栏显示 `-`。
+· 代码零改动，本批不含任何功能行为变更。

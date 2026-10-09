@@ -127,8 +127,35 @@ def appVersionTag = '2.2.14'
 //        · 保留不动：霜量固定（不再随背景摆动，切页不会"一会发白一会发暗"）、
 //        989 的留底基线与 991 的留底落盘、988 的噪声鲁棒过渡缓冲。
 //
-def appVersionCode = 994
-def appVersionCodeLabel = '1008.15'
+//    【2.2.14i / code 995 / label 1008.16】**架构第3 批 + 口径收敛**（纯工程，无行为变更）
+//        （Ari 2026-10-09 指令「P1+P2 一起做」）
+//        ① **修sPokeLogged 配额**：原logic 是 `if (sPokeLogged < 40) { sPokeLogged++; 打 }`
+//        —— 打满 40 条后`structure event -> instant scan` 通道对**整个进程生命周期**
+//        静默失效，且保留的恰是最没用的最早 40 条。取证：50 个 onResume 段里 46 段见过
+//        播放页，只有 6 段有该通道证据 ⇒ **87% 的回合证据丢失**（单次回播放页就吃掉 37/40）。
+//        改法：每条都打（上游 POKE_MIN_INTERVAL_MS=50ms + POKE_MAX_PER_SEC=12 令牌桶
+//        双闸门封顶 12 行/秒）+ sPokeLogged 改**环形计数** + 每次进播放页重置。
+//        ⚠️ **不碰 sPokeCount**（进程级累计，跨轮次对齐 #N 靠它）。
+//        ② **第3 批重构**：抽出 `AnchorDeadPolicy`（锚点死亡三档确认窗的纯判定层，
+//        零状态、4 处静态字段读由调用方入参传、阈值全走入参、判据顺序一字不改）。
+//        取证结论：8 个候选区间的**独占字段全部为 0** ⇒ 整体搬移在任何候选上都不成立，
+//        故沿用第 2 批成功路径（找纯算术子段）。
+//        ③ **dp→px 口径收敛到 util/Utils**（⚠️ 实测推翻了初稿「9 处内联」的说法：
+//        HsvColorPicker 那 4 处全是 float 中间量不是 dp→px；StatusBarSubtitleHook:3246
+//        是 helper 函数体且多一层 ctx==null 兜底）。真实重复 = 5 个私有 dp() helper，
+//        已收敛（SettingsActivity 57 / FloatingSubtitleView 20 / StatusBarSubtitleHook 21
+//        / ColorSwatchRow / FloatingWindowManager 7）。**保留两套口径**（四舍五入 vs
+//        TypedValue 截断）只搬不改；ActivityButtonHook.dip2px 严禁动（code 955 语义）。
+//        ④ **抽config/Protocol.java**：8 个 action + 10 个 extra + 2 个包名收成唯一字符串
+//        真源；两处旧类保留同名常量作转发壳 ⇒ 约 105 处调用点零改动；
+//        全仓 action 硬编码归零。加 PROTOCOL_VERSION=1 与 selfCheck()。
+//        ⑤ **补 app/src/test/**：把 CapsuleGeometry / PageFollowPolicy / AnchorDeadPolicy
+//        三个纯函数内核的真机黄金向量固化成 JUnit（22 个测试），离线期就能拦住阈值回归。
+//        ⑥ **诊断日志接LogGate**：7 个文件里只有 5 条 Log.i 是真诊断级（已迁）；
+//        21 条 Log.w 告警按 LogGate 类头铁律 3 **保持常开不动**。
+//
+def appVersionCode = 995
+def appVersionCodeLabel = '1008.16'
 def appVersionName = '2.2.14'
 
 android {
@@ -199,4 +226,15 @@ dependencies {
     implementation 'com.google.android.material:material:1.9.0'
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'androidx.core:core:1.9.0'
+
+    // ── 【code 995】纯函数内核的黄金向量回归测试 ───────────────────────────────
+    // CapsuleGeometry / PageFollowPolicy / AnchorDeadPolicy 是从 ActivityButtonHook
+    // （4700 行上帝类）抽出来的**纯判定层**，判据由 4~6 个阈值常量组合而成 ——
+    // 改一个比较符就可能让「按钮提前消失」只在真机复现（v36 就是这种形状）。
+    // 把真机实测值固化成 JUnit，让这类改动在**离线期**就被拦住。
+    //
+    // ⚠️ junit 是 testImplementation，**不进 APK**，不影响包体。
+    // ⚠️ 制品已预置到 toolchain/maven-local（junit 4.13.2 + hamcrest-core 1.3），
+    //    所以 --offline 构建照样能跑，不会临时去探网。
+    testImplementation 'junit:junit:4.13.2'
 }
