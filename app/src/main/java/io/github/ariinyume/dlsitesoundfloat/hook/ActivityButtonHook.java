@@ -783,7 +783,31 @@ public class ActivityButtonHook {
      */
     private static final long POKE_BURST_GAP_MS = 1500L;
 
-    /** 结构事件触发日志的打印上限（诊断用，避免刷屏）。 */
+    /**
+     * 结构事件触发日志的**环形缓冲容量**（诊断用，避免刷屏）。
+     *
+     * <p>⚠️ 【code 995】这里曾经是「打印上限」：{@code if (sPokeLogged < MAX_POKE_LOGS)，
+     * sPokeLogged++;} —— 打满 40 条后该通道对<b>整个进程生命周期</b>静默失效。
+     * code 994 真机审计实测（`work_diag_994/994-真机日志审计.md`）：
+     * <ul>
+     *   <li><b>单次</b>进播放页就能打出<b>37 条</b>（滑动条/转场事件极密集），
+     *       第 2 次进播放页配额即耗尽；</li>
+     *   <li>code 993 窗口 50 个 {@code onResume} 段里，<b>46 段见过播放页</b>，
+     *       但只有 <b>6 段</b>拿到了 {@code structure event -> instant scan} 证据
+     *       ⇒ <b>40 段（87%）的取证能力丢失</b>；</li>
+     *   <li>该字段<b>全库无重置点</b>，而 App 进程实测 5 小时未重启
+     *       ⇒ 配额永远回不来，code 994 窗口该通道是 0 条。</li>
+     * </ul>
+     *
+     * <p><b>为什么改成环形</b>：配额型日志打满后「静默失效」比「刷屏」危险得多 ——
+     * 刷屏只是吵，静默失效会让后续所有真机取证都拿不到证据（排查时根本不知道有这条路）。
+     * 改环形后：<b>每条都打</b>（不再有上界判定），
+     * 而 {@code sPokeLogged % MAX_POKE_LOGS} 只用于「保留最近 N 条」的节流显示。
+     *
+     * <p>⚠️ <b>不要清零 {@link #sPokeCount}</b> —— 它是<b>进程级累计</b>计数器，
+     * {@code #N} 这个编号就是它的价值：跨轮次能对齐「第几次结构事件」，
+     * 两次日志包的 {@code #N} 能直接接上。刻意只重置 {@code sPokeLogged}（见 ensureButton）。
+     */
     private static final int MAX_POKE_LOGS = 40;
 
     /**
@@ -2640,11 +2664,24 @@ public class ActivityButtonHook {
         sForceNextDetect = true;             // 绕过节流：结构事件就是我们最想立刻看的时刻
         uiHandler.removeCallbacks(detectRunnable);
         uiHandler.post(detectRunnable);
-        if (sPokeLogged < MAX_POKE_LOGS) {
-            sPokeLogged++;
-            LogGate.debug(TAG, " structure event -> instant scan [" + reason
-                    + "] #" + sPokeCount);
-        }
+        // 【code 995】原logic是 `if (sPokeLogged < MAX_POKE_LOGS) { sPokeLogged++; 打 }`，
+        // 打满 40 条后该通道对**整个进程生命周期**静默失效。
+        // code 994 真机审计实测后果（work_diag_994/994-真机日志审计.md）：
+        //   · **单次**进播放页就能打出 37 条（滑动条/转场事件极密集），第 2 次进播放页配额即耗尽；
+        //   · code 993 窗口 50 个 onResume 段里**46 段见过播放页**，只有 **6 段**拿到本通道证据
+        //     ⇒ **40 段（87%）取证能力丢失**；该字段全库无重置点，App 进程实测 5h 未重启
+        //     ⇒ 配额永远回不来，code 994 窗口本通道 0 条。
+        //
+        // 改成**每条都打**：静默失效比刷屏危险得多 —— 刷屏只是吵，
+        // 静默会让后续所有真机取证都拿不到证据（排查时根本不知道有这条路）。
+        // 刷屏风险已被上游两道闸门封住：POKE_MIN_INTERVAL_MS=50ms（20/秒）
+        // + POKE_MAX_PER_SEC=12 令牌桶（持续动画封顶 12/秒）⇒ 最坏 12 行/秒。
+        //
+        // MAX_POKE_LOGS 保留为「环形容量」语义：sPokeLogged 循环计数，
+        // 供「保留最近 N 条」的可观测口径使用（#N 仍是 sPokeCount 的进程级累计值）。
+        sPokeLogged = (sPokeLogged + 1) % MAX_POKE_LOGS;
+        LogGate.debug(TAG, " structure event -> instant scan [" + reason
+                + "] #" + sPokeCount);
     }
 
     /**
@@ -2972,6 +3009,12 @@ public class ActivityButtonHook {
     }
 
     private static void ensureButton(Activity activity, SubtitleRepository repo) {
+        // 【code 995】每次进播放页重置结构事件日志的环形计数。
+        // 这不是必需（上游已改成每条都打），但能让「本轮进播放页」的第 1 条日志
+        // 落在环形缓冲的头部，取证时一眼能看出这是新一轮的起点。
+        // ⚠️ 只重置 sPokeLogged，**不碰 sPokeCount** —— 它是进程级累计值，
+        //跨轮次对齐「第几次结构事件」靠的就是它（两次日志包的 #N 要能接上）。
+        sPokeLogged = 0;
         uiHandler.post(() -> {
             try {
                 sActivity = activity;
@@ -3570,54 +3613,41 @@ public class ActivityButtonHook {
                         }
                         sAnchorDeadSamples++;
                         boolean evidence = isFreshOtherEvidence(now);
-                        // 【code 949】归零档前置门：面积**严格归零** 且**页面已静止**。
-                        //   948 只要求面积归零（need=120ms），真机复测仍残留 100~200ms ——
-                        //   因为首次采样与「页面消失」同帧，而 120ms 的 need 逼它再等一个探针周期。
-                        //   补上「页面已静止」这条门之后 need 才能取 0：首次采样即收起，
-                        //   而 fling / 拖动中（页面仍在动）依旧被这条门与 isPageHeld 挡住。
-                        boolean goneStill = anchorGone
-                                && (sLastPageMotionMs == 0L
-                                    || now - sLastPageMotionMs >= ANCHOR_DEAD_GONE_STILL_MS);
-                        // 【code 948/949】三档确认窗：正面证据 200ms < **归零且已静止 0ms** < 默认 600ms。
-                        //   归零档取最短 —— 它是最强的一条信号（屏幕上真的一个像素都不剩），
-                        //   而 600ms 那条防假死窗对它毫无意义（假死时容器仍部分可见）。
-                        long need = evidence ? ANCHOR_DEAD_WITH_EVIDENCE_MS
-                                : (goneStill ? ANCHOR_DEAD_GONE_MS : ANCHOR_DEAD_MIN_MS);
-                        long since = sAnchorDeadSinceMs;
-                        if (evidence && sLastOtherSeenMs != 0L && sLastOtherSeenMs < since) {
-                            since = sLastOtherSeenMs;
+                        // 【2.2.14 / code 995】确认窗算术已抽到 {@link AnchorDeadPolicy#confirmWindow}
+                        //   （纯函数：5 个入参 → need/since/goneStill，零字段读、零副作用）。
+                        //   判据顺序与原实现逐行一致，详见该类铁律③。
+                        AnchorDeadPolicy.Window win = AnchorDeadPolicy.confirmWindow(
+                                anchorGone,
+                                sLastPageMotionMs == 0L ? 0L : (now - sLastPageMotionMs),
+                                ANCHOR_DEAD_GONE_STILL_MS,
+                                evidence,
+                                ANCHOR_DEAD_WITH_EVIDENCE_MS,
+                                ANCHOR_DEAD_GONE_MS,
+                                ANCHOR_DEAD_MIN_MS,
+                                sAnchorDeadSinceMs,
+                                sLastOtherSeenMs,
+                                sLastPageMotionMs);
+                        if (win == null) {
+                            // 判死时刻还没初始化（sAnchorDeadSinceMs == 0）—— 保持现状，本趟不判。
+                            break;
                         }
-                        // v38：确认窗从「页面**最后一次运动**之后」才开始走。
-                        //
-                        // 为什么：拖动 / fling 会把页面拖到**看不见播放控件**的地方，此时
-                        // 「扫不到播放页证据」是这一刻的**正常现象**，根本不是「离开播放页」。
-                        // 而 sAnchorDeadSinceMs 从「锚点第一次判死」起算 —— 那正好是拖动**刚开始**，
-                        // 于是确认窗趁手指还在拖就一路走完 → 按钮 hide，页面一回弹又 shown。
-                        // 实测（2026-09-14 23:16:26~27）一次 fling：26.905 锚点判死 → 27.014 页面到位
-                        // → 27.561 deadFor 已达 656ms，越过 ANCHOR_DEAD_MIN_MS=600ms → hide
-                        // → 27.892 页面回弹、锚点回来 → shown。用户看到的就是「闪消失 + 闪现」。
-                        //
-                        // 改成从 sLastPageMotionMs 起算后，同一个场景 deadFor 只有 547ms < 600ms，
-                        // 不隐藏；页面回弹后 27.891 重新扫到锚点 → 全程按钮没动过。
-                        // 真·离开播放页时页面也会停（离场动画 ≤300ms），确认窗随即正常推进，
-                        // 最坏情况只比原来晚一个离场动画的时长，不会「赖着不走」。
-                        if (sLastPageMotionMs != 0L && sLastPageMotionMs > since) {
-                            since = sLastPageMotionMs;
-                        }
+                        long need = win.needMs;
+                        long since = win.sinceMs;
+                        // 诊断日志要打 goneStill（下一轮校准 ANCHOR_DEAD_GONE_STILL_MS 靠它）。
+                        boolean goneStill = win.goneStill;
                         long deadFor = now - since;
-                        if (!sAnchorDeadLogged) {
-                            sAnchorDeadLogged = true;
-                            // 诊断：把**判据原始量**打出来（面积 / 有无正面证据 / 需要的确认窗 /
-                            // 页面已静止多久），下一轮才能直接用真实数据校准 ANCHOR_DEAD_MIN_MS。
-                            LogGate.debug(TAG, " anchor dead for " + deadFor + "ms"
-                                    + " (area=" + Math.round(anchorAreaRatio(screenW, screenH) * 100) + "%"
-                                    + " evidence=" + evidence + " need=" + need + "ms"
-                                    + " gone=" + anchorGone + " goneStill=" + goneStill
-                                    + " samples=" + sAnchorDeadSamples
-                                    + " still=" + (sLastPageMotionMs == 0L ? -1
-                                            : (now - sLastPageMotionMs)) + "ms)");
-                        }
-                        // v37：**手指还在拖页面 → 绝不隐藏**。
+        if (!sAnchorDeadLogged) {
+            sAnchorDeadLogged = true;
+            // 诊断：把**判据原始量**打出来（面积 / 有无正面证据 / 需要的确认窗 /
+            // 页面已静止多久），下一轮才能直接用真实数据校准 ANCHOR_DEAD_MIN_MS。
+            LogGate.debug(TAG, " anchor dead for " + deadFor + "ms"
+                    + " (area=" + Math.round(anchorAreaRatio(screenW, screenH) * 100) + "%"
+                    + " evidence=" + evidence + " need=" + need + "ms"
+                    + " gone=" + anchorGone + " goneStill=" + goneStill
+                    + " samples=" + sAnchorDeadSamples
+                    + " still=" + (sLastPageMotionMs == 0L ? -1
+                            : (now - sLastPageMotionMs)) + "ms)");
+        }                        // v37：**手指还在拖页面 → 绝不隐藏**。
                         // 拖动期间锚点面积掉到 30~45%、verdict 在 PLAYER/OTHER 之间跳，
                         // 「无播放页证据」会一路累计到判隐藏 —— 实测一次拖动里按钮消失约 700ms
                         // 再回来，而 hide 会把跟随位移清零 → 用户看到的是「卡在原位置不动」。
@@ -3634,10 +3664,11 @@ public class ActivityButtonHook {
                             }
                             break;
                         }
-                        // 【code 949】归零且已静止时只认 1 次采样（首次检测即收起）；
-                        //   其余两档维持「连续 2 次采样」去抖不变。
-                        int needSamples = goneStill ? 1 : ANCHOR_DEAD_MIN_SAMPLES;
-                        if (deadFor >= need && sAnchorDeadSamples >= needSamples) {
+                        // 【2.2.14 / code 995】判定本体已抽到 {@link AnchorDeadPolicy#shouldHide}。
+                        //   「页面已静止」只参与**选档**（上面的 goneStill → need=0），
+                        //   收起前的最后一道门是调用方的 isPageHeld(now) —— 两者分工别搞混。
+                        if (AnchorDeadPolicy.shouldHide(deadFor, need, sAnchorDeadSamples,
+                                goneStill, ANCHOR_DEAD_MIN_SAMPLES)) {
                             // 【code 953】先问一句「这一趟是不是什么都没测到」——
                             //   是就先补检、本轮不收起（判据与真机取证见 deferHideOnEmptyScan）。
                             if (deferHideOnEmptyScan(now, scan)) {
