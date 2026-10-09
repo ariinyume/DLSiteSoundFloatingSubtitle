@@ -22,6 +22,7 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.res.Resources;
 import android.graphics.Typeface;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Handler;
 import android.os.Looper;
@@ -41,8 +42,11 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import io.github.ariinyume.dlsitesoundfloat.BuildConfig;
+import io.github.ariinyume.dlsitesoundfloat.config.RemoteConfig;
 import io.github.ariinyume.dlsitesoundfloat.data.SubtitleRepository;
+import io.github.ariinyume.dlsitesoundfloat.util.HostBackdrop;
 import io.github.ariinyume.dlsitesoundfloat.util.I18n;
+import io.github.ariinyume.dlsitesoundfloat.view.LiquidGlassDrawable;
 import io.github.ariinyume.dlsitesoundfloat.util.StatusBarSubtitleBridge;
 import io.github.ariinyume.dlsitesoundfloat.util.XposedCompat;
 
@@ -50,6 +54,7 @@ import java.lang.ref.WeakReference;
 import java.lang.reflect.Method;
 
 import io.github.libxposed.api.XposedInterface;
+import io.github.ariinyume.dlsitesoundfloat.util.LogGate;
 
 /**
  * 在 DLsiteSound 播放页注入一个悬浮按钮，用于开关字幕悬浮窗。
@@ -1658,7 +1663,7 @@ public class ActivityButtonHook {
         sHealCandY = FOLLOW_NO_BASELINE;
         sHealCandMs = 0L;
         sSampleY = FOLLOW_NO_BASELINE;
-        XposedCompat.log(TAG + " page follow rebase: ref -> "
+        LogGate.debug(TAG, " page follow rebase: ref -> "
                 + (isPlayBtn ? "play-button" : "anchor")
                 + " | base " + oldBase + " -> " + sFollowBaseY
                 + " (keep offset " + sFollowAppliedY + "px)");
@@ -1860,7 +1865,7 @@ public class ActivityButtonHook {
         if (vis != FOLLOW_NO_BASELINE && sVisualBias != FOLLOW_NO_BASELINE) {
             if (!sVisualSeen && Math.abs(vis) >= FOLLOW_DEADZONE_PX) {
                 sVisualSeen = true;
-                XposedCompat.log(TAG + " page follow channel: transform-sum active (first motion "
+                LogGate.debug(TAG, " page follow channel: transform-sum active (first motion "
                         + vis + "px, bias=" + sVisualBias + ")");
             }
             if (sVisualSeen) {
@@ -1890,7 +1895,7 @@ public class ActivityButtonHook {
         if (sVisualBias != FOLLOW_NO_BASELINE && !sVisualSeen
                 && Math.abs(vis) >= FOLLOW_DEADZONE_PX) {
             sVisualSeen = true;
-            XposedCompat.log(TAG + " page follow channel: transform-sum active (first motion "
+            LogGate.debug(TAG, " page follow channel: transform-sum active (first motion "
                     + vis + "px, bias=" + sVisualBias + ")");
         }
         if (sMotionSampleY == FOLLOW_NO_BASELINE
@@ -2078,10 +2083,10 @@ public class ActivityButtonHook {
             int biasMax = biasMaxStaticPx();
             if (Math.abs(sVisualOffset) <= biasMax) {
                 sVisualBias = sVisualOffset;
-                XposedCompat.log(TAG + " page follow bias calibrated: " + sVisualBias
+                LogGate.debug(TAG, " page follow bias calibrated: " + sVisualBias
                         + "px (ref=" + (sFollowRefIsPlayBtn ? "play-button" : "anchor") + ")");
             } else {
-                XposedCompat.log(TAG + " [code 951] bias NOT adopted: sum=" + sVisualOffset
+                LogGate.debug(TAG, " [code 951] bias NOT adopted: sum=" + sVisualOffset
                         + "px > " + biasMax + "px (= " + BIAS_MAX_STATIC_DP
                         + "dp) -> looks like a page-transition offset, not a host inset;"
                         + " staying on the baseline channel");
@@ -2111,7 +2116,7 @@ public class ActivityButtonHook {
             return;
         }
         sBaseDeferLogMs = now;
-        XposedCompat.log(TAG + " [code 951] baseline deferred: " + why
+        LogGate.debug(TAG, " [code 951] baseline deferred: " + why
                 + " | y=" + y + " sum=" + sVisualOffset + " vis=" + vis
                 + " quiet=" + (sLastPageMotionMs == 0L ? -1 : (now - sLastPageMotionMs)) + "ms");
     }
@@ -2183,7 +2188,7 @@ public class ActivityButtonHook {
         sSampleY = FOLLOW_NO_BASELINE;
         sMotionSampleY = FOLLOW_NO_BASELINE;
         applyFollowOffset(0);
-        XposedCompat.log(TAG + " [code 951] stale bias healed: bias " + oldBias + "px -> "
+        LogGate.debug(TAG, " [code 951] stale bias healed: bias " + oldBias + "px -> "
                 + sVisualBias + "px, offset " + oldOffset + "px -> 0 (page at layout rest, y="
                 + y + ")");
     }
@@ -2289,7 +2294,7 @@ public class ActivityButtonHook {
         }
         sVisualBias = sHostBias;
         sVisualSeen = true;
-        XposedCompat.log(TAG + " page follow bias restored from host cache: " + sHostBias + "px");
+        LogGate.debug(TAG, " page follow bias restored from host cache: " + sHostBias + "px");
     }
 
     private static void startPageFollow() {
@@ -2304,7 +2309,7 @@ public class ActivityButtonHook {
             long now = SystemClock.uptimeMillis();
             if (now - sFollowRejectLogMs >= 1000L) {
                 sFollowRejectLogMs = now;
-                XposedCompat.log(TAG + " page follow skipped: no baseline & no transform channel");
+                LogGate.debug(TAG, " page follow skipped: no baseline & no transform channel");
             }
             return; // 两条通道都没有 —— 等一次「页面静止的 PLAYER 扫描」把基线/偏置采出来
         }
@@ -2660,7 +2665,7 @@ public class ActivityButtonHook {
         uiHandler.post(detectRunnable);
         if (sPokeLogged < MAX_POKE_LOGS) {
             sPokeLogged++;
-            XposedCompat.log(TAG + " structure event -> instant scan [" + reason
+            LogGate.debug(TAG, " structure event -> instant scan [" + reason
                     + "] #" + sPokeCount);
         }
     }
@@ -2846,7 +2851,7 @@ public class ActivityButtonHook {
                 // 首次报告：**必须**留一行 —— 否则「没有 PONG 所以按钮不显示」这条会
                 // 在日志里完全静默，事后排查只能靠猜。
                 sScopeEverReported = true;
-                XposedCompat.log(TAG + " systemui scope: no pong yet -> status bar button"
+                LogGate.debug(TAG, " systemui scope: no pong yet -> status bar button"
                         + " stays hidden (com.android.systemui scope not granted,"
                         + " or SystemUI was not restarted after install)");
             }
@@ -2993,6 +2998,9 @@ public class ActivityButtonHook {
         uiHandler.post(() -> {
             try {
                 sActivity = activity;
+                // 【2.2.11】把宿主 Activity 交给「就地采集」服务 —— 液态玻璃要拿它的
+                //   Window 做 PixelCopy 取回面板背后的真实画面（见 util/HostBackdrop 类头）。
+                HostBackdrop.get().setActivity(activity);
                 sDensityPx = stableDensity(activity); // 【code 939】走锁定值，避免转场伪 density
                 ViewGroup decor = (ViewGroup) activity.getWindow().getDecorView();
                 sButtonGroup = decor.findViewById(BUTTON_ID);
@@ -3063,7 +3071,7 @@ public class ActivityButtonHook {
                         sPlacedGeoSliderCy = Integer.MIN_VALUE;
                         sPlacedGeoDescBottom = Integer.MIN_VALUE;
                         sPlacedGeoSliderRight = Integer.MIN_VALUE;
-                        XposedCompat.log(TAG + " [几何5] button created at FALLBACK bottom="
+                        LogGate.debug(TAG, " [几何5] button created at FALLBACK bottom="
                                 + btnWantBottom + "px (geometry not ready yet, sLastSliderCy="
                                 + sLastSliderCy + ") -> will re-place");
                         // 【code 929 bug 4 诊断】FALLBACK 落位的同时记一次 page anchor 当前 y；
@@ -3080,7 +3088,7 @@ public class ActivityButtonHook {
                                     anchorY = pageVisualOffset();
                                 }
                             }
-                            XposedCompat.log(TAG + " [几何5b] FALLBACK button anchorY="
+                            LogGate.debug(TAG, " [几何5b] FALLBACK button anchorY="
                                     + anchorY + " (catch-up effect depends on this)");
                         } catch (Throwable ignored) { }
                     }
@@ -3208,6 +3216,9 @@ public class ActivityButtonHook {
         uiHandler.post(() -> {
             try {
                 sActivity = null;
+                // 【2.2.11】宿主 Activity 走了：采集服务不能再握着它（弱引用本身也会失效，
+                //   这里主动清一次，避免"已 finish 的 Activity"被继续尝试采集）。
+                HostBackdrop.get().setActivity(null);
                 uiHandler.removeCallbacks(detectRunnable);
                 uiHandler.removeCallbacks(heartbeatRunnable);
                 uiHandler.removeCallbacks(anchorWatchRunnable);
@@ -3515,7 +3526,7 @@ public class ActivityButtonHook {
                     boolean anchorGone = anchorRatio <= 0f;
                     if (sLastAnchorAlive == null || sLastAnchorAlive != anchorAlive) {
                         sLastAnchorAlive = anchorAlive;
-                        XposedCompat.log(TAG + " player anchor alive=" + anchorAlive
+                        LogGate.debug(TAG, " player anchor alive=" + anchorAlive
                                 + " (area=" + Math.round(anchorRatio * 100) + "%)");
                     }
                     if (anchorAlive) {
@@ -3535,7 +3546,7 @@ public class ActivityButtonHook {
                         if (now - sAnchorAliveSinceMs >= ANCHOR_HARD_TIMEOUT_MS) {
                             // 兜底：锚点**连续**存活却一直 UNKNOWN（锚点可能选得过高 / 是常驻容器）。保守隐藏。
                             if (Boolean.TRUE.equals(sLastDecision)) {
-                                XposedCompat.log(TAG + " UNKNOWN + anchor alive for "
+                                LogGate.debug(TAG, " UNKNOWN + anchor alive for "
                                         + (now - sAnchorAliveSinceMs) + "ms -> hide (fallback)");
                             }
                             sLastDecision = Boolean.FALSE;
@@ -3557,7 +3568,7 @@ public class ActivityButtonHook {
                                 break;
                             }
                             if (Boolean.TRUE.equals(sLastDecision)) {
-                                XposedCompat.log(TAG + " no player evidence for "
+                                LogGate.debug(TAG, " no player evidence for "
                                         + (sLastPlayerSeenMs == 0L ? -1 : (now - sLastPlayerSeenMs))
                                         + "ms (anchor=never) -> hide");
                             }
@@ -3621,7 +3632,7 @@ public class ActivityButtonHook {
                             sAnchorDeadLogged = true;
                             // 诊断：把**判据原始量**打出来（面积 / 有无正面证据 / 需要的确认窗 /
                             // 页面已静止多久），下一轮才能直接用真实数据校准 ANCHOR_DEAD_MIN_MS。
-                            XposedCompat.log(TAG + " anchor dead for " + deadFor + "ms"
+                            LogGate.debug(TAG, " anchor dead for " + deadFor + "ms"
                                     + " (area=" + Math.round(anchorAreaRatio(screenW, screenH) * 100) + "%"
                                     + " evidence=" + evidence + " need=" + need + "ms"
                                     + " gone=" + anchorGone + " goneStill=" + goneStill
@@ -3637,7 +3648,7 @@ public class ActivityButtonHook {
                         if (Boolean.TRUE.equals(sLastDecision) && isPageHeld(now)) {
                             if (!sHoldSuppressLogged) {
                                 sHoldSuppressLogged = true;
-                                XposedCompat.log(TAG + " hide suppressed: page held (vis="
+                                LogGate.debug(TAG, " hide suppressed: page held (vis="
                                         + sVisualOffset + "px ref="
                                         + (sFollowRefIsPlayBtn ? "play-button" : "anchor")
                                         + " snap=" + sHeldOffset + "px/"
@@ -3656,7 +3667,7 @@ public class ActivityButtonHook {
                                 break;
                             }
                             if (Boolean.TRUE.equals(sLastDecision)) {
-                                XposedCompat.log(TAG + " no player evidence for "
+                                LogGate.debug(TAG, " no player evidence for "
                                         + (sLastPlayerSeenMs == 0L ? -1 : (now - sLastPlayerSeenMs))
                                         + "ms (anchor dead " + deadFor + "ms evidence=" + evidence
                                         + " gone=" + anchorGone
@@ -3680,7 +3691,7 @@ public class ActivityButtonHook {
             String sig = scan.evidenceSignature();
             if (!sig.equals(sLastEvidenceSig)) {
                 sLastEvidenceSig = sig;
-                XposedCompat.log(TAG + " verdict=" + SubtitleViewHook.verdictName(verdict)
+                LogGate.debug(TAG, " verdict=" + SubtitleViewHook.verdictName(verdict)
                         + " | " + scan.describe(screenW, screenH));
             }
 
@@ -3813,7 +3824,7 @@ public class ActivityButtonHook {
         sForceNextDetect = true; // 补检必须绕过 DETECT_MIN_INTERVAL_MS 的节流
         uiHandler.removeCallbacks(detectRunnable);
         uiHandler.postDelayed(detectRunnable, HIDE_RECHECK_DELAY_MS);
-        XposedCompat.log(TAG + " [code 953] empty scan while capsule showing -> defer hide,"
+        LogGate.debug(TAG, " [code 953] empty scan while capsule showing -> defer hide,"
                 + " forced recheck in " + HIDE_RECHECK_DELAY_MS + "ms"
                 + " (lastPlayerSeenAgo=" + (now - sLastPlayerSeenMs) + "ms)");
         return true;
@@ -3867,137 +3878,89 @@ public class ActivityButtonHook {
         }
     }
 
+    /**
+     * 【code 923 几何 4】胶囊底边落位 —— **有副作用的外壳**，真正的算术在 {@link CapsuleGeometry}。
+     *
+     * ⚠️ 本方法**不是纯函数**。抽取时逐条核过，副作用清单（勿当纯函数看待）：
+     *   ① {@code sDescBottomStable}   ← 去抖后的简介底边（喂下一轮）
+     *   ② {@code sCapsuleHPx}         ← 胶囊高
+     *   ③ {@code sCbCallCount++}      ← 打点节流计数
+     *   ④ {@code sLastMidUsed} / {@code sLastMidCenterY} ← 打点快照
+     *   ⑤ {@code dip2px} → {@code capsuleDip} → {@code capsuleMetricsDensity}
+     *      会**懒锁定并写** {@code sCapsuleMetricsDensity} 与 {@code sDensityPx}
+     * 这些副作用刻意留在 hook 侧；{@link CapsuleGeometry} 一行状态都不持有，
+     * 因此那段算术第一次变得**可单测**（真机 1272x2772 / density 2.9688 可直接喂数字）。
+     *
+     * @return bottomMargin（px）；{@code <=0} 表示几何不可用，调用方保持现状
+     */
     private static int capsuleBottomForSlider(Context ctx, int screenH) {
         if (screenH <= 0 || sLastSliderCy <= 0) {
             return -1;
         }
-        int gapPx = dip2px(ctx, CAPSULE_ABOVE_SLIDER_DP);
-        int capsuleH = dip2px(ctx, CAPSULE_H_DP);
-        // 【code 923 几何 4】**垂直居中**于「简介行底边」与「滑条中心」之间 ——
-        // 需求原话：「在一行淡色小字简介和播放进度条中间（垂直距离中间，不再用固定距离）」。
-        //   按钮组中心 y = (简介行底边 + 滑条中心) / 2
-        //   底边屏幕 y   = 中心 + 半高
-        //   bottomMargin = screenH - 底边屏幕 y
-        // ⚠️ 取不到简介行时退回旧口径（底边落在「滑条中心 - gap」）——
-        //    位置不精确可以接受，**因为没位置而跳一下**不可以（1.21.10 的教训）。
-        int centerY;
-        boolean usedMid;
-        // 【code 937 问题2】两个诊断量提到块外：日志要打「去抖后的简介底边」与
-        //   「滑条视图顶边」，否则无法判断按钮上沿有没有压到简介行。
-        int descStable = -1;
-        int sliderTop = -1;
         // 【code 924】几何 3 的可观测性：code 923 落地后**无法从日志判断走到哪一支**
         //   （实测真机截图里按钮仍贴着滑条，但日志里 descBottom 一个字都没有）
         //   -> 这里把三要素全打出来，并**计数**（一次日志查不出「偶发 vs 恒常」）。
-        // 【code 934 bug3】按钮压简介根修：sliderCy 是滑条**中心**（SubtitleViewHook
-        //   cy = loc[1]+h/2，实测 h=54px）。简介底边(1722)到滑条视图顶部(1772)只有
-        //   50px，装不下 95px 整高按钮 -> 旧条件 gap>capsuleH 不成立 -> 走 LEGACY
-        //   整高贴 cy-32dp-半高 -> 按钮占 1610~1704、整个压进简介区（截图实证）。
-        //   新规则：简介行有效时一律垂直居中于「简介底边 <-> 滑条视图顶部」——
-        //   即需求原话「简介和进度条中间」；两侧 view 的内边距区吸收少量重叠。
-        if (sLastDescBottomY > 0) {
-            // 【code 936 bug2】简介底边在真机上于多个候选间**逐帧翻转**
-            //   （00:30 日志实证 1722 <-> 1759，差 37px）-> centreY 跟着每秒抖
-            //   十几次 18px。此处做**消费端**去抖（探测层按铁律只如实上报）：
-            //   近距离抖动一律收敛到「更靠上」的候选（可用带更宽、离进度条更远），
-            //   只有明显位移（> DESC_HYSTERESIS_DP）才认作真的换行并跟随。
-            descStable = sLastDescBottomY;
-            if (sDescBottomStable > 0
-                    && Math.abs(descStable - sDescBottomStable)
-                            <= dip2px(ctx, DESC_HYSTERESIS_DP)) {
-                descStable = Math.min(descStable, sDescBottomStable);
-            }
-            sDescBottomStable = descStable;
-
-            int seekHalf = sLastSliderH > 0 ? sLastSliderH / 2 : dip2px(ctx, 9);
-            sliderTop = sLastSliderCy - seekHalf;
-            // 【code 936 bug2】Ari 明确要求：按钮**恒定 32dp**、无论可用带多窄都强制
-            //   居中于「简介底边 <-> 滑条视图顶边」，**不做任何自适应压缩** —— 935 的
-            //   自适应把 95px 压到 60px（日志实证 capsuleH=60），观感就是「按钮被压扁」。
-            //   实测本页可用带仅 50px（desc=1722 / sliderTop=1772）< 32dp=95px，故剩余
-            //   45px 溢出由上下两侧的 view 内边距区均摊（各约 22px）。
-            capsuleH = dip2px(ctx, CAPSULE_H_DP);
-            sCapsuleHPx = capsuleH;
-            // 【code 937 问题2 根修（Ari 指令）；938 改为 - 20dp】底边强制 = 滑条视图顶边 - 20dp。
-            //   936 的旧口径「简介底边(1722) <-> 滑条顶边(1772) 取中点」⇒ centerY=1747、
-            //   底边 1794 —— 比滑条顶 1772 **还低 23px**，按钮直接压进进度条，
-            //   正是 Ari 反馈的「按钮太低了、完全靠近播放进度条」。
-            //   新口径与简介底边解耦，位置只跟滑条走（也顺手甩掉了 descBottom 逐帧翻转的影响）。
-            centerY = sliderTop - dip2px(ctx, CAPSULE_ABOVE_SLIDER_TOP_DP) - capsuleH / 2;
-            usedMid = true;
-        } else {
-            capsuleH = dip2px(ctx, CAPSULE_H_DP);
-            sCapsuleHPx = capsuleH;
-            centerY = sLastSliderCy - gapPx - capsuleH / 2;
-            usedMid = false;
+        CapsuleGeometry.BottomResult r = CapsuleGeometry.capsuleBottomForSlider(
+                screenH,
+                sLastSliderCy,
+                sLastSliderH,
+                sLastDescBottomY,
+                sDescBottomStable,
+                dip2px(ctx, CAPSULE_ABOVE_SLIDER_DP),
+                dip2px(ctx, CAPSULE_H_DP),
+                dip2px(ctx, CAPSULE_ABOVE_SLIDER_TOP_DP),
+                dip2px(ctx, SLIDER_MIN_CLEAR_DP),
+                dip2px(ctx, DESC_HYSTERESIS_DP),
+                dip2px(ctx, 9),
+                dip2px(ctx, 8));
+        if (r == null) {
+            return -1;
         }
-        // 【code 932 bug4】滑条最小净距钳制。实测（18:06 日志）无字幕时 desc=2017 /
-        // slider=2179，MID 居中后按钮底边距滑条中心仅 ~34px -> 按钮怼到进度条顶上。
-        // 规则：按钮底边距滑条中心不得小于 SLIDER_MIN_CLEAR_DP，不够就整体上移。
-        boolean clamped = false;
-        // 【code 934】净距钳制只对 LEGACY 分支生效：MID 已按「滑条视图顶部」对齐，
-        //   再套 minClear(20dp、相对滑条中心) 会把按钮重新顶回简介区
-        //   （932 钳制的副作用，正是本轮「按钮挡简介」的推手之一）。
-        if (!usedMid) {
-            int minClear = dip2px(ctx, SLIDER_MIN_CLEAR_DP);
-            if (centerY + capsuleH / 2 > sLastSliderCy - minClear) {
-                centerY = sLastSliderCy - minClear - capsuleH / 2;
-                clamped = true;
-            }
+        // ① 去抖状态写回：LEGACY 分支下descStable 为 -1，此时**保持原值**不变
+        //   （原实现里该分支不会碰 sDescBottomStable，语义一致）。
+        if (r.descStable > 0) {
+            sDescBottomStable = r.descStable;
         }
-        int bottomMargin = screenH - (centerY + capsuleH / 2);
+        // ② 胶囊高写回
+        sCapsuleHPx = r.capsuleHPx;
         // 【code 927 问题 3】打点门改为**调用即打 + 节流**。
         //   旧门「结果变了才打」在诊断时无法区分「压根没调用」与「调用了但没变」——
         //   上一轮真机上这行一次都没出现，被误读成「几何不可用」，实际是几何早就好了、
         //   只是**没人再调用**（自引用差一拍）。每 60 次汇总一行保证不刷爆日志。
         sCbCallCount++;
-        if (usedMid != sLastMidUsed || centerY != sLastMidCenterY || sCbCallCount % 60 == 0) {
-            sLastMidUsed = usedMid;
-            sLastMidCenterY = centerY;
-            XposedCompat.log(TAG + " [几何4] capsuleBottom"
+        if (r.usedMid != sLastMidUsed || r.centerY != sLastMidCenterY
+                || sCbCallCount % 60 == 0) {
+            sLastMidUsed = r.usedMid;
+            sLastMidCenterY = r.centerY;
+            LogGate.debug(TAG, " [几何4] capsuleBottom"
                     + " descBottom=" + sLastDescBottomY
-                    + " descStable=" + descStable
+                    + " descStable=" + r.descStable
                     + " sliderCy=" + sLastSliderCy
-                    + " sliderTop=" + sliderTop
-                    + " capsuleH=" + capsuleH
-                    + " centerY=" + centerY
-                    + " branch=" + (usedMid ? "SLIDER_TOP-25dp" : "LEGACY(gap)")
+                    + " sliderTop=" + r.sliderTop
+                    + " capsuleH=" + r.capsuleHPx
+                    + " centerY=" + r.centerY
+                    + " branch=" + (r.usedMid ? "SLIDER_TOP-25dp" : "LEGACY(gap)")
                     + " density=" + sLockedDensity
-                    + (clamped ? " CLAMPED" : "")
-                    + " bottomMargin=" + bottomMargin
+                    + (r.clamped ? " CLAMPED" : "")
+                    + " bottomMargin=" + r.bottomMargin
                     + " calls=" + sCbCallCount);
         }
-        // 安全钳制：别把按钮推到屏幕外（分屏 / 极矮屏 / 滑条贴顶）。
-        int minBottom = dip2px(ctx, 8);
-        int maxBottom = Math.max(minBottom, screenH - capsuleH - dip2px(ctx, 8));
-        if (bottomMargin < minBottom) {
-            bottomMargin = minBottom;
-        }
-        if (bottomMargin > maxBottom) {
-            bottomMargin = maxBottom;
-        }
-        return bottomMargin;
+        return r.bottomMargin;
     }
 
     /**
-     * 【code 923 几何 3】按钮组**右缘**对齐主滑条**右缘**。
+     * 【code 923 几何 3】按钮组**右缘**对齐主滑条**右缘** —— 外壳，算术见 {@link CapsuleGeometry}。
      *
-     * 需求原话：「按钮距离屏幕右缘改为和进度条最右端距离屏幕右缘一致」。
-     * decor 是全屏宽，所以 {@code rightMargin = screenW - 滑条右缘x} 即可让两者
+     * <p>需求原话：「按钮距离屏幕右缘改为和进度条最右端距离屏幕右缘一致」。
+     * decor 是全屏宽，所以 {@code rightMargin = screenW -滑条右缘x} 即可让两者
      * 距屏右的距离**逐像素相等**。
      *
-     * 取不到滑条（列表页 / 转场瞬间）时退回常量 {@link #BUTTON_RIGHT_DP} ——
+     * <p>取不到滑条（列表页 / 转场瞬间）时退回常量 {@link #BUTTON_RIGHT_DP} ——
      * 与 {@link #capsuleBottomForSlider} 同一套「宁可不精确、不要跳」的取舍。
      */
     private static int capsuleRightForSlider(Context ctx, int screenW) {
-        if (screenW > 0 && sLastSliderRightPx > 0 && sLastSliderRightPx < screenW) {
-            int m = screenW - sLastSliderRightPx;
-            //  sanity：滑条右缘不可能贴着屏幕左边，超过 1/3 屏宽一定是量错了。
-            if (m >= 0 && m <= screenW / 3) {
-                return m;
-            }
-        }
-        return dip2px(ctx, BUTTON_RIGHT_DP);
+        return CapsuleGeometry.capsuleRightForSlider(
+                screenW, sLastSliderRightPx, dip2px(ctx, BUTTON_RIGHT_DP));
     }
 
     /**
@@ -4033,9 +3996,10 @@ public class ActivityButtonHook {
             int btnW = sButtonGroup.getWidth() > 0 ? sButtonGroup.getWidth()
                     : dip2px(activity, CAPSULE_W_DP * 2 + CAPSULE_GAP_DP);
             int wantRight = capsuleRightForSlider(activity, screenW);
-            if (wantRight + btnW > screenW) {
-                wantRight = Math.max(0, screenW - btnW - dip2px(activity, 8));
-            }
+            // 【code 993】钳制口径统一到 CapsuleGeometry.clampRight（原先此处与showButton
+            //   各写一份，两处漂移过一次；口径值一字未变，仍是「屏宽 − 按钮宽 − 8dp」）。
+            wantRight = CapsuleGeometry.clampRight(
+                    wantRight, screenW, btnW, dip2px(activity, 8));
             int bySlider = capsuleBottomForSlider(activity, screenH);
             applyCapsuleHeight();
             if (bySlider <= 0) {
@@ -4062,7 +4026,7 @@ public class ActivityButtonHook {
                 lp.rightMargin = wantRight;
                 lp.bottomMargin = bySlider;
                 sButtonGroup.setLayoutParams(lp);
-                XposedCompat.log(TAG + " [几何6] capsule re-placed by geometry -> bottom="
+                LogGate.debug(TAG, " [几何6] capsule re-placed by geometry -> bottom="
                         + bySlider + "px right=" + wantRight
                         + "px (descBottom=" + sLastDescBottomY
                         + " sliderCy=" + sLastSliderCy + " force=" + force + ")");
@@ -4086,9 +4050,9 @@ public class ActivityButtonHook {
         // 【code 923 几何 3】与 ensureButton 同口径：右缘对齐滑条最右端。
         int wantRight = capsuleRightForSlider(activity, screenW);
         // 安全钳制：极窄 / 极矮屏（分屏、平板、异常 density）下别把按钮顶出可视区。
-        if (wantRight + btnW > screenW) {
-            wantRight = Math.max(0, screenW - btnW - dip2px(activity, 8));
-        }
+        // 【code 993】口径统一到 CapsuleGeometry.clampRight（值一字未变）。
+        wantRight = CapsuleGeometry.clampRight(
+                wantRight, screenW, btnW, dip2px(activity, 8));
         // 【v57】底边由滑条推导；取不到滑条时先用上次值，再不行退回 v32 的常量安全位。
         int bySlider = capsuleBottomForSlider(activity, screenH);
         applyCapsuleHeight();
@@ -4096,9 +4060,9 @@ public class ActivityButtonHook {
             sCapsuleFollowY = bySlider;
         }
         int wantBottom = sCapsuleFollowY > 0 ? sCapsuleFollowY : dip2px(activity, BUTTON_BOTTOM_DP);
-        if (wantBottom + btnH > screenH) {
-            wantBottom = Math.max(0, screenH - btnH - dip2px(activity, 8));
-        }
+        // 【code 993】口径统一到 CapsuleGeometry.clampBottom（值一字未变）。
+        wantBottom = CapsuleGeometry.clampBottom(
+                wantBottom, screenH, btnH, dip2px(activity, 8));
 
         FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) sButtonGroup.getLayoutParams();
         int wantGravity = Gravity.BOTTOM | Gravity.END;
@@ -4133,7 +4097,7 @@ public class ActivityButtonHook {
         sPlacedGeoDescBottom = sLastDescBottomY;
         sPlacedGeoSliderRight = sLastSliderRightPx;
         if (wroteLp) {
-            XposedCompat.log(TAG + " [几何7] capsule placed by showButton -> bottom="
+            LogGate.debug(TAG, " [几何7] capsule placed by showButton -> bottom="
                     + wantBottom + "px right=" + wantRight + "px");
         }
 
@@ -4420,18 +4384,26 @@ public class ActivityButtonHook {
      *
      * @param on true = 开态（紫），false = 关态（深紫黑）
      */
-    private static GradientDrawable createCapsuleDrawable(boolean on) {
+    private static Drawable createCapsuleDrawable(boolean on) {
+        // density 由 dip2px / createButtonGroup 维护进 sDensityPx（本函数没有 Context 参数）。
+        // 【code 955】但**优先用锁定密度**：sDensityPx 会被 stableDensity 的重锁改写，
+        //   拿它算圆角会出现「高度没变、圆角变了」的隐性变形（本轮一并锁死）。
+        float d = sCapsuleMetricsDensity > 0f ? sCapsuleMetricsDensity
+                : (sDensityPx > 0f ? sDensityPx : 3f);
+
+        // 【2.2.9】液态玻璃开启 → 胶囊换绘制后端（自渲染多层玻璃，见 LiquidGlassDrawable）。
+        //   半径仍按「全圆角 = h/2」给（与下面 GradientDrawable 的 CAPSULE_RADIUS_DP 等价，
+        //   32dp 高时 h/2 = 16dp = CAPSULE_RADIUS_DP）。颜色由 Drawable 内的开/关态调色决定。
+        if (RemoteConfig.liquidGlass()) {
+            return LiquidGlassDrawable.capsule(CAPSULE_RADIUS_DP * d, d, on);
+        }
+
         GradientDrawable drawable = new GradientDrawable();
         drawable.setShape(GradientDrawable.RECTANGLE);
         drawable.setColor(on ? CAPSULE_BG_ON : CAPSULE_BG_OFF);
         // 【code 923 几何 2】圆角改为**固定 15dp**。
         // 旧写法 999f 靠「超出部分自动钳到 h/2」实现全圆角 —— 圆角会**跟着高度变**
         // （35dp 高 → 17.5dp；改到 30dp 高就悄悄变 15dp）。现在规格明确是 15dp，写死。
-        // density 由 dip2px / createButtonGroup 维护进 sDensityPx（本函数没有 Context 参数）。
-        // 【code 955】但**优先用锁定密度**：sDensityPx 会被 stableDensity 的重锁改写，
-        //   拿它算圆角会出现「高度没变、圆角变了」的隐性变形（本轮一并锁死）。
-        float d = sCapsuleMetricsDensity > 0f ? sCapsuleMetricsDensity
-                : (sDensityPx > 0f ? sDensityPx : 3f);
         drawable.setCornerRadius(CAPSULE_RADIUS_DP * d);
         return drawable;
     }
@@ -4495,9 +4467,11 @@ public class ActivityButtonHook {
         // 【1.21.13/1.21.14 的教训】判等必须覆盖该控件的**全部**输入，漏任何一项
         // 都会留下「文字变了底色没变」这类错位。合成一个串最不容易漏。
         final float alpha = noSub ? 0.6f : 1.0f;
+        // 【2.2.9】液态玻璃开关也进签名：开关一变，下一次通知就会重建两种胶囊的底
+        //   （否则「切开关后按钮还是旧底」要等到下一次文字/底色变化才纠正）。
         final String sig = floatText + '\u0000' + floatOn + '\u0000'
                 + statusText + '\u0000' + statusOn + '\u0000' + statusVisible
-                + '\u0000' + alpha;
+                + '\u0000' + alpha + '\u0000' + RemoteConfig.liquidGlass();
         if (sig.equals(sLastBtnSig)) {
             sBtnNoSubPending = false;
             sBtnNoSubGen++;                    // 状态已经一致 -> 作废排队中的延时切换
@@ -4527,7 +4501,7 @@ public class ActivityButtonHook {
         // capsule state」两行的时间差对出「显示口径到底跟没跟上文字」。
         // 【v57】留痕内容从「单个 bgMode」扩成「两个按钮各自的文字 + 底色 + 可见性」，
         //        因为现在有两个独立控件，只记一个再也说明不了问题。
-        XposedCompat.log(TAG + " capsule state: float=" + floatText
+        LogGate.debug(TAG, " capsule state: float=" + floatText
                 + "/" + (floatOn ? "on" : "off")
                 + " status=" + statusText + "/" + (statusOn ? "on" : "off")
                 + (statusVisible ? "/visible" : "/gone")
@@ -4620,7 +4594,7 @@ public class ActivityButtonHook {
         // 首次锁定 / 像素屏幕尺寸真的变了（旋转、分屏、换屏）
         if (sLockedDensity <= 0f || pxKey != sLockedPxKey) {
             if (sLockedDensity > 0f && Math.abs(d - sLockedDensity) > 0.0001f) {
-                XposedCompat.log(TAG + " density re-locked (screen changed): "
+                LogGate.debug(TAG, " density re-locked (screen changed): "
                         + sLockedDensity + " -> " + d + " pxKey=" + pxKey);
             }
             sLockedDensity = d;
@@ -4642,7 +4616,7 @@ public class ActivityButtonHook {
         sDensityDiffCount++;
         if (now - sDensityDiffSinceMs >= DENSITY_RELOCK_MS
                 && sDensityDiffCount >= DENSITY_RELOCK_SAMPLES) {
-            XposedCompat.log(TAG + " density re-locked (sustained diff): "
+            LogGate.debug(TAG, " density re-locked (sustained diff): "
                     + sLockedDensity + " -> " + d + " samples=" + sDensityDiffCount
                     + " overMs=" + (now - sDensityDiffSinceMs));
             sLockedDensity = d;
@@ -4651,7 +4625,7 @@ public class ActivityButtonHook {
             return d;
         }
         if (sDensityDiffCount == 1) {
-            XposedCompat.log(TAG + " density spike ignored: read=" + d
+            LogGate.debug(TAG, " density spike ignored: read=" + d
                     + " locked=" + sLockedDensity + " pxKey=" + pxKey);
         }
         return sLockedDensity;
@@ -4696,7 +4670,7 @@ public class ActivityButtonHook {
         float d = app > 0f ? app : (sys > 0f ? sys : (sLockedDensity > 0f ? sLockedDensity : 3f));
         sCapsuleMetricsDensity = d;
         sDensityPx = d; // 【code 923】圆角要用（createCapsuleDrawable 没有 Context 参数）
-        XposedCompat.log(TAG + " [code 955] capsule metrics density locked: " + d
+        LogGate.debug(TAG, " [code 955] capsule metrics density locked: " + d
                 + " (appStable=" + app + ", system=" + sys + ") -> capsule size / text / offsets"
                 + " no longer follow display-size changes");
         return d;
@@ -4751,7 +4725,7 @@ public class ActivityButtonHook {
             XposedCompat.log(TAG + " [code 955] capsule text fit failed: " + t);
         }
         sCapsuleTextPx = size;
-        XposedCompat.log(TAG + " [code 955] capsule text locked: " + Math.round(size)
+        LogGate.debug(TAG, " [code 955] capsule text locked: " + Math.round(size)
                 + "px (design=" + Math.round(design) + "px, avail=" + avail
                 + "px, density=" + d + ", lang=" + I18n.lang() + ")");
         return sCapsuleTextPx;
