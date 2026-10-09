@@ -155,6 +155,39 @@ public final class RemoteConfig {
         }
     }
 
+    /**
+     * 【2.2.9】「液态玻璃」是否开启（供悬浮窗与播放页胶囊选渲染后端）。
+     *
+     * <p>语义 = 「用户是否在设置页打开了『液态玻璃』」。开启后：
+     * <ul>
+     *   <li>悬浮窗面板背景改走 {@code view.LiquidGlassDrawable}（自渲染多层玻璃）；</li>
+     *   <li>播放页两个字幕开关胶囊同样走它；</li>
+     *   <li>{@code float_window_color} 不参与渲染（设置页该行置灰）。</li>
+     * </ul>
+     *
+     * <p>读配置本身出异常时回落 {@code false}（= 旧行为），绝不让渲染选型把主流程拖下水。
+     */
+    public static boolean liquidGlass() {
+        try {
+            return get().liquidGlass;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * 【2.2.11b】模糊强度（0–100，默认 60）。语义见
+     * {@code SubtitleConfig#K_LIQUID_GLASS_BLUR_PCT}：
+     * 有真实背景时是背景模糊半径；没有背景时是玻璃自身的柔化程度。
+     */
+    public static int liquidGlassBlurPct() {
+        try {
+            return get().liquidGlassBlurPct;
+        } catch (Throwable t) {
+            return SubtitleConfig.LIQUID_GLASS_BLUR_PCT_DEF;
+        }
+    }
+
     /** 强制重读（收到配置变更广播时调用）。 */
     public static void reload() {
         synchronized (LOCK) {
@@ -189,6 +222,26 @@ public final class RemoteConfig {
         } catch (Throwable t) {
             logWarn("applyFromJson parse failed: " + t);
             return false;
+        }
+        // 【2.2.12b 诊断】「液态玻璃」与「悬浮窗颜色」这两把键一旦**变化**就单独吼一声，
+        //   并把**原始 JSON 负载**打出来。
+        //
+        // 起因：真机出现过「保存后 liquidGlass 与 floatWindowColor 被同时重置成默认值」
+        // （日志 rev=19：`panel[#4DFFFFFF->#30FFFFFF]`，即白色底 + 非玻璃档），
+        // 而模糊强度、缩放等其它键全都还在 —— 说明**某一次保存写出去的 JSON 本身就是错的**，
+        // 只看摘要（summary）无法判断是哪个进程写的。这里把原始负载留档，只在
+        // **值变化时**出现，不会刷屏；下次复现就能一眼定位写入方。
+        final SubtitleConfig prev;
+        synchronized (LOCK) {
+            prev = sCache;
+        }
+        if (prev != null && (prev.liquidGlass != c.liquidGlass
+                || prev.floatWindowColor != c.floatWindowColor)) {
+            log("【键变化】liquidGlass " + prev.liquidGlass + "->" + c.liquidGlass
+                    + ", floatWindow " + SubtitleConfig.argbToHex(prev.floatWindowColor)
+                    + "->" + SubtitleConfig.argbToHex(c.floatWindowColor)
+                    + " | payload=" + (json.length() > 1200
+                    ? json.substring(0, 1200) + "…" : json));
         }
         synchronized (LOCK) {
             sCache = c;
@@ -370,6 +423,9 @@ public final class RemoteConfig {
     }
 
     private static void log(String msg) {
+        // ⚠️ 本行**刻意不过 LogGate**：read() 内部就会调 log()，而 LogGate 又要读 RemoteConfig，
+        //   闸门会让 get() → read() → log() → 闸门 → get() 形成无限递归。
+        //   这条链路每个进程只在首次读配置时走一遍，不构成刷屏，保持常开（与 logWarn 同侧）。
         XposedCompat.log(TAG + " " + msg);
     }
 

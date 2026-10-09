@@ -29,6 +29,7 @@ import java.lang.reflect.Method;
 import java.util.Map;
 
 import io.github.libxposed.api.XposedInterface;
+import io.github.ariinyume.dlsitesoundfloat.util.LogGate;
 
 /**
  * 播放进度 / 播放态 / 换轨采集 —— 让悬浮窗能「按时间轴」定位当前字幕行。
@@ -254,8 +255,19 @@ public class PlayerPositionHook {
         boolean authoritative;
         if (isPlaylistMap) {
             sSawPlaylistMap = true;
-            // 活跃 = 有曲目、有时长、没被 halt。幽灵列表是 trackCount=0 / haltReason 有值。
-            boolean halted = m.get("haltReason") != null;
+            // 活跃 = 有曲目、有时长、且不是"已作废"的列表。幽灵列表是 trackCount=0（/其它 halt 原因）。
+            //
+            // 【2.2.13 修复：用户暂停被误判成幽灵列表 → 状态栏字幕暂停后不消失】
+            // 真机日志铁证（LSPosed_20261008_214215）：用户按下暂停后，活跃列表回报的是
+            //   trackCount=7 / duration=684s / playing=false / haltReason=user_request
+            // —— expo-audio 把"用户主动暂停"也记进 haltReason！旧判据 `haltReason != null`
+            // 把这一路当成"已停止的幽灵列表"整个丢弃 ⇒ setPlaying(false) 永远到不了仓库
+            // ⇒ 状态栏字幕（与开关态无关）一直显示。实测日志里 haltReason 只有
+            //   null / user_request 两种取值；幽灵列表真正稳定的特征是 trackCount=0。
+            // ⇒ 只有"非用户请求"的 halt 才算作废；user_request 是正常的暂停态，必须上报。
+            String haltReason = m.get("haltReason") instanceof String
+                    ? (String) m.get("haltReason") : null;
+            boolean halted = haltReason != null && !"user_request".equals(haltReason);
             authoritative = trackCount > 0 && durSec > 0.0 && !halted;
         } else {
             // 非列表实例（闲置 AudioPlayer）：只有在本进程**从未见过**列表时才有权更新（老宿主兼容）。
@@ -333,7 +345,7 @@ public class PlayerPositionHook {
         // 【2.2.7 / code 979】诊断日志总闸：关闭（默认）时**整段跳过** ——
         //   连同下面的 StringBuilder 拼接与节流表更新都省掉，热路径零成本。
         //   开闸入口 = 设置页「其他」卡片的「调试日志」开关（配置键 debug_log）。
-        if (!RemoteConfig.debugLog()) {
+        if (!LogGate.enabled()) {
             return;
         }
         try {
@@ -448,7 +460,7 @@ public class PlayerPositionHook {
                         sPollTicks++;
                         // 【2.2.7 / code 979】轮询自证行也归「调试日志」开关管：
                         //   它每 10s 一条，属于诊断级；关闭时只保留「轮询彻底停」这类状态跃迁日志。
-                        if (RemoteConfig.debugLog() && now - sLastPollLogMs > POLL_LOG_EVERY_MS) {
+                        if (LogGate.enabled() && now - sLastPollLogMs > POLL_LOG_EVERY_MS) {
                             sLastPollLogMs = now;
                             // 自证「轮询还活着、手上握着几个实例」—— 本轮问题的第一现场就在这条线上
                             XposedCompat.log(TAG + " poll tick #" + sPollTicks

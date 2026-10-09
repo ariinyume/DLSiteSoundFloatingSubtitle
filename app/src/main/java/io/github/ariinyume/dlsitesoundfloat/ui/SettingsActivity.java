@@ -21,8 +21,13 @@ package io.github.ariinyume.dlsitesoundfloat.ui;
 import android.content.Context;
 import android.content.Intent;
 import android.content.res.Configuration;
+import android.graphics.Bitmap;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.LinearGradient;
+import android.graphics.Paint;
 import android.graphics.Rect;
+import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
@@ -64,6 +69,7 @@ import io.github.ariinyume.dlsitesoundfloat.config.ConfigBus;
 import io.github.ariinyume.dlsitesoundfloat.config.ConfigStore;
 import io.github.ariinyume.dlsitesoundfloat.config.SubtitleConfig;
 import io.github.ariinyume.dlsitesoundfloat.util.ScopeProbe;
+import io.github.ariinyume.dlsitesoundfloat.view.LiquidGlassDrawable;
 import io.github.ariinyume.dlsitesoundfloat.view.SubtitleStyle;
 
 /**
@@ -141,6 +147,19 @@ public class SettingsActivity extends AppCompatActivity {
      * {@code SubtitleConfig#floatWindowColor} 的注释。
      */
     private static final int PANEL_PREVIEW_TOP_ALPHA = 0x92;
+
+    /**
+     * 【2.2.10】液态玻璃档的预览圆角（dp）。
+     *
+     * ⚠️ 必须等于渲染端 {@code FloatingSubtitleView#LIQUID_GLASS_CORNER_RADIUS_DP}
+     * （28dp）。两处各写各的就会重现 PRD §14.1 RK-03 的「预览漂移」：
+     * 用户在预览里看到 20dp 的角、真窗却是 28dp。
+     *
+     * ⚠️ 本类**不引用** view 包的常量是有意的：SettingsActivity 是模块进程的 Activity，
+     * 而 FloatingSubtitleView 是注入进程的视图类，把它的私有常量提为 public 只为了
+     * 一个圆角并不划算；这里用注释把两处钉在一起，并在 PRD 的预览同源铁律里留有出处。
+     */
+    private static final int LIQUID_GLASS_PREVIEW_RADIUS_DP = 28;
 
     // ── 【2.3.1 §1.14 / §7.1.1】全页统一的行距 / 卡片内距 ────────────────
     //
@@ -320,10 +339,36 @@ public class SettingsActivity extends AppCompatActivity {
     private SwitchRow mRowStatusbar;
     /** 【2.2.7 / code 979】「其他」卡片里的「调试日志」开关行。 */
     private SwitchRow mRowDebugLog;
+    /** 【2.2.9】「液态玻璃」开关行（「其他」卡片）。 */
+    private SwitchRow mRowLiquidGlass;
+    /** 【2.2.11b】「模糊强度」滑条行（只在液态玻璃开启时显示）。 */
+    private SliderRow mRowLiquidGlassBlur;
+    /** 「模糊强度」滑条下方的常驻说明小字（与滑条同显隐）。 */
+    private TextView mHintLiquidGlassBlur;
     private SegmentedRow mRowAlign;
     private ColorSwatchRow mSwatchSubtitle;
     private ColorSwatchRow mSwatchShadow;
     private ColorSwatchRow mSwatchPanelColor;
+    /** 【2.2.9】「悬浮窗颜色」行的标签与容器：液态玻璃开启时整行置灰用。 */
+    private TextView mPanelColorLabel;
+    private LinearLayout mPanelColorBody;
+
+    // ── 【2.2.11】预览用"背景小位图"（见 applyPreviewPanel 的液态玻璃分支）──
+    /** 由预览卡的壁纸渐变化成的 64×64 位图；null = 还没建。 */
+    private Bitmap mPreviewBackdropBmp;
+    /** 上面那张位图的均值亮度（0..1），供玻璃选自适应霜面。 */
+    private float mPreviewBackdropLum = 0.5f;
+    /** 烤图时用的壁纸颜色指纹（颜色没变就不重建位图）。 */
+    private int mPreviewBackdropSeed = Integer.MIN_VALUE;
+    /** 【2.2.11b】按「模糊强度」软化后的壁纸小位图（演示滑条效果用）与其对应的强度值。 */
+    private Bitmap mPreviewBackdropBlurBmp;
+    private int mPreviewBackdropBlurPct = -1;
+    /**
+     * 【2.2.12】预览用的玻璃 Drawable 实例（**复用**，不每次重建 —— 重建会让面板闪一帧空背景）。
+     * 与其创建时用的圆角一并记下（圆角变了才重建）。
+     */
+    private LiquidGlassDrawable mPreviewGlass;
+    private int mPreviewGlassRadius = -1;
     /** 状态栏字幕功能开关行（SystemUI 未授权时要整行置灰，故保留引用）。 */
     private LinearLayout mStatusbarRowRoot;
     private TextView mHintMain;
@@ -1257,13 +1302,13 @@ public class SettingsActivity extends AppCompatActivity {
                 commonPalette(), commonPaletteNames(), () -> mDraft.subtitleColor, v -> {
                     mDraft.subtitleColor = v;
                     markDirty();
-                });
+                }).swatch;
 
         mSwatchShadow = addColorRow(parent, Strings.SHADOW_COLOR,
                 commonPalette(), commonPaletteNames(), () -> mDraft.shadowColor, v -> {
                     mDraft.shadowColor = v;
                     markDirty();
-                });
+                }).swatch;
 
         // §2.1.1：步长 5（不是 1）—— 1% 的差别肉眼不可辨，步长 5 让滑块更容易停在整十位
         mRowStrength = addSliderRow(parent, Strings.SHADOW_STRENGTH,
@@ -1386,11 +1431,15 @@ public class SettingsActivity extends AppCompatActivity {
         // §3.1.5：悬浮窗颜色 —— **必须在「长字幕内换行额外行距」的正下方**（需求给的位置）。
         // 半透明预览：色板圆点画的是「面板**顶部**实际不透明度叠加后的效果」（≈57%），
         // 而不是实心基色 —— 用户要能一眼看出「这个颜色会让面板透出后面的壁纸」。
-        mSwatchPanelColor = addColorRow(parent, Strings.FLOAT_WINDOW_COLOR,
+        ColorRow panelRow = addColorRow(parent, Strings.FLOAT_WINDOW_COLOR,
                 panelPalette(), panelPaletteNames(), () -> mDraft.floatWindowColor, v -> {
                     mDraft.floatWindowColor = v;
                     markDirty();
                 }, PANEL_PREVIEW_TOP_ALPHA, true);
+        mSwatchPanelColor = panelRow.swatch;
+        // 【2.2.9】液态玻璃开启时这一行要整行置灰（标签 + 色点一起），故留三个引用。
+        mPanelColorLabel = panelRow.label;
+        mPanelColorBody = panelRow.body;
 
         mHintTypo = addResetRow(parent, Strings.RESET_TYPO, this::resetTypoGroup);
     }
@@ -1407,6 +1456,9 @@ public class SettingsActivity extends AppCompatActivity {
         // 摆在「状态栏字幕功能」下方、「备份与恢复」上方（备份那排按钮仍由
         // pinCardLastBottom 钉为卡片最后一行，见本方法末尾）。
         buildDebugLogRow(parent);
+        // 【2.2.9】「液态玻璃」开关：悬浮窗面板 + 播放页两个字幕胶囊改用自渲染玻璃。
+        // 摆在「调试日志」下方、「备份与恢复」上方（同为「显示类」开关，成组相邻）。
+        buildLiquidGlassRow(parent);
 
         // 【2.3.2 §1.1.3】备份与恢复：导出 / 导入两枚 **MD3 Tonal** 按钮，各自带方向小图标
         // （导出 = 向上箭头 + 托盘，导入 = 向下箭头 + 托盘）。
@@ -1562,6 +1614,106 @@ public class SettingsActivity extends AppCompatActivity {
     private void onDebugLogToggled(boolean enabled) {
         mDraft.debugLog = enabled;
         markDirty();
+    }
+
+    /**
+     * 【2.2.9】「液态玻璃」开关（「其他」卡片，摆在「调试日志」下方）。
+     *
+     * ─────────────────────────────────────────────────────────────────────
+     * 需求（Ari）：做一个「液态玻璃」开关，开启后**播放页两个字幕开关按钮**与
+     * **悬浮窗背景**以液态玻璃形式呈现；同时设置页里「悬浮窗颜色」**不可调整**。
+     *
+     * 渲染后端：{@code view.LiquidGlassDrawable}（自渲染多层玻璃）——
+     * 为什么不做「真·背后折射」见该类类头与工作区根目录的可行性分析报告
+     * （{@code ColorOS17_液态玻璃_悬浮窗可行性分析.md} §4.3：真折射要走「自己采背景 +
+     * 自己渲染」的跨进程高成本路线）。
+     *
+     * ⚠️ 本开关同时驱动三件事，缺一不可：
+     *   ① 悬浮窗面板背景（hook 侧 {@code FloatingSubtitleView.applyPanelBackground}）；
+     *   ② 播放页两个胶囊底（{@code ActivityButtonHook.createCapsuleDrawable}）；
+     *   ③ 本页「悬浮窗颜色」行**置灰不可调**（{@link #applyPanelColorLock()}）。
+     * ─────────────────────────────────────────────────────────────────────
+     */
+    private void buildLiquidGlassRow(LinearLayout parent) {
+        beginRow(parent);
+        // 整行容器：开关 + 下方常驻说明小字（与「调试日志」/「状态栏字幕」两行同一排布）
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+
+        mRowLiquidGlass = addSwitchRow(root, Strings.LIQUID_GLASS, this::onLiquidGlassToggled);
+
+        TextView hint = new TextView(this);
+        hint.setText(Strings.LIQUID_GLASS_HINT.get(mLang));
+        hint.setTextAppearance(R.style.TextAppearance_DLsiteFloat_Hint);
+        hint.setTextColor(attr(com.google.android.material.R.attr.colorOnSurfaceVariant, Color.GRAY));
+        hint.setPadding(0, 0, 0, dp(6));
+        root.addView(hint);
+
+        // 【2.2.11b】「模糊强度」（0–100%，步长 1，默认 60%）：**只在液态玻璃开启时显示**。
+        //   显隐走 root 的 VISIBLE/GONE（与「非活动行模糊半径」那一行同一做法，
+        //   见 syncWidgets 里对 mRowBlurRadius 的处理）。
+        mRowLiquidGlassBlur = addSliderRow(root, Strings.LIQUID_GLASS_BLUR,
+                SubtitleConfig.LIQUID_GLASS_BLUR_PCT_MIN,
+                SubtitleConfig.LIQUID_GLASS_BLUR_PCT_MAX,
+                SubtitleConfig.LIQUID_GLASS_BLUR_PCT_STEP,
+                v -> Strings.VALUE_PCT.format(mLang, v), v -> {
+                    mDraft.liquidGlassBlurPct = v;
+                    markDirty();
+                    updatePreview();      // 预览要立刻反映强度
+                });
+
+        mHintLiquidGlassBlur = new TextView(this);
+        mHintLiquidGlassBlur.setText(Strings.LIQUID_GLASS_BLUR_HINT.get(mLang));
+        mHintLiquidGlassBlur.setTextAppearance(R.style.TextAppearance_DLsiteFloat_Hint);
+        mHintLiquidGlassBlur.setTextColor(attr(com.google.android.material.R.attr.colorOnSurfaceVariant, Color.GRAY));
+        mHintLiquidGlassBlur.setPadding(0, 0, 0, dp(6));
+        root.addView(mHintLiquidGlassBlur);
+
+        parent.addView(root);
+
+        applyLiquidGlassBlurVisibility();
+    }
+
+    private void onLiquidGlassToggled(boolean enabled) {
+        mDraft.liquidGlass = enabled;
+        markDirty();
+        // 【需求】开启后「悬浮窗颜色」不可调整 —— 立即生效，不等保存。
+        applyPanelColorLock();
+        // 【2.2.11b】「模糊强度」滑条跟随显隐。
+        applyLiquidGlassBlurVisibility();
+        // 预览区也要跟着换渲染后端（液态玻璃下不再吃 floatWindowColor）。
+        updatePreview();
+    }
+
+    /** 【2.2.11b】把「模糊强度」滑条与它的小字按「液态玻璃是否开启」对齐显隐（幂等）。 */
+    private void applyLiquidGlassBlurVisibility() {
+        final int vis = (mDraft != null && mDraft.liquidGlass) ? View.VISIBLE : View.GONE;
+        if (mRowLiquidGlassBlur != null && mRowLiquidGlassBlur.root != null) {
+            mRowLiquidGlassBlur.root.setVisibility(vis);
+        }
+        if (mHintLiquidGlassBlur != null) {
+            mHintLiquidGlassBlur.setVisibility(vis);
+        }
+    }
+
+    /**
+     * 【2.2.9】把「悬浮窗颜色」整行置灰 / 恢复（液态玻璃开启时必须不可调）。
+     *
+     * ⚠️ 与 PRD §FR-07「未授权时只置灰 UI、不写键」同口径：置灰**不改**
+     *    {@code mDraft.floatWindowColor}，关掉液态玻璃后原色立即恢复显示。
+     */
+    private void applyPanelColorLock() {
+        final boolean locked = mDraft != null && mDraft.liquidGlass;
+        final float alpha = locked ? 0.38f : 1f;
+        if (mPanelColorLabel != null) {
+            mPanelColorLabel.setAlpha(alpha);
+        }
+        if (mPanelColorBody != null) {
+            mPanelColorBody.setAlpha(alpha);
+        }
+        if (mSwatchPanelColor != null) {
+            mSwatchPanelColor.setInteractive(!locked);
+        }
     }
 
     // ==================================================================
@@ -1771,7 +1923,10 @@ public class SettingsActivity extends AppCompatActivity {
         if (mPreviewCard == null) {
             return;
         }
-        final int radius = dp(20);
+        // 【2.2.10】圆角随渲染后端走：液态玻璃档用 28dp（与 FloatingSubtitleView 的
+        //   LIQUID_GLASS_CORNER_RADIUS_DP 同值 —— 否则预览是 20dp、真窗是 28dp，
+        //   又踩 PRD §14.1 RK-03「预览漂移」那条坑）；普通档仍是原来的 20dp。
+        final int radius = dp(mDraft.liquidGlass ? LIQUID_GLASS_PREVIEW_RADIUS_DP : 20);
 
         // ⓪ 卡片自身：**透明圆角矩形**。它不参与观感，只负责给 clipToOutline 提供 20dp 轮廓
         //    （§3.1.5 明确面板圆角 20dp，与渲染端 GlassPanelDrawable 同值）。
@@ -1786,13 +1941,13 @@ public class SettingsActivity extends AppCompatActivity {
         // v1.5 用的是 withAlpha(…, 0.85/0.70/0.55) 的半透明渐变，于是整张预览卡是半透明的，
         // 吸顶时底下滚动过去的「模糊半径」等行会**透出来**（Ari 截图里预览卡里出现滑块的怪象），
         // 左右边缘也会显出被覆盖内容的地色。做成不透明后，预览块才是一块真正的实体面板。
+        int wallA = attr(com.google.android.material.R.attr.colorPrimaryContainer, 0xFFEADDFF);
+        int wallB = attr(com.google.android.material.R.attr.colorTertiaryContainer, 0xFFFFD8E4);
+        int wallC = attr(com.google.android.material.R.attr.colorSurfaceVariant, 0xFFE7E0EC);
+        int wallD = attr(com.google.android.material.R.attr.colorSurfaceContainerHigh, 0xFFECE6F0);
         if (mPreviewBackdrop != null) {
-            int a = attr(com.google.android.material.R.attr.colorPrimaryContainer, 0xFFEADDFF);
-            int b = attr(com.google.android.material.R.attr.colorTertiaryContainer, 0xFFFFD8E4);
-            int c = attr(com.google.android.material.R.attr.colorSurfaceVariant, 0xFFE7E0EC);
-            int d = attr(com.google.android.material.R.attr.colorSurfaceContainerHigh, 0xFFECE6F0);
             GradientDrawable wallpaper = new GradientDrawable(
-                    GradientDrawable.Orientation.TL_BR, new int[]{a, b, c, d});
+                    GradientDrawable.Orientation.TL_BR, new int[]{wallA, wallB, wallC, wallD});
             wallpaper.setCornerRadius(radius);
             mPreviewBackdrop.setBackground(wallpaper);
         }
@@ -1801,16 +1956,213 @@ public class SettingsActivity extends AppCompatActivity {
         //    （顶 0x4D / 底 0x30，再由 GlassPanelDrawable 的 fillScale 增益到 ≈0x92/0x5B）。
         //    预览按同一比例取「顶 0x92 → 底 0x5B」的上深下浅垂直渐变，与真端口径一致。
         if (mPreviewPanel != null) {
-            int base = mDraft.floatWindowColor;
-            int topAlpha = PANEL_PREVIEW_TOP_ALPHA;
-            int bottomAlpha = Math.max(0, Math.round(topAlpha * (0x5B / (float) 0x92)));
-            int top = withAlpha(base, topAlpha / 255f);
-            int bottom = withAlpha(base, bottomAlpha / 255f);
-            GradientDrawable panel = new GradientDrawable(
-                    GradientDrawable.Orientation.TOP_BOTTOM, new int[]{top, bottom});
-            panel.setCornerRadius(radius);
-            mPreviewPanel.setBackground(panel);
+            // 【2.2.9】液态玻璃开启时，预览与真窗**同源**：同样换成 LiquidGlassDrawable
+            //   （而不是照旧画基色渐变），否则用户看到的预览会与浮窗不一致（§3.1.1① 的铁律）。
+            if (mDraft.liquidGlass) {
+                float density = getResources().getDisplayMetrics().density;
+                // 【2.2.12】**复用同一个 Drawable 实例**（只在圆角变化 / 底不是它时才重建）：
+                //   每次 setBackground 都会让面板出现一帧"没有背景的玻璃"——
+                //   那正是拖动滑条时预览"闪跳"的**另一半**原因（另一半是模糊量按整数档跳）。
+                if (mPreviewGlass == null || mPreviewGlassRadius != radius
+                        || mPreviewPanel.getBackground() != mPreviewGlass) {
+                    mPreviewGlass = new LiquidGlassDrawable(radius, density);
+                    mPreviewGlassRadius = radius;
+                    mPreviewPanel.setBackground(mPreviewGlass);
+                }
+                ensurePreviewBackdropTile(wallA, wallB, wallC, wallD);
+                // 预览的"背后"= 预览卡自己那层壁纸：先按模糊强度把它软化（连续），
+                // 再把均值亮度与上下缘颜色喂进去 —— 走的是**真窗同一套**自适应霜面与光圈染色。
+                mPreviewGlass.setPreviewBackdrop(previewBackdropFor(mDraft.liquidGlassBlurPct));
+                mPreviewGlass.setBackdropStats(mPreviewBackdropLum,
+                        0xFF000000 | (wallA & 0x00FFFFFF),
+                        0xFF000000 | (wallD & 0x00FFFFFF));
+            } else {
+                int base = mDraft.floatWindowColor;
+                int topAlpha = PANEL_PREVIEW_TOP_ALPHA;
+                int bottomAlpha = Math.max(0, Math.round(topAlpha * (0x5B / (float) 0x92)));
+                int top = withAlpha(base, topAlpha / 255f);
+                int bottom = withAlpha(base, bottomAlpha / 255f);
+                GradientDrawable panel = new GradientDrawable(
+                        GradientDrawable.Orientation.TOP_BOTTOM, new int[]{top, bottom});
+                panel.setCornerRadius(radius);
+                mPreviewPanel.setBackground(panel);
+            }
         }
+    }
+
+    /**
+     * 【2.2.11】把预览卡的「壁纸底」渐变烤成一张 64×64 小位图，供玻璃的自适应霜面使用。
+     *
+     * 为什么需要它：真窗的玻璃背景来自宿主画面的 PixelCopy（只在宿主进程拿得到），
+     * 而设置页是**本模块自己进程**的 Activity —— 采不到宿主。若预览完全不给背景，
+     * 液态玻璃档的预览就会是一块"没有背景的玻璃"，与真窗观感差一截
+     * （正是 PRD §14.1 RK-03 预览漂移的老问题）。
+     * 这里退而求其次：拿预览卡**自己那层壁纸**当背景（画成小位图 + 算均值亮度），
+     * 走的是渲染端**同一套**自适应霜面代码 ⇒ 用户能在预览里看到"玻璃压在背景上"的样子。
+     *
+     * ⚠️ 只建一次（渐变颜色变了才重建），因为 {@link #applyPreviewPanel()} 会被频繁调用。
+     */
+    private void ensurePreviewBackdropTile(int a, int b, int c, int d) {
+        final int seed = a ^ (b * 31) ^ (c * 131) ^ (d * 3571);
+        if (mPreviewBackdropBmp != null && mPreviewBackdropSeed == seed) {
+            return;                    // 颜色没变且已有图 → 复用
+        }
+        mPreviewBackdropSeed = seed;
+        try {
+            final int n = 64;
+            Bitmap bmp = Bitmap.createBitmap(n, n, Bitmap.Config.ARGB_8888);
+            Canvas cv = new Canvas(bmp);
+            Paint p = new Paint();
+            p.setShader(new LinearGradient(0, 0, n, n, new int[]{a, b, c, d}, null,
+                    Shader.TileMode.CLAMP));
+            cv.drawRect(0, 0, n, n, p);
+            // 【2.2.12b】底图里必须放**看得见**的结构。
+            //
+            // 为什么：壁纸本身是**平滑渐变**，对渐变做模糊在数学上等于没做 —— 上一版加了
+            // 8 团 22% 的淡色斑，真机反馈仍然是"拖滑条预览窗没反应"（太淡，糊掉也看不出来）。
+            // 这里加两类**高对比**结构，让"越糊越化开"一眼可见：
+            //   ① 几团较实的心色圆斑（面板底下的"画面内容"）；
+            //   ② 三条横向亮条（形似字幕行），模糊后文字感会化开成光带。
+            // ⚠️ 它们只画在**玻璃底下**，而玻璃是不透明的，所以与卡上其它地方并不矛盾
+            //    —— 用户看到的就是"面板压住了某块内容"。
+            java.util.Random rnd = new java.util.Random(20261008L);
+            Paint blob = new Paint(Paint.ANTI_ALIAS_FLAG);
+            for (int i = 0; i < 10; i++) {
+                final int col = (i % 2 == 0) ? a : d;
+                blob.setColor((0x70 << 24) | (col & 0x00FFFFFF));
+                cv.drawCircle(rnd.nextInt(n), rnd.nextInt(n), 5 + rnd.nextInt(12), blob);
+            }
+            Paint bar = new Paint(Paint.ANTI_ALIAS_FLAG);
+            bar.setColor(0x77FFFFFF);
+            for (int i = 0; i < 3; i++) {
+                final float by = 12 + i * 18 + rnd.nextInt(4);
+                final float bx = 2 + rnd.nextInt(10);
+                cv.drawRoundRect(bx, by, n - 2 - rnd.nextInt(10), by + 4, 2, 2, bar);
+            }
+            int[] px = new int[n * n];
+            bmp.getPixels(px, 0, n, 0, 0, n, n);
+            long sum = 0;
+            for (int v : px) {
+                sum += (77 * ((v >> 16) & 0xFF) + 150 * ((v >> 8) & 0xFF) + 29 * (v & 0xFF)) >> 8;
+            }
+            mPreviewBackdropBmp = bmp;
+            mPreviewBackdropLum = (sum / (float) px.length) / 255f;
+        } catch (Throwable t) {
+            // 建不出来就退回"没有背景"的静态玻璃，预览仍然可用
+            mPreviewBackdropBmp = null;
+        }
+    }
+
+    /**
+     * 【2.2.11b】取「按模糊强度软化过」的预览壁纸位图（滑条演示用）。
+     *
+     * 做法：先缩到 {@code 64/(1+7×强度)} 再拉回 64×64（双线性）—— 强度越高缩得越小、
+     * 拉回后越糊。这是预览专用的**近似**，真窗的模糊由采集侧对真实画面做盒式模糊。
+     */
+    private Bitmap previewBackdropFor(int pct) {
+        if (mPreviewBackdropBmp == null) {
+            return null;
+        }
+        final int q = Math.max(0, Math.min(100, pct));
+        if (mPreviewBackdropBlurBmp != null && mPreviewBackdropBlurPct == q) {
+            return mPreviewBackdropBlurBmp;
+        }
+        try {
+            // 【2.2.12】连续模糊：半径 r 与 r+1 **各糊一遍再按小数部分线性插值**。
+            //   ⚠️ 上一版是「整数档位的缩放」（1/8 → 7/8 档），每跨一档跳一次 ——
+            //      那正是「预览闪跳而不连续」的直接原因。模糊半径现在是连续的。
+            final int n = mPreviewBackdropBmp.getWidth();
+            final float rad = q / 100f * 9f;             // 0..9px（在 64×64 的底图上）
+            final int r0 = (int) Math.floor(rad);
+            final float frac = rad - r0;
+            final int[] src = new int[n * n];
+            mPreviewBackdropBmp.getPixels(src, 0, n, 0, 0, n, n);
+            final int[] b0 = blurTile(src, n, r0);
+            final int[] out = blurTile(src, n, r0 + 1);
+            if (frac > 0.005f) {
+                for (int i = 0; i < out.length; i++) {
+                    out[i] = lerpArgb(b0[i], out[i], frac);
+                }
+            } else {
+                System.arraycopy(b0, 0, out, 0, out.length);
+            }
+            Bitmap bmp = Bitmap.createBitmap(n, n, Bitmap.Config.ARGB_8888);
+            bmp.setPixels(out, 0, n, 0, 0, n, n);
+            mPreviewBackdropBlurBmp = bmp;
+            mPreviewBackdropBlurPct = q;
+            return bmp;
+        } catch (Throwable t) {
+            return mPreviewBackdropBmp;
+        }
+    }
+
+    /** 对 n×n 的像素数组做两遍可分离盒式模糊（半径 0 = 原样返回）。 */
+    private static int[] blurTile(int[] src, int n, int radius) {
+        int[] a = src.clone();
+        if (radius <= 0) {
+            return a;
+        }
+        int[] t = new int[a.length];
+        for (int pass = 0; pass < 2; pass++) {
+            blurTileH(a, t, n, radius);
+            blurTileV(t, a, n, radius);
+        }
+        return a;
+    }
+
+    private static void blurTileH(int[] in, int[] out, int n, int r) {
+        final int div = 2 * r + 1;
+        for (int y = 0; y < n; y++) {
+            final int row = y * n;
+            int sa = 0, sr = 0, sg = 0, sb = 0;
+            for (int i = -r; i <= r; i++) {
+                int p = in[row + ci(i, n)];
+                sa += p >>> 24; sr += (p >> 16) & 0xFF; sg += (p >> 8) & 0xFF; sb += p & 0xFF;
+            }
+            for (int x = 0; x < n; x++) {
+                out[row + x] = ((sa / div) << 24) | ((sr / div) << 16) | ((sg / div) << 8) | (sb / div);
+                int add = in[row + ci(x + r + 1, n)];
+                int sub = in[row + ci(x - r, n)];
+                sa += (add >>> 24) - (sub >>> 24);
+                sr += ((add >> 16) & 0xFF) - ((sub >> 16) & 0xFF);
+                sg += ((add >> 8) & 0xFF) - ((sub >> 8) & 0xFF);
+                sb += (add & 0xFF) - (sub & 0xFF);
+            }
+        }
+    }
+
+    private static void blurTileV(int[] in, int[] out, int n, int r) {
+        final int div = 2 * r + 1;
+        for (int x = 0; x < n; x++) {
+            int sa = 0, sr = 0, sg = 0, sb = 0;
+            for (int i = -r; i <= r; i++) {
+                int p = in[ci(i, n) * n + x];
+                sa += p >>> 24; sr += (p >> 16) & 0xFF; sg += (p >> 8) & 0xFF; sb += p & 0xFF;
+            }
+            for (int y = 0; y < n; y++) {
+                out[y * n + x] = ((sa / div) << 24) | ((sr / div) << 16) | ((sg / div) << 8) | (sb / div);
+                int add = in[ci(y + r + 1, n) * n + x];
+                int sub = in[ci(y - r, n) * n + x];
+                sa += (add >>> 24) - (sub >>> 24);
+                sr += ((add >> 16) & 0xFF) - ((sub >> 16) & 0xFF);
+                sg += ((add >> 8) & 0xFF) - ((sub >> 8) & 0xFF);
+                sb += (add & 0xFF) - (sub & 0xFF);
+            }
+        }
+    }
+
+    private static int ci(int v, int n) {
+        return v < 0 ? 0 : (v >= n ? n - 1 : v);
+    }
+
+    /** 按 f 在两个 ARGB 之间线性插值（逐通道）。 */
+    private static int lerpArgb(int a, int b, float f) {
+        final int g = Math.round(255 * f);
+        final int ia = 255 - g;
+        return ((((a >>> 24) * ia + (b >>> 24) * g) / 255) << 24)
+                | (((((a >> 16) & 0xFF) * ia + ((b >> 16) & 0xFF) * g) / 255) << 16)
+                | (((((a >> 8) & 0xFF) * ia + ((b >> 8) & 0xFF) * g) / 255) << 8)
+                | (((a & 0xFF) * ia + (b & 0xFF) * g) / 255);
     }
 
     // ==================================================================
@@ -2119,6 +2471,10 @@ public class SettingsActivity extends AppCompatActivity {
             setSwitch(mRowStatusbar, mDraft.statusbarSubtitleEnabled);
             // 【2.2.7 / code 979】调试日志开关（纯日志闸门，不影响功能行为）
             setSwitch(mRowDebugLog, mDraft.debugLog);
+            // 【2.2.9】液态玻璃开关
+            setSwitch(mRowLiquidGlass, mDraft.liquidGlass);
+            // 【2.2.11b】模糊强度（0–100）
+            setSlider(mRowLiquidGlassBlur, mDraft.liquidGlassBlurPct);
         } finally {
             mSyncing = false;
         }
@@ -2129,6 +2485,11 @@ public class SettingsActivity extends AppCompatActivity {
         // 回灌完再按探测结果修一次状态栏开关的可用性（顺序不能颠倒：
         // 上面刚把它设成草稿值，会被这里按授权状态覆盖，这正是我们想要的优先级）
         applyStatusbarSwitchEnabled(mProbe != null && mProbe.systemUiAuthorized);
+        // 【2.2.9】最后统一按「液态玻璃」重算一次「悬浮窗颜色」的可用性
+        //（探测/导入/恢复默认都可能改到 mDraft，放最后保证它是终态）。
+        applyPanelColorLock();
+        // 【2.2.11b】同理，「模糊强度」滑条的显隐也放最后按终态收口。
+        applyLiquidGlassBlurVisibility();
     }
 
     private void setSlider(@Nullable SliderRow row, int value) {
@@ -2417,6 +2778,18 @@ public class SettingsActivity extends AppCompatActivity {
         void paint(int index);
     }
 
+    /**
+     * 色板行的三个引用（【2.2.9】「悬浮窗颜色」在液态玻璃开启时要**整行置灰**）。
+     *
+     * 为什么需要 {@code label}/{@code body}：{@link ColorSwatchRow} 只是「色点那一排」，
+     * 拿不到它上方的标签与外面的容器；而置灰要的是「标签 + 色点一起变淡」。
+     */
+    private static final class ColorRow {
+        TextView label;
+        LinearLayout body;
+        ColorSwatchRow swatch;
+    }
+
     private SliderRow addSliderRow(LinearLayout parent, Strings label, int from, int to, int step,
                                    ValueText formatter, OnInt onChange) {
         beginRow(parent);
@@ -2689,14 +3062,14 @@ public class SettingsActivity extends AppCompatActivity {
      * @param showChecker     是否在色点圆内铺棋盘格（只有真正半透明时才需要）
      * ─────────────────────────────────────────────────────────────────────
      */
-    private ColorSwatchRow addColorRow(LinearLayout parent, Strings label, int[] colors, String[] names,
-                                       IntRef initialRef, OnInt onChange) {
+    private ColorRow addColorRow(LinearLayout parent, Strings label, int[] colors, String[] names,
+                                 IntRef initialRef, OnInt onChange) {
         return addColorRow(parent, label, colors, names, initialRef, onChange, 255, false);
     }
 
-    private ColorSwatchRow addColorRow(LinearLayout parent, Strings label, int[] colors, String[] names,
-                                       IntRef initialRef, OnInt onChange,
-                                       int previewAlpha, boolean showChecker) {
+    private ColorRow addColorRow(LinearLayout parent, Strings label, int[] colors, String[] names,
+                                 IntRef initialRef, OnInt onChange,
+                                 int previewAlpha, boolean showChecker) {
         int initial = initialRef.get();
 
         beginRow(parent);
@@ -2728,7 +3101,14 @@ public class SettingsActivity extends AppCompatActivity {
         row.setCustomSelected(!containsColor(colors, initial));
 
         parent.addView(body);
-        return row;
+
+        // 【2.2.9】顺手把本行的三个引用交出去（「悬浮窗颜色」行需要整行置灰，
+        //   而仅凭 ColorSwatchRow 拿不到它的标签与容器）。
+        ColorRow out = new ColorRow();
+        out.label = labelView;
+        out.body = body;
+        out.swatch = row;
+        return out;
     }
 
     private static boolean containsColor(int[] palette, int color) {

@@ -93,6 +93,14 @@ public class ColorSwatchRow extends LinearLayout {
     private boolean checkerEnabled;
     /** 行末的彩虹自定义色环；null = 本行不提供自定义入口。 */
     private CustomWheelView customWheel;
+    /**
+     * 【2.2.9】本行是否可交互。false = 整行只读（液态玻璃开启时「悬浮窗颜色」行置灰）。
+     *
+     * ⚠️ 只挡**用户输入**，不改 {@link #selectedColor} —— 配置里的基色照旧保留（
+     * 关掉液态玻璃后立即恢复原色显示），这与 PRD §FR-07「未授权时只置灰 UI、不写键」
+     * 是同一种口径。
+     */
+    private boolean interactive = true;
 
     public ColorSwatchRow(Context context) {
         super(context);
@@ -120,6 +128,27 @@ public class ColorSwatchRow extends LinearLayout {
     }
 
     /**
+     * 【2.2.9】把本行设为可交互 / 只读（只读时点色点与色环都不生效，且控件进入 disabled 态）。
+     *
+     * 调用方（{@code SettingsActivity}）另需把该行的标签与容器整体调暗，
+     * 本方法**只管拦输入与控件 enabled**，不碰 alpha —— 避免与调用方的置灰叠成两层。
+     */
+    public void setInteractive(boolean interactive) {
+        this.interactive = interactive;
+        for (Swatch s : swatches) {
+            s.setEnabled(interactive);
+            s.setClickable(interactive);
+            s.setFocusable(interactive);
+        }
+        if (customWheel != null) {
+            customWheel.setEnabled(interactive);
+            customWheel.setClickable(interactive);
+            customWheel.setFocusable(interactive);
+        }
+        invalidate();
+    }
+
+    /**
      * 在色板行末追加一枚**彩虹自定义色环**（用例 4.1.1）。
      *
      * ⚠️ 必须与预设色点**同尺寸、圆心共线**：色点是在 34dp 的 View 里画 22dp 的圆，
@@ -133,7 +162,13 @@ public class ColorSwatchRow extends LinearLayout {
         }
         customWheel.setVisibility(VISIBLE);
         customWheel.setCheckerEnabled(checkerEnabled);
+        customWheel.setEnabled(interactive);
+        customWheel.setClickable(interactive);
+        customWheel.setFocusable(interactive);
         customWheel.setOnClickListener(v -> {
+            if (!interactive) {
+                return;                      // 【2.2.9】只读态：自定义取色入口不生效
+            }
             if (cb != null) {
                 cb.onCustomClicked();
             }
@@ -171,10 +206,14 @@ public class ColorSwatchRow extends LinearLayout {
                 s.setCheckerEnabled(checkerEnabled);
                 String name = (names != null && i < names.length) ? names[i] : "";
                 s.setContentDescription(name + " " + SubtitleConfig.argbToHex(colors[i]));
-                s.setFocusable(true);
-                s.setClickable(true);
+                s.setFocusable(interactive);
+                s.setClickable(interactive);
+                s.setEnabled(interactive);
                 final int c = colors[i];
                 s.setOnClickListener(v -> {
+                    if (!interactive) {
+                        return;              // 【2.2.9】只读态：色点点击不生效
+                    }
                     selectedColor = c;
                     refreshSelection();
                     if (listener != null) {

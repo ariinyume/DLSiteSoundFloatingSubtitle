@@ -35,6 +35,7 @@ import io.github.ariinyume.dlsitesoundfloat.data.SubtitleRepository;
 import io.github.ariinyume.dlsitesoundfloat.view.FloatingSubtitleView;
 
 import io.github.ariinyume.dlsitesoundfloat.util.XposedCompat;
+import io.github.ariinyume.dlsitesoundfloat.util.LogGate;
 
 /**
  * 进程内悬浮窗管理器（单例）。
@@ -82,6 +83,12 @@ public class FloatingWindowManager {
      * （v13 起已移除顶部高光/外辉光/轮廓边缘光等装饰层）。
      *
      * 若要重新试错（例如换到 AOSP 机型）：把这里改成 true 即可，其余逻辑无需改动。
+     *
+     * ⚠️ 【2.2.12】**本常量永远是 false，不是待办项** —— 真·背后模糊已经用另一条路做成了：
+     *    不走窗口标志，而是由 {@code util/BackdropBlur} 直接把模糊设到**我们自己的图层**上
+     *    （真机已验收：面板背后有真实模糊、可调、可全局、零权限、零额外功耗）。
+     *    窗口标志这条路之所以保留为"永久关闭"，是因为真机取证确认它在本机型上**只有整屏效果**，
+     *    且 App 侧无法收窄（详见 {@code ColorOS17_液态玻璃_悬浮窗可行性分析.md} §7）。
      */
     private static final boolean ENABLE_SYSTEM_BLUR_BEHIND = false;
 
@@ -164,17 +171,25 @@ public class FloatingWindowManager {
             }
             view = new FloatingSubtitleView(ctx);
             view.setOnTouchListener(new GestureListener());
+            // 【2.2.11】把「面板当前的屏幕矩形」交给视图 —— 液态玻璃要拿它去采集背后的画面。
+            //   必须在 addView 之前设好：视图在 onAttachedToWindow 里第一次对齐采集开关。
+            view.setBackdropTarget(this::getPanelScreenRect);
 
             int screenW = ctx.getResources().getDisplayMetrics().widthPixels;
             int screenH = ctx.getResources().getDisplayMetrics().heightPixels;
-            int minW = dp(ctx, MIN_W_DP);
-            int minH = dp(ctx, MIN_H_DP);
+            // 【2.2.13 / 987】窗口 = 玻璃 + 四周阴影环：默认值与下限都按"玻璃口径"补上环宽，
+            //   保证玻璃部分的默认大小 / 最小值与旧版一致。
+            //   ⚠️ 987 起环宽为 0（那一圈已整体删除，见 FloatingSubtitleView
+            //   #GLASS_SHADOW_INSET_DP）⇒ frame2 恒为 0，本行等价于旧算式。
+            final int frame2 = 2 * view.getFrameInsetPx();
+            int minW = dp(ctx, MIN_W_DP) + frame2;
+            int minH = dp(ctx, MIN_H_DP) + frame2;
             int maxH = screenH * MAX_H_SCREEN_RATIO / 100;
 
             // v29：优先恢复上次的尺寸 / 位置；从未设定过才用默认值。
             // 恢复值一律按当前屏幕重新夹取（旋转、分辨率变化、字体缩放后仍保证窗口可见）。
-            int defW = Math.max(minW, screenW * DEFAULT_W_RATIO / 100);
-            int defH = dp(ctx, DEFAULT_H_DP);
+            int defW = Math.max(minW, screenW * DEFAULT_W_RATIO / 100 + frame2);
+            int defH = dp(ctx, DEFAULT_H_DP) + frame2;
             int w = clampInt(sLastW > 0 ? sLastW : defW, minW, screenW);
             int h = clampInt(sLastH > 0 ? sLastH : defH, minH, maxH);
             int x = clampInt(sLastX != Integer.MIN_VALUE ? sLastX : (int) (screenW * 0.075),
@@ -298,6 +313,39 @@ public class FloatingWindowManager {
         return showing;
     }
 
+    /**
+     * 【2.2.11】面板当前的**屏幕矩形**（px）—— 供 {@code util/HostBackdrop} 决定采哪一块。
+     *
+     * 为什么直接给 {@code params.x/y}：窗口的 {@code gravity} 是 {@code TOP|START}
+     * （见 {@link #show()}），此时 x/y 就是相对屏幕左上角的偏移，与
+     * {@code decorView.getLocationOnScreen()} 同一坐标系 —— 采集侧靠这两者相减得到
+     * 「窗口内坐标」，不需要再猜状态栏/导航栏的 inset。
+     *
+     * @return false = 此刻窗口没在显示（采集侧应跳过本帧，且不计为失败）
+     */
+    public boolean getPanelScreenRect(android.graphics.Rect out) {
+        if (out == null) {
+            return false;
+        }
+        synchronized (lock) {
+            WindowManager.LayoutParams p = params;
+            if (!showing || p == null || p.width <= 0 || p.height <= 0) {
+                return false;
+            }
+            // 【2.2.13 / 987】统计采的是**玻璃**身后的画面：窗口比玻璃大一圈阴影环，
+            //   环是透明的（透实时背景），把它算进采样矩形会污染均值/边缘色。
+            //   ⚠️ 987 起环宽为 0 ⇒ inset 恒为 0，采样矩形就是整个窗口。
+            final int inset = view != null ? view.getFrameInsetPx() : 0;
+            final int w = Math.max(0, p.width - 2 * inset);
+            final int h = Math.max(0, p.height - 2 * inset);
+            if (w <= 0 || h <= 0) {
+                return false;
+            }
+            out.set(p.x + inset, p.y + inset, p.x + inset + w, p.y + inset + h);
+            return true;
+        }
+    }
+
     private static int dp(Context ctx, float v) {
         return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v,
                 ctx.getResources().getDisplayMetrics());
@@ -351,8 +399,12 @@ public class FloatingWindowManager {
                         // 缩放热区：以右下角**三角形自身为中心**、边长 GRIP_HIT_DP(30dp) 的正方形
                         // （v16 之前是「距窗口右下角 44dp 见方」—— 既过大，又与三角形错位）。
                         resizing = view.hitResizeArea(event.getX(), event.getY());
+                        // 【2.2.11b】手指按下即暂停背景采集 —— 拖动/缩放期间用户要的是"跟手"，
+                        //   而背后画面本来就在位移（采了也立刻过期）。松手时恢复并立即补一帧。
+                        //   这是真机反馈「相当卡顿不跟手」的直接对策之一。
+                        view.setBackdropPaused(true);
                         // 诊断：确认触摸是否真的送达悬浮窗视图（若「点了没反应」，先看有没有这行）
-                        XposedCompat.log(TAG + " touch DOWN x=" + (int) event.getX()
+                        LogGate.debug(TAG, " touch DOWN x=" + (int) event.getX()
                                 + " y=" + (int) event.getY()
                                 + " viewW=" + view.getWidth() + " viewH=" + view.getHeight()
                                 + " resizing=" + resizing);
@@ -377,10 +429,15 @@ public class FloatingWindowManager {
                             int maxH = view.getContext().getResources().getDisplayMetrics().heightPixels
                                     * MAX_H_SCREEN_RATIO / 100;
                             // 缩放下界：当前字幕行完整显示所需的最小尺寸（动态）。
+                            // 【2.2.13 / 987】上面都是**玻璃**内容的最小值；窗口包着的一圈
+                            //   阴影环（987 起宽度为 0）要补进去，否则玻璃会被压得比字幕还小。
+                            final int frame2 = 2 * view.getFrameInsetPx();
                             int dynMinW = view.getMinWidthPx();
                             int dynMinH = view.getMinHeightPx();
-                            int loW = dynMinW > 0 ? dynMinW : dp(view.getContext(), MIN_W_DP);
-                            int loH = dynMinH > 0 ? dynMinH : dp(view.getContext(), MIN_H_DP);
+                            int loW = (dynMinW > 0 ? dynMinW : dp(view.getContext(), MIN_W_DP))
+                                    + frame2;
+                            int loH = (dynMinH > 0 ? dynMinH : dp(view.getContext(), MIN_H_DP))
+                                    + frame2;
                             params.width = clamp(startW + dx, loW, maxW);
                             params.height = clamp(startH + dy, loH, maxH);
                             view.recenterCurrent(); // 缩放时保持当前字幕行垂直居中
@@ -402,18 +459,20 @@ public class FloatingWindowManager {
                         if (!moved && !resizing) {
                             view.onPanelTapped();
                         } else {
-                            XposedCompat.log(TAG + " touch UP moved=" + moved
+                            LogGate.debug(TAG, " touch UP moved=" + moved
                                     + " resizing=" + resizing + " -> no tap toggle");
                         }
                         saveGeometry(); // v29：抬手时再固化一次
+                        view.setBackdropPaused(false); // 【2.2.11b】恢复采集（内部会立即补一帧）
                         resizing = false;
                         moved = false;
                         return true;
                     }
                     case MotionEvent.ACTION_CANCEL:
                         // 【2.1.4】诊断：手势被系统打断时留一行。2.1.3 实测「16 次 DOWN 只有 15 次 UP」，补上这条日志后下次取证能一眼看清手势从哪个口出去（本条只记日志，不改行为）。
-                        XposedCompat.log(TAG + " touch CANCEL moved=" + moved
+                        LogGate.debug(TAG, " touch CANCEL moved=" + moved
                                 + " resizing=" + resizing + " -> gesture aborted by system");
+                        view.setBackdropPaused(false); // 【2.2.11b】手势被打断也要恢复采集
                         resizing = false;
                         moved = false;
                         return true;

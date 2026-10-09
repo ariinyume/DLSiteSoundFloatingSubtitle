@@ -44,10 +44,10 @@
 export JAVA_HOME=/path/to/jdk-17
 export ANDROID_HOME=/path/to/android-sdk
 
-# 打 debug 包（2.2.8 / code 980）
+# 打 debug 包（2.2.14 / code 993）
 ./gradlew   assembleDebug --offline --no-daemon      # Linux / macOS
 gradlew.bat assembleDebug --offline --no-daemon      # Windows
-# 产物：app/build/outputs/apk/debug/DLsiteFloat-2.2.8-code980-debug.apk
+# 产物：app/build/outputs/apk/debug/DLsiteFloat-2.2.14-code993-debug.apk
 
 # 只验语法（更快）
 ./gradlew   compileDebugJavaWithJavac --offline      # Linux / macOS
@@ -64,9 +64,14 @@ gradlew.bat compileDebugJavaWithJavac --offline      # Windows
 
 | 变量 | 例 | 说明 |
 | --- | --- | --- |
-| `appVersionTag` | `2.2.8` | 即 `versionName`，语义化版本 |
-| `appVersionCode` | `980` | 即 `versionCode`，**严格单调递增**的整数（早期取 MMDD，现在只保证单调、不与任何已发/已占号相撞） |
-| `appVersionCodeLabel` | `1007.8` | 可读标签 `MMDD.当日第几版`，只用于日志与人工辨识 |
+| `appVersionTag` | `2.2.14` | 即 `versionName`，语义化版本 |
+| `appVersionCode` | `993` | 即 `versionCode`，**严格单调递增**的整数（早期取 MMDD，现在只保证单调、不与任何已发/已占号相撞） |
+| `appVersionCodeLabel` | `1008.14` | 可读标签 `MMDD.当日第几版`，只用于日志与人工辨识 |
+
+> ⚠️ **版本履历去哪写**（code 993 起）：**不要**再往`app/build.gradle` 里堆履历。
+> 完整履历在仓库根 `CHANGELOG.md`，用 `python tools/extract_changelog.py` 可从 gradle 重新生成；
+> gradle 里只保留最近 3 条摘要。历史上这里曾堆到 617 行注释 / 38 条履历，
+> 独占code 981~992 十二轮的唯一副本，而 `docs/修复说明/` 只到 980 —— 一次重写就全丢。
 
 **第四处**：`DlsiteSoundSubtitleModule` 里的
 `==== BUILD <versionName> / code <versionCode> （<描述>）====` 横幅 ——

@@ -115,6 +115,38 @@ public final class SubtitleConfig {
      * ⚠️ 键名冻结（PRD §FR-09 规则 4）：本键为新增键，旧配置读不到时回落默认值，天然兼容。
      */
     public static final String K_FLOAT_WINDOW_COLOR = "float_window_color";
+    /**
+     * 【2.2.9】「液态玻璃」开关（默认**关**）。
+     *
+     * 口径：开启后，**播放页的两个字幕开关胶囊**与**悬浮窗面板背景**改由
+     * {@code view.LiquidGlassDrawable} 自渲染成「液态玻璃」（圆角折射边光 + 顶部高光 +
+     * 内侧焦散 + 底部内阴影的多层叠加，模仿 ColorOS17 的观感）；同时设置页里
+     * 「悬浮窗颜色」整行**置灰不可调**（液态玻璃不走 {@link #floatWindowColor}）。
+     *
+     * ⚠️ 为什么不做「真·背后折射」：见工作区根目录
+     * {@code ColorOS17_液态玻璃_悬浮窗可行性分析.md} —— 系统那套是系统应用内的 GPU 着色器，
+     * 无对外 API；AOSP 跨窗模糊在 ColorOS 上对 overlay 会糊整屏；要真折射必须走
+     * 「自己采背景 + 自己渲染」的第三条路（成本高、且被判定为高风险）。
+     * 本实现是其中的「纯自绘制（无背景采集）」档：**观感模仿**，零权限、零跨进程。
+     *
+     * ⚠️ 键名冻结（PRD §FR-09 规则 4）：本键为新增键，旧配置读不到时回落默认值（关），天然兼容。
+     */
+    public static final String K_LIQUID_GLASS = "liquid_glass";
+    /**
+     * 【2.2.11b】「模糊强度」（范围与步长见 {@link #LIQUID_GLASS_BLUR_PCT_MIN}
+     * ／{@link #LIQUID_GLASS_BLUR_PCT_MAX}／{@link #LIQUID_GLASS_BLUR_PCT_STEP}，默认 60；
+     *  【2.2.14】由 0–100/1 收窄为 50–100/5）。
+     *
+     * 口径（只在「液态玻璃」开启时出现在设置页）：
+     *   · **有真实背景时**（浮窗压在宿主 App 页面上，能就地取到画面）=
+     *     对背景施加的**模糊半径**：0% 完全不糊（画面清晰透出）、100% 糊到只剩色块；
+     *   · **没有真实背景时**（浮窗在其他 App / 桌面上，取不到画面）=
+     *     作用在玻璃**自身**的柔化程度：强度越高，顶部受光与边光越柔、霜化颗粒越细越淡，
+     *     观感越接近"磨砂"；0% 时边光与受光最锐利。
+     *
+     * ⚠️ 键名冻结（PRD §FR-09 规则 4）：新增键，旧配置读不到时回落默认值，天然兼容。
+     */
+    public static final String K_LIQUID_GLASS_BLUR_PCT = "liquid_glass_blur_pct";
 
     // ==================================================================
     // 枚举取值（PRD §十「范围/枚举」列）
@@ -194,6 +226,21 @@ public final class SubtitleConfig {
     /** 【2.3.0】悬浮窗面板渐变基色（深蓝黑）；两档 alpha 由 {@code SubtitleStyle} 叠加。 */
     public static final int FLOAT_WINDOW_COLOR_DEF = 0xFF0E1420;
 
+    /**
+     * 【2.2.11b】「模糊强度」范围与默认值。
+     *
+     * 【2.2.14】范围由 0–100 / 步长 1 收窄为 **50–100 / 步长 5**（Ari 2026-10-08 第二次真机反馈：
+     * 「调整范围改成 50% 到 100%，步长 5%」）。理由：50% 以下在真机上既糊不开
+     * （半径太小、看不出玻璃质感），又只剩很薄的一层填充 —— 属于无效区间，
+     * 留着只会让滑条大部分行程是"没反应"。
+     * ⚠️ 渲染层仍按通用的 0–100 口径处理（{@code clamp()} 会把旧配置里的低值夹到 50，
+     * 消费侧不做任何下限假设），因此存量配置不会出格。
+     */
+    public static final int LIQUID_GLASS_BLUR_PCT_MIN = 50;
+    public static final int LIQUID_GLASS_BLUR_PCT_MAX = 100;
+    public static final int LIQUID_GLASS_BLUR_PCT_STEP = 5;
+    public static final int LIQUID_GLASS_BLUR_PCT_DEF = 60;
+
     // ==================================================================
     // 字段（默认值即 PRD §十「默认值」列）
     // ==================================================================
@@ -223,6 +270,16 @@ public final class SubtitleConfig {
 
     /** 【2.3.0】悬浮窗面板渐变基色（RGB 生效，alpha 由 {@code SubtitleStyle} 换算）。 */
     public int floatWindowColor = FLOAT_WINDOW_COLOR_DEF;
+
+    /**
+     * 【2.2.9】液态玻璃开关（默认关）。
+     * 开 = 悬浮窗面板与播放页两个字幕胶囊改用自渲染液态玻璃；
+     * 此时 {@link #floatWindowColor} 不参与渲染（设置页该行置灰），但仍会被本字段原样保存。
+     */
+    public boolean liquidGlass = false;
+
+    /** 【2.2.11b】模糊强度（0–100，默认 60）。语义见 {@link #K_LIQUID_GLASS_BLUR_PCT}。 */
+    public int liquidGlassBlurPct = LIQUID_GLASS_BLUR_PCT_DEF;
 
     /** PRD §FR-07：SystemUI 未授权时**只置灰 UI、不写这个键**，避免把「未授权」记成「用户主动关」。 */
     public boolean statusbarSubtitleEnabled = true;
@@ -264,6 +321,8 @@ public final class SubtitleConfig {
         c.lineSpacingDp = lineSpacingDp;
         c.wrapExtraSpacingDp = wrapExtraSpacingDp;
         c.floatWindowColor = floatWindowColor;
+        c.liquidGlass = liquidGlass;
+        c.liquidGlassBlurPct = liquidGlassBlurPct;
         c.statusbarSubtitleEnabled = statusbarSubtitleEnabled;
         c.keepScreenOn = keepScreenOn;
         c.hotReload = hotReload;
@@ -291,6 +350,8 @@ public final class SubtitleConfig {
                 && Float.compare(lineSpacingDp, o.lineSpacingDp) == 0
                 && Float.compare(wrapExtraSpacingDp, o.wrapExtraSpacingDp) == 0
                 && floatWindowColor == o.floatWindowColor
+                && liquidGlass == o.liquidGlass
+                && liquidGlassBlurPct == o.liquidGlassBlurPct
                 && statusbarSubtitleEnabled == o.statusbarSubtitleEnabled
                 && keepScreenOn == o.keepScreenOn
                 && hotReload == o.hotReload
@@ -323,6 +384,8 @@ public final class SubtitleConfig {
         activeHighlight = clampInt(activeHighlight, HIGHLIGHT_MIN, HIGHLIGHT_MAX);
         inactiveBlurSteps = clampInt(inactiveBlurSteps, BLUR_STEPS_MIN, BLUR_STEPS_MAX);
         inactiveScalePct = clampInt(inactiveScalePct, INACTIVE_SCALE_PCT_MIN, INACTIVE_SCALE_PCT_MAX);
+        liquidGlassBlurPct = clampInt(liquidGlassBlurPct,
+                LIQUID_GLASS_BLUR_PCT_MIN, LIQUID_GLASS_BLUR_PCT_MAX);
 
         activeScale = clampFloat(activeScale, ACTIVE_SCALE_MIN, ACTIVE_SCALE_MAX);
         lineSpacingDp = clampFloat(lineSpacingDp, LINE_SPACING_MIN, LINE_SPACING_MAX);
@@ -377,6 +440,8 @@ public final class SubtitleConfig {
             o.put(K_LINE_SPACING_DP, round1(lineSpacingDp));
             o.put(K_WRAP_EXTRA_SPACING_DP, round1(wrapExtraSpacingDp));
             o.put(K_FLOAT_WINDOW_COLOR, argbToHex(floatWindowColor));
+            o.put(K_LIQUID_GLASS, liquidGlass);
+            o.put(K_LIQUID_GLASS_BLUR_PCT, liquidGlassBlurPct);
             o.put(K_STATUSBAR_SUBTITLE_ENABLED, statusbarSubtitleEnabled);
             o.put(K_KEEP_SCREEN_ON, keepScreenOn);
             o.put(K_HOT_RELOAD, hotReload);
@@ -416,6 +481,8 @@ public final class SubtitleConfig {
         c.lineSpacingDp = (float) o.optDouble(K_LINE_SPACING_DP, c.lineSpacingDp);
         c.wrapExtraSpacingDp = (float) o.optDouble(K_WRAP_EXTRA_SPACING_DP, c.wrapExtraSpacingDp);
         c.floatWindowColor = hexToArgb(o.optString(K_FLOAT_WINDOW_COLOR, null), c.floatWindowColor);
+        c.liquidGlass = o.optBoolean(K_LIQUID_GLASS, c.liquidGlass);
+        c.liquidGlassBlurPct = o.optInt(K_LIQUID_GLASS_BLUR_PCT, c.liquidGlassBlurPct);
         c.statusbarSubtitleEnabled = o.optBoolean(K_STATUSBAR_SUBTITLE_ENABLED, c.statusbarSubtitleEnabled);
         c.keepScreenOn = o.optBoolean(K_KEEP_SCREEN_ON, c.keepScreenOn);
         c.hotReload = o.optBoolean(K_HOT_RELOAD, c.hotReload);
@@ -448,6 +515,8 @@ public final class SubtitleConfig {
         e.putFloat(K_LINE_SPACING_DP, lineSpacingDp);
         e.putFloat(K_WRAP_EXTRA_SPACING_DP, wrapExtraSpacingDp);
         e.putInt(K_FLOAT_WINDOW_COLOR, floatWindowColor);
+        e.putBoolean(K_LIQUID_GLASS, liquidGlass);
+        e.putInt(K_LIQUID_GLASS_BLUR_PCT, liquidGlassBlurPct);
         e.putBoolean(K_STATUSBAR_SUBTITLE_ENABLED, statusbarSubtitleEnabled);
         e.putBoolean(K_KEEP_SCREEN_ON, keepScreenOn);
         e.putBoolean(K_HOT_RELOAD, hotReload);
@@ -478,6 +547,8 @@ public final class SubtitleConfig {
         c.lineSpacingDp = p.getFloat(K_LINE_SPACING_DP, c.lineSpacingDp);
         c.wrapExtraSpacingDp = p.getFloat(K_WRAP_EXTRA_SPACING_DP, c.wrapExtraSpacingDp);
         c.floatWindowColor = p.getInt(K_FLOAT_WINDOW_COLOR, c.floatWindowColor);
+        c.liquidGlass = p.getBoolean(K_LIQUID_GLASS, c.liquidGlass);
+        c.liquidGlassBlurPct = p.getInt(K_LIQUID_GLASS_BLUR_PCT, c.liquidGlassBlurPct);
         c.statusbarSubtitleEnabled = p.getBoolean(K_STATUSBAR_SUBTITLE_ENABLED, c.statusbarSubtitleEnabled);
         c.keepScreenOn = p.getBoolean(K_KEEP_SCREEN_ON, c.keepScreenOn);
         c.hotReload = p.getBoolean(K_HOT_RELOAD, c.hotReload);
@@ -543,6 +614,7 @@ public final class SubtitleConfig {
                 + " weight=" + fontWeight + " align=" + textAlign
                 + " spacing=" + round1(lineSpacingDp) + "/" + round1(wrapExtraSpacingDp)
                 + " floatWindow=" + argbToHex(floatWindowColor)
+                + " liquidGlass=" + liquidGlass + "/" + liquidGlassBlurPct + "%"
                 + " debugLog=" + debugLog;
     }
 

@@ -20,7 +20,6 @@ package io.github.ariinyume.dlsitesoundfloat.hook;
 
 import android.os.SystemClock;
 
-import io.github.ariinyume.dlsitesoundfloat.config.RemoteConfig;
 import io.github.ariinyume.dlsitesoundfloat.data.SubtitleRepository;
 import io.github.ariinyume.dlsitesoundfloat.util.Shape;
 import io.github.ariinyume.dlsitesoundfloat.util.XposedCompat;
@@ -29,6 +28,7 @@ import java.lang.reflect.Method;
 import java.util.Map;
 
 import io.github.libxposed.api.XposedInterface;
+import io.github.ariinyume.dlsitesoundfloat.util.LogGate;
 
 /**
  * 音轨切换 Hook —— 解决「切到没有字幕的音轨后，悬浮窗仍从头播放上一音轨的缓存字幕」。
@@ -97,9 +97,7 @@ public class PlayerSourceHook {
      * {@code >>> track changed}）仍走 {@link XposedCompat#log} 常开。
      */
     private static void dbg(String msg) {
-        if (RemoteConfig.debugLog()) {
-            XposedCompat.log(TAG + " " + msg);
-        }
+        LogGate.debug(TAG, msg);
     }
 
     /** 同一次切换可能触发多个 hook 点，去重窗口。 */

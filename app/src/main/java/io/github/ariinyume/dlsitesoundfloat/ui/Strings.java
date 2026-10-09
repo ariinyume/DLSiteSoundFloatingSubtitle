@@ -149,6 +149,26 @@ public enum Strings {
     DEBUG_LOG_HINT("排查问题时才需要打开，日常保持关闭可减少日志刷屏",
             "排查問題時才需要開啟，日常保持關閉可減少日誌刷屏",
             "Turn on only when debugging; keep it off to avoid log spam"),
+    /**
+     * 【2.2.9】「液态玻璃」开关标签（「其他」卡片，摆在「调试日志」下方）。
+     *
+     * 开启后：悬浮窗面板背景与播放页两个字幕开关胶囊改用自渲染液态玻璃
+     * （模仿 ColorOS17 观感，见 {@code view/LiquidGlassDrawable}）。
+     */
+    LIQUID_GLASS("液态玻璃", "液態玻璃", "Liquid glass"),
+    /**
+     * 【2.2.11b】「模糊强度」滑条标签（只在液态玻璃开启时出现）。
+     * 【2.2.14】范围 50–100%、步长 5%、默认 60%（见 {@code SubtitleConfig} 的四个常量）。
+     */
+    LIQUID_GLASS_BLUR("模糊强度", "模糊強度", "Blur strength"),
+    /** 「模糊强度」滑条下方的常驻说明小字（三语）。 */
+    LIQUID_GLASS_BLUR_HINT("数值越高越模糊：能取到背后画面时作用于画面本身，取不到时作用于玻璃自身",
+            "數值越高越模糊：能取得背後畫面時作用於畫面本身，取不到時作用於玻璃自身",
+            "Higher = blurrier: blurs the backdrop when available, otherwise softens the glass itself"),
+    /** 「液态玻璃」开关下方的常驻说明小字（三语）：同时说明「面板颜色会被锁定」。 */
+    LIQUID_GLASS_HINT("悬浮窗面板与播放页字幕按钮改为玻璃质感；开启后「悬浮窗颜色」不可调整",
+            "懸浮窗面板與播放頁字幕按鈕改為玻璃質感；開啟後「懸浮窗顏色」無法調整",
+            "Panel & playback subtitle buttons become glass; panel color is locked while on"),
     BACKUP_RESTORE("字幕配置备份与恢复", "字幕配置備份與恢復", "Backup & restore"),
     EXPORT("导出", "匯出", "Export"),
     IMPORT("导入", "匯入", "Import"),

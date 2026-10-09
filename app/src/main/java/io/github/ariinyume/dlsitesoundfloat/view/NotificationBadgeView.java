@@ -28,6 +28,7 @@ import android.view.ViewGroup;
 import android.widget.TextView;
 
 import io.github.ariinyume.dlsitesoundfloat.util.XposedCompat;
+import io.github.ariinyume.dlsitesoundfloat.util.LogGate;
 
 /**
  * 状态栏左侧的「通知数徽标」—— 圆底 + **镂空数字**。
@@ -190,7 +191,7 @@ public class NotificationBadgeView extends TextView {
         }
         sDrawLogBudget--;
         try {
-            XposedCompat.log(TAG + " onDraw " + what + " #" + (3 - sDrawLogBudget)
+            LogGate.debug(TAG, " onDraw " + what + " #" + (3 - sDrawLogBudget)
                     + " w=" + w + " h=" + h
                     + " text=" + getText()
                     + " size=" + getTextSize()

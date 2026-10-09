@@ -31,6 +31,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 
 import io.github.libxposed.api.XposedInterface;
+import io.github.ariinyume.dlsitesoundfloat.util.LogGate;
 
 /**
  * 拦截宿主网络响应，读取字幕 JSON。
@@ -214,12 +215,12 @@ public class NetworkHook {
             // 锚点在，但形状可能变（RN 升级会改签名）—— 这时打形状出来再降级
             Method probe = Shape.matchMethod(nm, new Class<?>[]{int.class, String.class, null}, null);
             if (probe == null) {
-                XposedCompat.log(TAG + " RN anchor present but readWithProgress shape not found -> "
+                LogGate.debug(TAG, " RN anchor present but readWithProgress shape not found -> "
                         + Shape.describeNoArgReturnTypes(nm, 8));
                 return;
             }
             Class<?> bodyCls = probe.getParameterTypes()[2];
-            XposedCompat.log(TAG + " RN anchor ok: " + probe.getName() + "("
+            LogGate.debug(TAG, " RN anchor ok: " + probe.getName() + "("
                     + probe.getParameterTypes()[0].getSimpleName() + ","
                     + probe.getParameterTypes()[1].getSimpleName() + ","
                     + bodyCls.getName() + ")  [body class resolved BY SIGNATURE, not by name]");
@@ -227,7 +228,7 @@ public class NetworkHook {
             // ResponseBody 上的无参 string()（混淆后叫 l()/a()/…，按返回类型 String 认）
             Method stringM = Shape.findNoArgReturning(bodyCls, "string", String.class);
             if (stringM == null) {
-                XposedCompat.log(TAG + " ResponseBody.string() not found -> "
+                LogGate.debug(TAG, " ResponseBody.string() not found -> "
                         + Shape.describeNoArgReturnTypes(bodyCls, 10));
                 return;
             }
@@ -243,7 +244,7 @@ public class NetworkHook {
             // 通道 0（build + peek）也要用这两个 —— 这里解析完就共享出去
             sBodyLenM = lenM;
             sBodyCtM = ctM;
-            XposedCompat.log(TAG + " ResponseBody shape: string=" + stringM.getName()
+            LogGate.debug(TAG, " ResponseBody shape: string=" + stringM.getName()
                     + " contentLength=" + (lenM == null ? "(none)" : lenM.getName())
                     + " contentType=" + (ctM == null ? "(none)" : ctM.getName())
                     + "  [" + bodyCls.getName() + "]");
@@ -349,13 +350,13 @@ public class NetworkHook {
         try {
             Class<?> respCls = resolveResponseClass(cl);
             if (respCls == null) {
-                XposedCompat.log(TAG + " response class NOT resolved (no anchor matched)"
+                LogGate.debug(TAG, " response class NOT resolved (no anchor matched)"
                         + " -> build channel unavailable");
                 return;
             }
             Field bodyField = findBodyField(respCls);
             if (bodyField == null) {
-                XposedCompat.log(TAG + " no ResponseBody-shaped field on " + respCls.getName()
+                LogGate.debug(TAG, " no ResponseBody-shaped field on " + respCls.getName()
                         + " -> build channel unavailable");
                 return;
             }
@@ -585,7 +586,7 @@ public class NetworkHook {
                     sBufferM = bufM;
                     sCloneM = cl;
                     sReadArrM = rd;
-                    XposedCompat.log(TAG + " okio chain resolved BY SHAPE: source=" + m.getName()
+                    LogGate.debug(TAG, " okio chain resolved BY SHAPE: source=" + m.getName()
                             + " request=" + req.getName()
                             + " buffer=" + bufM.getName()
                             + " clone=" + cl.getName()
@@ -616,13 +617,13 @@ public class NetworkHook {
         String urlLc = url == null ? "" : url.toLowerCase(Locale.US);
 
         if (sBuildCalls <= 5) {
-            XposedCompat.log(TAG + " response #" + sBuildCalls + ": url=" + url
+            LogGate.debug(TAG, " response #" + sBuildCalls + ": url=" + url
                     + " ctype=" + (cts.isEmpty() ? "(none)" : cts) + " len=" + len);
         }
 
         if (len > PEEK_LIMIT) {
             if (++sSkipped <= 3) {
-                XposedCompat.log(TAG + " skipped #" + sSkipped + " (large): url=" + url
+                LogGate.debug(TAG, " skipped #" + sSkipped + " (large): url=" + url
                         + " ctype=" + cts + " len=" + len);
             }
             return;
@@ -630,7 +631,7 @@ public class NetworkHook {
         for (String hint : MEDIA_CT_HINTS) {
             if (cts.contains(hint)) {
                 if (++sSkipped <= 3) {
-                    XposedCompat.log(TAG + " skipped #" + sSkipped + " (media ctype): url=" + url
+                    LogGate.debug(TAG, " skipped #" + sSkipped + " (media ctype): url=" + url
                             + " ctype=" + cts + " len=" + len);
                 }
                 return;
@@ -639,7 +640,7 @@ public class NetworkHook {
         for (String hint : MEDIA_EXT_HINTS) {
             if (urlLc.contains(hint)) {
                 if (++sSkipped <= 3) {
-                    XposedCompat.log(TAG + " skipped #" + sSkipped + " (media ext): url=" + url
+                    LogGate.debug(TAG, " skipped #" + sSkipped + " (media ext): url=" + url
                             + " ctype=" + cts + " len=" + len);
                 }
                 return;
@@ -650,7 +651,7 @@ public class NetworkHook {
         boolean urlJson = urlLc.contains(".json");
         if (!small && !jsonish && !urlJson) {
             if (++sSkipped <= 3) {
-                XposedCompat.log(TAG + " skipped #" + sSkipped + " (unknown type): url=" + url
+                LogGate.debug(TAG, " skipped #" + sSkipped + " (unknown type): url=" + url
                         + " ctype=" + (cts.isEmpty() ? "(none)" : cts) + " len=" + len);
             }
             return;
@@ -795,10 +796,10 @@ public class NetworkHook {
         hit += hookOkHttpBuilder(cl, repo);
         hit += hookOkHttpRealCall(cl, repo);
         if (hit > 0) {
-            XposedCompat.log(TAG + " legacy okhttp channel active (" + hit
+            LogGate.debug(TAG, " legacy okhttp channel active (" + hit
                     + " hooks) -> host is NOT obfuscated");
         } else {
-            XposedCompat.log(TAG + " legacy okhttp channel absent (expected on obfuscated host)");
+            LogGate.debug(TAG, " legacy okhttp channel absent (expected on obfuscated host)");
         }
     }
 
@@ -966,7 +967,7 @@ public class NetworkHook {
         if (!looksLikeSubtitleJson(text)) {
             if (!sFirstMissLogged) {
                 sFirstMissLogged = true;
-                XposedCompat.log(TAG + " first non-subtitle body (len=" + text.length()
+                LogGate.debug(TAG, " first non-subtitle body (len=" + text.length()
                         + ") passed gates but no webvtt structure -> skipped");
             }
             return;

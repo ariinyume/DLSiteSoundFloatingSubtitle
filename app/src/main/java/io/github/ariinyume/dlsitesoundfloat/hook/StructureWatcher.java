@@ -26,6 +26,7 @@ import io.github.ariinyume.dlsitesoundfloat.util.XposedCompat;
 import java.lang.reflect.Method;
 
 import io.github.libxposed.api.XposedInterface;
+import io.github.ariinyume.dlsitesoundfloat.util.LogGate;
 
 /**
  * 宿主视图树「结构事件」监听（v34 新增）—— 让开关按钮的显隐做到准零延迟。
@@ -114,7 +115,7 @@ public class StructureWatcher {
             });
             sHookedCount++;
         } catch (Throwable e) {
-            XposedCompat.log(TAG + " hook " + owner.getSimpleName() + "." + method
+            LogGate.debug(TAG, " hook " + owner.getSimpleName() + "." + method
                     + " failed: " + e.getMessage());
         }
     }

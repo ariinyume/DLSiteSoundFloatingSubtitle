@@ -63,6 +63,7 @@ import java.util.List;
 import java.util.Map;
 
 import io.github.libxposed.api.XposedInterface;
+import io.github.ariinyume.dlsitesoundfloat.util.LogGate;
 
 /**
  * SystemUI 侧：把「当前字幕行」注入状态栏（ColorOS 16 优先，兼容小米/原生/其它）。
@@ -729,7 +730,7 @@ public class StatusBarSubtitleHook {
             boolean inside = x >= loc[0] - pad && x <= loc[0] + line.getWidth() + pad
                     && y >= loc[1] - pad && y <= loc[1] + line.getHeight() + pad;
             if (sRootDownCount++ % 40 == 0) {
-                XposedCompat.log(TAG + "[双击] root DOWN #" + sRootDownCount
+                LogGate.debug(TAG, "[双击] root DOWN #" + sRootDownCount
                         + " at (" + (int) x + "," + (int) y + ") inside=" + inside
                         + " lineRect=[" + loc[0] + "," + loc[1] + ","
                         + line.getWidth() + "x" + line.getHeight() + "]");
@@ -744,7 +745,7 @@ public class StatusBarSubtitleHook {
                     && Math.abs((int) y - sLastTapY) <= DOUBLE_TAP_SLOP_PX;
             if (inWindow && near) {
                 sLastTapMs = 0L;
-                XposedCompat.log(TAG + "[双击] hit at (" + (int) x + "," + (int) y + ")");
+                LogGate.debug(TAG, "[双击] hit at (" + (int) x + "," + (int) y + ")");
                 onSubtitleDoubleTapped(line.getContext());
             } else {
                 sLastTapMs = now;
@@ -823,7 +824,7 @@ public class StatusBarSubtitleHook {
         } catch (Throwable t) {
             XposedCompat.log(TAG + "[双击] send dismiss request failed: " + t);
         }
-        XposedCompat.log(TAG + "[双击] 状态栏字幕位置双击 -> dismiss request sent=" + sent);
+        LogGate.debug(TAG, "[双击] 状态栏字幕位置双击 -> dismiss request sent=" + sent);
         // 立即本地隐藏（手感）：不等 App 进程往返。
         try {
             if (sContainer != null) {
@@ -979,7 +980,7 @@ public class StatusBarSubtitleHook {
         int rgb = color & 0x00FFFFFF;
         if (rgb != sLastLoggedRgb) {
             sLastLoggedRgb = rgb;
-            XposedCompat.log(TAG + " subtitle color <- clock: #" + Integer.toHexString(rgb)
+            LogGate.debug(TAG, " subtitle color <- clock: #" + Integer.toHexString(rgb)
                     + (isLight(color) ? " (light bar -> dark text)" : " (dark bar -> light text)"));
         }
     }
@@ -1234,7 +1235,7 @@ public class StatusBarSubtitleHook {
                     : describe(seeding, SEEDING_IDS) + "(" + seeding.getClass().getSimpleName() + ")");
             sb.append(" side=").append(side == null ? "none" : describe(side, SIDE_CONTAINER_IDS));
             sb.append(" cutout=").append(cutout == null ? "none" : describe(cutout, CUTOUT_IDS));
-            XposedCompat.log(TAG + " " + sb);
+            LogGate.debug(TAG, sb.toString());
 
             String miss = "";
             if (sAnchorHit.equals("MISSING")) {
@@ -1421,7 +1422,7 @@ public class StatusBarSubtitleHook {
     /** 一次性把状态栏视图树打进日志（下一轮排查「流体云到底叫什么」时靠它）。 */
     private static void logViewTreeOnce(View root) {
         try {
-            XposedCompat.log(TAG + " ---- status bar view tree ----");
+            LogGate.debug(TAG, " ---- status bar view tree ----");
             ArrayDeque<View> queue = new ArrayDeque<>();
             queue.add(root);
             int i = 0;
@@ -1444,7 +1445,7 @@ public class StatusBarSubtitleHook {
                         text = " text=\"" + (s.length() > 18 ? s.substring(0, 18) + "…" : s) + "\"";
                     }
                 }
-                XposedCompat.log(TAG + " tree[" + (i++) + "] " + v.getClass().getSimpleName()
+                LogGate.debug(TAG, " tree[" + (i++) + "] " + v.getClass().getSimpleName()
                         + " id=" + idName
                         + " vis=" + v.getVisibility()
                         + " l=" + v.getLeft() + " t=" + v.getTop()
@@ -1460,7 +1461,7 @@ public class StatusBarSubtitleHook {
                     }
                 }
             }
-            XposedCompat.log(TAG + " ---- end tree ----");
+            LogGate.debug(TAG, " ---- end tree ----");
         } catch (Throwable ignored) {
         }
     }
@@ -1634,7 +1635,7 @@ public class StatusBarSubtitleHook {
         if (sLineView != null
                 && (sLineView.getVisibility() != View.VISIBLE
                     || !sLineView.isShown())) {
-            XposedCompat.log(TAG + " showLine self-heal sLineView: vis="
+            LogGate.debug(TAG, " showLine self-heal sLineView: vis="
                     + sLineView.getVisibility() + " shown=" + sLineView.isShown()
                     + " -> VISIBLE");
             sLineView.setVisibility(View.VISIBLE);
@@ -1648,7 +1649,7 @@ public class StatusBarSubtitleHook {
                 float tw = sLineView.getPaint().measureText(sLine);
                 int vw = sLineView.getWidth() - sLineView.getPaddingLeft()
                         - sLineView.getPaddingRight();
-                XposedCompat.log(TAG + " showLine begin: text=<"
+                LogGate.debug(TAG, " showLine begin: text=<"
                         + (sLine.length() > 32 ? sLine.substring(0, 32) + "..." : sLine)
                         + "> textW=" + (int) Math.ceil(tw)
                         + " viewW=" + vw
@@ -1729,7 +1730,7 @@ public class StatusBarSubtitleHook {
             if (sContainer != null) {
                 sContainer.invalidate();
             }
-            XposedCompat.log(TAG + " style reapplied on current line (rev="
+            LogGate.debug(TAG, " style reapplied on current line (rev="
                     + RemoteConfig.revision() + ")");
         } catch (Throwable t) {
             XposedCompat.log(TAG + " reapplyCurrentLineStyle failed: " + t);
@@ -1763,7 +1764,7 @@ public class StatusBarSubtitleHook {
             }
             sFontSynced = true;
             sFontSource = clock;
-            XposedCompat.log(TAG + " font synced from clock: typeface=" + c.getTypeface()
+            LogGate.debug(TAG, " font synced from clock: typeface=" + c.getTypeface()
                     + ", size=" + c.getTextSize() + "px");
         } catch (Throwable t) {
             XposedCompat.log(TAG + " syncFontFromClock failed: " + t);
@@ -1848,7 +1849,7 @@ public class StatusBarSubtitleHook {
                 sLayoutDirty = true;
             }
             if (!sSuppressed) {
-                XposedCompat.log(TAG + " system parts hidden (clock x" + sClockViews.size()
+                LogGate.debug(TAG, " system parts hidden (clock x" + sClockViews.size()
                         + ", notifArea x" + sNotifViews.size() + ")");
             }
             sSuppressed = true;
@@ -1887,7 +1888,7 @@ public class StatusBarSubtitleHook {
             if (restored > 0) {
                 sLayoutDirty = true;
             }
-            XposedCompat.log(TAG + " system parts restored (clock + notification icons), restored="
+            LogGate.debug(TAG, " system parts restored (clock + notification icons), restored="
                     + restored);
         }
     }
@@ -1976,7 +1977,7 @@ public class StatusBarSubtitleHook {
                 return;
             }
             sBadgeGeomPrev = cur;
-            XposedCompat.log(TAG + " badge geom [" + when + "] " + cur);
+            LogGate.debug(TAG, " badge geom [" + when + "] " + cur);
         } catch (Throwable ignored) {
         }
     }
@@ -2002,7 +2003,7 @@ public class StatusBarSubtitleHook {
             sBadge.setVisibility(View.GONE);
             applyBadgeInset(false);   // 【1.21.11 问题 2】没通知 -> 字幕顶到最左，不留徽标位
             // 【code 946】这条分支原先**没有日志** —— 徽标被静默藏起来时无从查证，补上。
-            XposedCompat.log(TAG + " notification badge = 0 -> badge hidden");
+            LogGate.debug(TAG, " notification badge = 0 -> badge hidden");
             logBadgeGeometry("badge=0");
             return;
         }
@@ -2010,7 +2011,7 @@ public class StatusBarSubtitleHook {
         sBadge.setBadgeText(count > 99 ? "99+" : String.valueOf(count));
         sBadge.setVisibility(View.VISIBLE);
         applyBadgeInset(true);        // 有通知 -> 字幕退到徽标右侧
-        XposedCompat.log(TAG + " notification badge = " + count);
+        LogGate.debug(TAG, " notification badge = " + count);
         logBadgeGeometry("badge=" + count);   // 【code 946】几何自证
     }
 
@@ -2045,7 +2046,7 @@ public class StatusBarSubtitleHook {
         //   screenX(sLineView) 不可信（旧 getLeft + 新 margin 混在一起）-> 置脏。
         //   onGlobalLayout 里清（那才是「layout 真的跑完」的信号）。
         sLayoutDirty = true;
-        XposedCompat.log(TAG + " line left inset -> " + want + "px (badge "
+        LogGate.debug(TAG, " line left inset -> " + want + "px (badge "
                 + (badgeVisible ? "shown" : "hidden") + ") [layoutDirty]");
     }
 
@@ -2096,12 +2097,12 @@ public class StatusBarSubtitleHook {
             sLineLeftAcc = real;
             sLineLeftRejectStreak = 0;
             sLineLeftRejectPrev = -1;
-            XposedCompat.log(TAG + " line left relocked -> " + real
+            LogGate.debug(TAG, " line left relocked -> " + real
                     + "px (sustained offset from anchor)");
             return true;
         }
         if (sLineLeftRejectStreak == 1) {
-            XposedCompat.log(TAG + " line left rejected -> " + real + "px (anchor="
+            LogGate.debug(TAG, " line left rejected -> " + real + "px (anchor="
                     + anchor + ", tol=" + dp(20) + ")");
         }
         return false;
@@ -2261,7 +2262,7 @@ public class StatusBarSubtitleHook {
                             + " kids=" + (seeding instanceof ViewGroup
                                     ? ((ViewGroup) seeding).getChildCount() : -1);
                 }
-                XposedCompat.log(TAG + " seeding state -> "
+                LogGate.debug(TAG, " seeding state -> "
                         + (seedingState == 0 ? "absent"
                                 : (seedingState == 2 ? "usable" : "present-but-dead"))
                         + extra);
@@ -2401,13 +2402,13 @@ public class StatusBarSubtitleHook {
             //   已起滚的行走 retarget（不重启动画，保住速度）。
             boolean wasSettled = sWidthSettled;
             sWidthSettled = true;
-            XposedCompat.log(TAG + " subtitle width: " + sPendingWidthWhy
+            LogGate.debug(TAG, " subtitle width: " + sPendingWidthWhy
                     + " (prev=" + (prev == Integer.MIN_VALUE ? "none" : prev + "px") + ")"
                     + " [widthSettled]");
             // 新宽度刚设、还没经过 layout，getWidth() 仍是旧值 -> 显式传入新宽度算目标
             retargetScrollForNewWidth(width);
             if (!wasSettled && !sScrollArmed) {
-                XposedCompat.log(TAG + " startScroll armed after width settled");
+                LogGate.debug(TAG, " startScroll armed after width settled");
                 startScroll();
             }
         } catch (Throwable t) {
@@ -2652,7 +2653,7 @@ public class StatusBarSubtitleHook {
         } catch (Throwable ignored) {
         }
         if (best != null) {
-            XposedCompat.log(TAG + " fluid cloud by geometry: " + best.getClass().getSimpleName()
+            LogGate.debug(TAG, " fluid cloud by geometry: " + best.getClass().getSimpleName()
                     + " left=" + bestLeft + " w=" + best.getWidth());
         }
         return best;
@@ -2945,7 +2946,7 @@ public class StatusBarSubtitleHook {
             }
             if (!sSnapSideLogged) {
                 sSnapSideLogged = true;
-                XposedCompat.log(TAG + " snap: target=" + target + " lower=" + lower
+                LogGate.debug(TAG, " snap: target=" + target + " lower=" + lower
                         + " upper=" + upper + " -> " + chosen
                         + (chosen == lower ? " [nearer-lower]" : " [upper]")
                         + (lowerAcceptable ? "" : " (lower clips tail " + clip + "px)"));
@@ -2958,7 +2959,7 @@ public class StatusBarSubtitleHook {
             if (nudge > 0 && nudge <= MAX_NUDGE_PX && ideal <= maxSnap) {
                 if (!sNudgeLogged) {
                     sNudgeLogged = true;
-                    XposedCompat.log(TAG + " tail nudge: " + chosen + " -> " + ideal
+                    LogGate.debug(TAG, " tail nudge: " + chosen + " -> " + ideal
                             + "px (+" + nudge + "px, coverNeed=" + coverNeed
                             + ", viewW=" + viewW + ") [keeps tail fully visible]");
                 }
@@ -3028,7 +3029,7 @@ public class StatusBarSubtitleHook {
             // ⚠️ 这里的 liveW 是**实时读**的宽度（可能是「还没 layout 完」的旧值），
             //    真正参与计算的是 sLastMeasure 里的 calcW —— 两者不一致正是「读到旧值」的信号，
             //    所以两个都打出来，别再让读数误导排查（969 那轮就被 viewW=0 带偏过一次）。
-            XposedCompat.log(TAG + " scroll: target=" + target + "px dur=" + dur
+            LogGate.debug(TAG, " scroll: target=" + target + "px dur=" + dur
                     + "ms (liveW=" + (sLineView.getWidth() - sLineView.getPaddingLeft()
                     - sLineView.getPaddingRight()) + ", " + sLastMeasure + ")");
         } catch (Throwable t) {
@@ -3062,7 +3063,7 @@ public class StatusBarSubtitleHook {
                     }
                     int real = computeScrollTarget(-1);   // 显式用真实 getWidth()/getLayout()
                     if (real > TARGET_HYSTERESIS_PX) {
-                        XposedCompat.log(TAG + " fit recheck: does NOT fit -> real target="
+                        LogGate.debug(TAG, " fit recheck: does NOT fit -> real target="
                                 + real + "px (start scroll, tail was clipped)");
                         sLiveTargetPx = real;
                         sScrollTarget = real;
@@ -3119,7 +3120,7 @@ public class StatusBarSubtitleHook {
                     //   这里按**原速度**补上剩余距离 —— 保证末尾必然完整露出来。
                     int realTarget = computeScrollTarget(-1);
                     if (realTarget > sLiveTargetPx + 2) {
-                        XposedCompat.log(TAG + " scroll recheck after settle: "
+                        LogGate.debug(TAG, " scroll recheck after settle: "
                                 + sLiveTargetPx + "->" + realTarget + "px (tail was clipped)");
                         sLiveTargetPx = realTarget;
                         sScrollTarget = realTarget;
@@ -3167,7 +3168,7 @@ public class StatusBarSubtitleHook {
             sLiveTargetPx = target;
             sScrollTarget = target;
             int cur = sLineView.getScrollX();
-            XposedCompat.log(TAG + " scroll retarget: " + prev + "->" + target + "px cur=" + cur
+            LogGate.debug(TAG, " scroll retarget: " + prev + "->" + target + "px cur=" + cur
                     + " speed=" + (int) (sScrollSpeedPxPerMs * 1000f) + "px/s");
             if (!sScrollArmed) {
                 return;   // 这一行还没起滚：postScrollWhenLaidOut -> startScroll 会用新宽度重算
@@ -3217,7 +3218,7 @@ public class StatusBarSubtitleHook {
         if (remain > SCROLL_MAX_MS) {
             remain = SCROLL_MAX_MS;
         }
-        XposedCompat.log(TAG + " scroll continue: " + cur + "->" + target + "px in " + remain
+        LogGate.debug(TAG, " scroll continue: " + cur + "->" + target + "px in " + remain
                 + "ms speed=" + (int) (speed * 1000f) + "px/s");
         animateScrollTo(cur, target, remain);
     }

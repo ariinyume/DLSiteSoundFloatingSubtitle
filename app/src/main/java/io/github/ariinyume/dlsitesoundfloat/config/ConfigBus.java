@@ -29,6 +29,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 import io.github.ariinyume.dlsitesoundfloat.util.XposedCompat;
+import io.github.ariinyume.dlsitesoundfloat.util.LogGate;
 
 /**
  * 【M1】配置相关的**跨进程广播总线**（模块进程 ↔ DLsiteSound 进程 ↔ SystemUI 进程）。
@@ -184,7 +185,7 @@ public final class ConfigBus {
                             // 兼容旧格式（不带负载的广播）：退回「自己重读」
                             RemoteConfig.reload();
                         }
-                        logInfo("[" + tag + "] config changed -> " + RemoteConfig.get().summary());
+                        logDebug("[" + tag + "] config changed -> " + RemoteConfig.get().summary());
                         // 【2.3.0】保存后**立刻**生效：配置已进内存，但渲染只在仓库观察者
                         // 触发时才跑 —— 没在播放/字幕没换行时观察者不会来，新样式要等到下一句
                         // 字幕才现身。这里主动重画一次当前画面（悬浮窗 / 状态栏各行其道）。
@@ -243,6 +244,8 @@ public final class ConfigBus {
 
     /** 宿主包名（仅用于进程名比对，见 {@link #isHostProcess(Context)}）。 */
     private static final String HOST_PKG = "jp.co.eisys.dlsitesound";
+    /** SystemUI 包名（显式配置广播的第二目标，见 {@link #sendConfigChanged}）。 */
+    private static final String SYSTEMUI_PKG = "com.android.systemui";
 
     /**
      * 应答作用域 PING。
@@ -265,7 +268,7 @@ public final class ConfigBus {
             out.putExtra(EXTRA_TAG, tag);
             out.putExtra(EXTRA_HOST_ALIVE, isHostAlive());
             ctx.sendBroadcast(out);
-            logInfo("[host] scope ping answered -> pong sent (hostAlive="
+            logDebug("[host] scope ping answered -> pong sent (hostAlive="
                     + out.getBooleanExtra(EXTRA_HOST_ALIVE, true) + ")");
         } catch (Throwable t) {
             logWarn("answerPing failed: " + t);
@@ -408,14 +411,30 @@ public final class ConfigBus {
         if (ctx == null) {
             return;
         }
-        try {
-            Intent i = new Intent(ACTION_CONFIG_CHANGED);
-            if (configJson != null) {
-                i.putExtra(EXTRA_CONFIG_JSON, configJson);
+        // 【2.2.13 根修：保存后悬浮窗先变黑、要拖一下才恢复】的第一环。
+        //
+        // 旧实现发的是**隐式**广播。真机日志铁证（LSPosed_20261008_214215，21:42:06）：
+        // 设置页保存后只有 SystemUI 进程打了 "config applied from broadcast"，
+        // **宿主进程一个字都没有** —— Android 8.0 起的后台限制 + 厂商对后台进程的冻结，
+        // 会让后台进程的动态接收器收不到隐式广播（与 sendHostScopePing 里 code 975
+        // 踩过的是同一条限制，那条已用 setPackage 修过，这里补齐同一手法）。
+        // 收不到 ⇒ 宿主里的悬浮窗还挂着旧配置；等进程解冻/返回前台广播才补投，
+        // 期间样式错位 ⇒ 观感就是"保存后面板先变黑"。
+        // 改成**按目标包各发一条显式广播**：有明确目标，系统直接投递（必要时唤醒进程），
+        // 宿主与 SystemUI 各收各的，互不依赖"谁恰好在前台"。
+        String json = configJson == null ? "" : configJson;
+        String[] targets = {HOST_PKG, SYSTEMUI_PKG};
+        for (String pkg : targets) {
+            try {
+                Intent i = new Intent(ACTION_CONFIG_CHANGED);
+                i.setPackage(pkg);
+                if (!json.isEmpty()) {
+                    i.putExtra(EXTRA_CONFIG_JSON, json);
+                }
+                ctx.sendBroadcast(i);
+            } catch (Throwable t) {
+                logWarn("sendConfigChanged -> " + pkg + " failed: " + t);
             }
-            ctx.sendBroadcast(i);
-        } catch (Throwable t) {
-            logWarn("sendConfigChanged failed: " + t);
         }
     }
 
@@ -491,6 +510,14 @@ public final class ConfigBus {
         } else {
             Log.i(TAG, msg);
         }
+    }
+
+    /** 诊断级（仅调试开关开启时输出；设置页进程退回 Log.i 时同样受闸门约束）。 */
+    private static void logDebug(String msg) {
+        if (!LogGate.enabled()) {
+            return;
+        }
+        logInfo(msg);
     }
 
     private static void logWarn(String msg) {

@@ -33,6 +33,7 @@ import java.util.List;
 import java.util.Locale;
 
 import io.github.ariinyume.dlsitesoundfloat.util.XposedCompat;
+import io.github.ariinyume.dlsitesoundfloat.util.LogGate;
 
 public class SubtitleRepository {
     private static SubtitleRepository instance;
@@ -545,7 +546,7 @@ public class SubtitleRepository {
         // 【1.21.15 问题 1】把假阴性结论点出来：打出这行就说明刚才那次「本音轨无字幕」
         // 是误判 —— 该音轨其实有字幕，只是 JSON 比裁决窗来得更晚。裁决窗时长照这些数据调。
         if (falseNegativeLagMs >= 0L) {
-            XposedCompat.log("[DLsiteSoundFloat] track decision was a FALSE NEGATIVE:"
+            LogGate.debug("[DLsiteSoundFloat] track decision was a FALSE NEGATIVE:"
                     + " subtitle json arrived " + falseNegativeLagMs
                     + "ms after the \"no subtitles\" verdict"
                     + " -> cues=" + falseNegativeCueCount + " (this track does have subtitles)");
@@ -735,7 +736,7 @@ public class SubtitleRepository {
             mainHandler.postDelayed(() -> provisionalEarlyClose(token),
                     Math.min(NO_SUBTITLE_EARLY_CLOSE_MS, grace));
             if (pendingSoftSuspend) {
-                XposedCompat.log("[DLsiteSoundFloat] [code 975] soft suspend -> display cleared,"
+                LogGate.debug("[DLsiteSoundFloat] [code 975] soft suspend -> display cleared,"
                         + " window closes in " + Math.min(NO_SUBTITLE_EARLY_CLOSE_MS, grace)
                         + "ms unless json arrives (cues=" + cueCount + " kept)");
             }
@@ -867,7 +868,7 @@ public class SubtitleRepository {
             closed = true;
         }
         if (closed) {
-            XposedCompat.log("[DLsiteSoundFloat] no subtitle json yet"
+            LogGate.debug("[DLsiteSoundFloat] no subtitle json yet"
                     + " -> auto-closed floating window early (will reopen if json arrives)");
             notifyObservers();
         }
@@ -1009,7 +1010,7 @@ public class SubtitleRepository {
             }
         }
         if (spurious) {
-            XposedCompat.log("[DLsiteSoundFloat] track decision: SPURIOUS track change"
+            LogGate.debug("[DLsiteSoundFloat] track decision: SPURIOUS track change"
                     + " (sawPositionReset=" + sawReset + ", samples=" + samples
                     + ", startPos=" + startPos + ", curPos=" + curPos
                     + ") -> keep cues=" + cueCount);
@@ -1018,7 +1019,7 @@ public class SubtitleRepository {
                 // 【2.1.3 问题 1 + code 960 折中】软裁决仍**不下**「本音轨无字幕」的结论
                 // （cues 保留、UI 不降级、不产生假阴性误报），但显示层早已清空、窗口里
                 // 空了整整一个裁决窗 —— 这时收窗。JSON 若晚到（>15s）仍会自动开回来。
-                XposedCompat.log("[DLsiteSoundFloat] [code 960] soft verdict -> no json within grace,"
+                LogGate.debug("[DLsiteSoundFloat] [code 960] soft verdict -> no json within grace,"
                         + " display stays cleared (cues=" + cueCount + " kept,"
                         + " no false \"no subtitles\")"
                         + " [973 prev-track cues quarantined, not renderable]"
@@ -1033,7 +1034,7 @@ public class SubtitleRepository {
                     + " -> keep cues=" + subCount);
         }
         if (reopenedAfterSpurious) {
-            XposedCompat.log("[DLsiteSoundFloat] track change was spurious"
+            LogGate.debug("[DLsiteSoundFloat] track change was spurious"
                     + " -> reopen floating window (early-closed earlier)");
         }
         notifyObservers();
@@ -1079,7 +1080,7 @@ public class SubtitleRepository {
                 }
             }
             if (reopened) {
-                XposedCompat.log("[DLsiteSoundFloat] playback resumed (state " + prev + "->" + state
+                LogGate.debug("[DLsiteSoundFloat] playback resumed (state " + prev + "->" + state
                         + ") -> reopen floating window (auto-closed on playback end)");
                 notifyObservers();
             }
@@ -1108,7 +1109,7 @@ public class SubtitleRepository {
         }
         int prev = playingState;
         playingState = v;
-        XposedCompat.log("[DLsiteSoundFloat] playback " + (playing ? "resumed" : "paused")
+        LogGate.debug("[DLsiteSoundFloat] playback " + (playing ? "resumed" : "paused")
                 + " (playing " + prev + "->" + v + ")"
                 + (playing ? "" : " -> status bar subtitle will hide"));
         notifyObservers();
@@ -1157,7 +1158,7 @@ public class SubtitleRepository {
     /** 「播放结束」的延迟确认：这段时间内若已经又开始播（自动连播 / 重播），本次作废。 */
     private void confirmPlaybackEnded(int prevState) {
         if (lastPlaybackState != PSTATE_ENDED) {
-            XposedCompat.log("[DLsiteSoundFloat] playback end not confirmed (state came back to "
+            LogGate.debug("[DLsiteSoundFloat] playback end not confirmed (state came back to "
                     + lastPlaybackState + ") -> keep floating window");
             return;
         }
@@ -1173,7 +1174,7 @@ public class SubtitleRepository {
                 closed = true;
             }
         }
-        XposedCompat.log("[DLsiteSoundFloat] playback ended (state " + prevState + "->" + PSTATE_ENDED + ")"
+        LogGate.debug("[DLsiteSoundFloat] playback ended (state " + prevState + "->" + PSTATE_ENDED + ")"
                 + (closed ? " -> auto-closed floating window" : " (window already closed)"));
         if (closed) {
             notifyObservers();
