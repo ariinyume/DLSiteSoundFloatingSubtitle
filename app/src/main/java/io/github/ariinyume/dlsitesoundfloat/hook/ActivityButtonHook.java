@@ -44,7 +44,6 @@ import android.widget.TextView;
 import io.github.ariinyume.dlsitesoundfloat.BuildConfig;
 import io.github.ariinyume.dlsitesoundfloat.config.RemoteConfig;
 import io.github.ariinyume.dlsitesoundfloat.data.SubtitleRepository;
-import io.github.ariinyume.dlsitesoundfloat.util.HostBackdrop;
 import io.github.ariinyume.dlsitesoundfloat.util.I18n;
 import io.github.ariinyume.dlsitesoundfloat.view.LiquidGlassDrawable;
 import io.github.ariinyume.dlsitesoundfloat.util.StatusBarSubtitleBridge;
@@ -2792,9 +2791,6 @@ public class ActivityButtonHook {
         uiHandler.post(() -> {
             try {
                 sActivity = activity;
-                // 【2.2.11】把宿主 Activity 交给「就地采集」服务 —— 液态玻璃要拿它的
-                //   Window 做 PixelCopy 取回面板背后的真实画面（见 util/HostBackdrop 类头）。
-                HostBackdrop.get().setActivity(activity);
                 sDensityPx = stableDensity(activity); // 【code 939】走锁定值，避免转场伪 density
                 ViewGroup decor = (ViewGroup) activity.getWindow().getDecorView();
                 sButtonGroup = decor.findViewById(BUTTON_ID);
@@ -3013,9 +3009,6 @@ public class ActivityButtonHook {
         uiHandler.post(() -> {
             try {
                 sActivity = null;
-                // 【2.2.11】宿主 Activity 走了：采集服务不能再握着它（弱引用本身也会失效，
-                //   这里主动清一次，避免"已 finish 的 Activity"被继续尝试采集）。
-                HostBackdrop.get().setActivity(null);
                 uiHandler.removeCallbacks(detectRunnable);
                 uiHandler.removeCallbacks(heartbeatRunnable);
                 uiHandler.removeCallbacks(anchorWatchRunnable);

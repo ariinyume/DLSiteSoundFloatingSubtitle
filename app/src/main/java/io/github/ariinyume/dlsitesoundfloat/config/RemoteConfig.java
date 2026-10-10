@@ -94,6 +94,18 @@ public final class RemoteConfig {
      */
     private static volatile Context sAppCtx = null;
 
+    /**
+     * 【code 999】上次 {@link #read()} 是否因「Application Context 尚未注入」而
+     * **跳过了 hook-local prefs**、最终回落到默认值 —— 即那次读到的是**残缺态**。
+     *
+     * 为什么要这个标志：真机实测到一个**启动竞态** —— 首次 {@code get()} 可能早于
+     * {@code ConfigBus#installResponder}（后者才注入 ctx），于是本地 prefs 读不到、
+     * 配置回默认值；而 {@code sCache} 一旦落定就**不会再读**，整个进程生命周期都用
+     * 默认值。表现就是「每次启动液态玻璃失效、要打开一次设置页才生效」。
+     * 修复见 {@link #attachContext}。
+     */
+    private static volatile boolean sCtxWasMissing = false;
+
     private RemoteConfig() {
     }
 
@@ -107,6 +119,25 @@ public final class RemoteConfig {
             sAppCtx = app != null ? app : ctx;
         } catch (Throwable t) {
             sAppCtx = ctx;
+        }
+        // 【code 999】修启动竞态：若此前已读过一次、且那次因为**没有 ctx** 而跳过了
+        //   本地 prefs（配置停在默认值），现在 ctx 到位了就**必须重读** ——
+        //   否则那份默认值会被 sCache 永久缓存到进程结束。
+        //
+        //   真机铁证（work_diag_996b，18:47:33 那次启动）：
+        //     hook-local prefs skipped (no application context attached yet)
+        //     config unavailable, using defaults
+        //     …（液态玻璃一直是默认的「关」）…
+        //     18:48:25  config applied from broadcast
+        //     18:48:25  【键变化】liquidGlass false->true   ← 打开设置页后才变 true
+        //   同一批日志里 17:00:53 那次却是成功读到本地 prefs 的 ——
+        //   典型的**时序竞态**，谁先谁后取决于当次启动时序。
+        //
+        //   ⚠️ 只在「残缺态」时重读：正常读到配置的会话不会被多读一次。
+        if (sCtxWasMissing) {
+            sCtxWasMissing = false;
+            log("application context attached after a ctx-less read -> reloading config");
+            reload();
         }
     }
 
@@ -294,6 +325,10 @@ public final class RemoteConfig {
     // ==================================================================
 
     private static SubtitleConfig read() {
+        // 【code 999】每次重读都重新判定「残缺态」（见 sCtxWasMissing）
+        sCtxWasMissing = false;
+        boolean ctxMissing = false;
+
         XposedInterface api = XposedCompat.api();
         if (api == null) {
             sSource = "defaults (no XposedInterface)";
@@ -339,6 +374,7 @@ public final class RemoteConfig {
                 log("hook-local prefs empty (no broadcast persisted yet)");
             } else {
                 log("hook-local prefs skipped (no application context attached yet)");
+                ctxMissing = true;      // 【code 999】见 sCtxWasMissing / attachContext
             }
         } catch (Throwable t) {
             logWarn("read hook-local prefs failed: " + t);
@@ -362,6 +398,12 @@ public final class RemoteConfig {
 
         // ④ 全部失败 → 默认值（PRD §FR-09 规则 3）
         sSource = "defaults";
+        // 【code 999】若这次是因为**缺 Application Context** 才读不到本地 prefs，
+        //   标记为「残缺态」⇒ attachContext() 到位后会重读一次（修启动竞态）。
+        //   ⚠️ 只在**真回落到默认值**时标记 —— 第 ③ 档兜底读到配置就不算残缺。
+        if (ctxMissing) {
+            sCtxWasMissing = true;
+        }
         log("config unavailable, using defaults");
         return SubtitleConfig.defaults();
     }

@@ -45,9 +45,7 @@ import io.github.ariinyume.dlsitesoundfloat.data.SubtitleRepository;
 
 import java.util.List;
 
-import io.github.ariinyume.dlsitesoundfloat.util.BackdropBaseline;
 import io.github.ariinyume.dlsitesoundfloat.util.BackdropBlur;
-import io.github.ariinyume.dlsitesoundfloat.util.HostBackdrop;
 import io.github.ariinyume.dlsitesoundfloat.util.I18n;
 import io.github.ariinyume.dlsitesoundfloat.util.Utils;
 import io.github.ariinyume.dlsitesoundfloat.util.XposedCompat;
@@ -332,294 +330,16 @@ public class FloatingSubtitleView extends FrameLayout {
      */
     private volatile SubtitleStyle style = null;
 
-    // ── 【2.2.12】面板背后的「真实模糊」与「背景统计」──
-    /** 面板矩形提供者（由窗口层注入；本类不反向依赖 window 包）。 */
-    private HostBackdrop.Target backdropTarget;
-    /** 背景**统计**结果（均值亮度 + 上下缘颜色）落到当前 LiquidGlassDrawable 上。 */
-    private final HostBackdrop.Listener backdropListener = this::onBackdropStats;
-    /**
-     * 【2.2.13 / 2.2.14 / 987 / 988】背景均值亮度的**过渡缓冲**（喂给自适应霜面的那个值）。
-     *
-     * 修「宿主内切页时悬浮窗白一下、然后又模糊回去」：页面转场的一两帧 PixelCopy 会采到
-     * 过渡画面（半截旧页 / 空窗 / 全黑），霜面按它算 ⇒ 面板一瞬被拉成大 alpha 的霜再弹回。
-     *
-     * ── 前三版为什么都没修住，988 又改了什么 ─────────────────────────────
-     * · 13 版 = EMA + 单拍最多挪 0.30：对**大台阶**天生无能为力 —— 亮页面（0.9x）瞬态掉到
-     *   0.6 时深色霜量从 0.64 直掉到 0.14，挪 0.30 一下就足够把面板洗白约一半。
-     * · 14 版 = 候选确认：方向对了，但**锚点是活的**（每命中一次就把候选值改写成最新样本），
-     *   于是"连续三拍都指向同一个新值"退化成"连续三拍**每拍只挪一点点**"——
-     *   转场里背景亮度本来就是**斜坡下滑**（0.90 → 0.76 → 0.62 → 0.50），
-     *   每相邻两拍的差正好 ≤ 旧容差 0.15 ⇒ 三拍接力"命中" ⇒ 采信 ⇒ 面板白闪。
-     * · 987 = 锚点固定 + 未确认期间仍允许每拍挪 0.02。方向对，但**噪声照样能推进面板**：
-     *   真机日志（`LSPosed_20261009_101421`，10:12:55 ~ 10:13:15）实测宿主页面的背景亮度
-     *   在 **0.385 ↔ 0.432 之间长期来回抖**（相邻两拍的差 0.047），每次都算"换了候选"，
-     *   于是面板被这些**来回抖**推着一起抖 —— 这正是 Ari 复测的「**还是**会闪一点」。
-     *
-     * 988 的三条修正（{@link #smoothLum}）——把"跟得动真变化"与"跟不动噪声"彻底分开：
-     *   ① **同档只缓挪**：与当前值相差 ≤ {@link #LUM_STABLE_TOL} 时**不再直接采纳**
-     *      （987 是 `smoothedLum = v`，来回抖的样本因此一比一被抄进面板），
-     *      改为每拍最多挪 {@link #LUM_TRACK_STEP} —— 真缓变跟得上，来回抖被平均掉；
-     *   ② **越档先进观察期，期间一步不动**：与当前值相差超过容差时先当候选，锚点固定，
-     *      观察期内**完全不改画面**（987 的 0.02/拍 在这段仍然会动）⇒ 任何一两拍的
-     *      转场瞬态都进不了面板；
-     *   ③ **两条出观察期的路**：要么连续 {@link #LUM_CONFIRM_HITS} 拍命中同一锚点
-     *      （真·换了一整页，按 {@link #LUM_CONFIRM_STEP}/拍平滑走完），要么候选持续超过
-     *      {@link #LUM_CONFIRM_MS} 仍越档（背景真的换了但样本本身很吵，例如视频画面），
-     *      这时才按 {@link #LUM_SLOW_ALPHA} 做**指数平均**很慢地跟过去 —— 既不会永久冻住，
-     *      也绝不可能闪。
-     */
-    private float smoothedLum = -1f;
-    /**
-     * 候选**锚点**亮度（-1 = 当前没有候选）。
-     *
-     * ⚠️【987 关键修正】它一经写入就**不再随后续样本漂移**（旧版每命中一次就把锚点
-     *    改写成最新样本 ⇒ 只要每拍挪一点点就能"接力"命中，见 {@link #smoothLum}）。
-     */
-    private float pendingLum = -1f;
-    /** 候选锚点已被连续命中的拍数。 */
-    private int pendingHits;
-    /**
-     * 【988】候选**首次**越档的时刻（一次候选只记一次，重锚点不重置它）。
-     *
-     * 它撑起第 ③ 条里的第二条出路：候选迟迟攒不满三拍命中（画面本身在动、样本很吵）时，
-     * 只要**持续越档**超过 {@link #LUM_CONFIRM_MS}，就按 {@link #LUM_SLOW_ALPHA} 慢慢跟过去。
-     */
-    private long pendingSinceMs;
-    /** 【988】候选已进入"很慢地跟"这条慢速通道（越档超时后置起，回到同档即清）。 */
-    private boolean pendingSlow;
-    /** 候选日志的节流时刻（转场来回抖时每拍都会换锚点，不节流会刷屏）。 */
-    private long lastLumLogMs;
-    /**
-     * 【988】背景统计的**上一次有效值**（喂给玻璃的那个亮度 + 上下缘颜色）。
-     *
-     * 用途：普通悬浮窗 → 液态玻璃切换时，旧底不是玻璃（没有可继承的运行时状态），
-     * 新玻璃本来会退回**不透明深色底**；而此刻用户多半正停在设置页里（宿主在后台），
-     * 采样拿不到新值 —— 面板就会一直黑着，直到用户切回宿主、甚至要拖一下才有统计。
-     * 有了这一份缓存，换后端时新玻璃第一帧就画成自适应玻璃，不会再"先黑一下"。
-     */
-    private boolean hasLastStats = false;
-    /** 上一次有效统计的上缘平均色（0 = 未知）。 */
-    private int lastEdgeTop = 0;
-    /** 上一次有效统计的下缘平均色（0 = 未知）。 */
-    private int lastEdgeBottom = 0;
-    /** 「同一个背景档」的判据带：与当前值相差在此以内即视为**同一档**（来回抖被这条吸收）。 */
-    private static final float LUM_STABLE_TOL = 0.05f;
-    /** **同档**内每拍允许的最大位移（跟得住真缓变、跟不动来回抖）。 */
-    private static final float LUM_TRACK_STEP = 0.008f;
-    /** 候选锚点必须连续命中的拍数（一拍 400ms ⇒ 约 1.2s）。 */
-    private static final int LUM_CONFIRM_HITS = 3;
-    /**
-     * 候选**持续越档**多久之后走慢速通道（ms）。
-     *
-     * 为什么要这条：背景真的换了、但新画面的亮度本身很吵（样本每拍都跳），三拍命中永远
-     * 攒不满 —— 没有这条面板就会**永久冻在旧值**上。设得比一条页面转场（约 1~2s）略长，
-     * 保证转场整段都落在"一步不动"的观察期里。
-     */
-    private static final long LUM_CONFIRM_MS = 1600L;
-    /**
-     * **已确认**（三拍命中）后每拍允许的最大位移（分几拍平滑走完，不是硬跳）。
-     *
-     * 【989】0.16 → 0.06：989 起霜面改成"按背景亮度**反解**霜量"（见
-     *   {@code LiquidGlassDrawable} 的 TARGET_LUM 段），面板亮度本身已经被钉住；
-     *   这时还让整段 0.10 的跳变在一拍里走完，剩下的就只是**霜面密度**一步跳完
-     *   （Ari 反馈的"还是会跳"）。收小步长后，切页时面板亮度几乎不动（中途最多偏
-     *   约 4/255、持续 0.4s），霜面密度则在约 0.8s 内平滑换过去。
-     */
-    private static final float LUM_CONFIRM_STEP = 0.06f;
-    /**
-     * 【988】慢速通道的比例系数（背景很吵、三拍永远攒不满时走这条）。
-     *
-     * ⚠️ 这里刻意用**指数平均的比例步**而不是"每拍朝当前样本固定挪一段"：
-     *    固定步长在**来回抖**的样本上会来回走（离线对照里它能被 0.658/0.476/0.570/0.424
-     *    这样的序列一路推到 0.658）；而按比例走等于对这串样本做指数平均，
-     *    来回抖的分量**正负相消**、只留下真实均值 —— 既绝不会闪，也不会跟着噪声漂。
-     */
-    private static final float LUM_SLOW_ALPHA = 0.06f;
+    // ── 【2.2.12 / code 1003】面板背后的「真实模糊」──
+    //
+    //   🔴 code 1003 起，「背景统计」整段（宿主窗口采样 + 过渡缓冲 + 留底基线）**已整体删除**：
+    //   面板亮度改由设置页「环境背景亮度」直接给出（{@link SubtitleStyle#liquidGlassBackdropLum}），
+    //   光圈也固定为冷白色。于是本类不再持有任何采样状态，也不再有采样开关。
+
 
     public FloatingSubtitleView(Context context) {
         super(context);
         init();
-    }
-
-    /**
-     * 【2.2.11】注入「面板当前的屏幕矩形」提供者（窗口层调用）。
-     *
-     * 为什么用回调而不是让本类去问 {@code FloatingWindowManager}：本类**刻意不反向依赖
-     * window 包**（window → view 是单向的），否则包间会绕成一圈。
-     */
-    public void setBackdropTarget(HostBackdrop.Target target) {
-        this.backdropTarget = target;
-    }
-
-    /**
-     * 【2.2.12】拿到一帧背景统计 → 交给当前玻璃 Drawable。
-     *
-     * 两个用途：① 均值亮度选「自适应霜面」（亮背景上深色霜，保证白字可读）；
-     * ② 上下缘颜色给「边缘光圈」染色（光圈颜色随实时背景走）。
-     * **不再贴任何背景位图** —— 背景模糊已由合成器完成（见 {@link BackdropBlur}）。
-     */
-    private void onBackdropStats(float meanLum, int edgeTop, int edgeBottom) {
-        // 【988/989】**无论当前底是不是玻璃**都先并入过渡缓冲并留底：
-        //   989 起"液态玻璃没开"时也在留底采样（见 {@link #syncBackdropCapture}），
-        //   这份值就是"下次开启"的第一帧底 —— 少了它，切换那一刻只能画不透明深色底
-        //   （Ari 看到的"先变成黑色"），且只能等用户切回宿主才慢慢恢复。
-        final float lum = smoothLum(meanLum);
-        hasLastStats = true;
-        lastEdgeTop = edgeTop;
-        lastEdgeBottom = edgeBottom;
-        // 【991】顺手落盘留底（内部自己节流：数值没怎么变 + 距上次不到 10s 都不写）。
-        //   目的只有一个：让"冷启动后第一次开液态玻璃"也有值可打底（见 util/BackdropBaseline）。
-        BackdropBaseline.save(getContext(), lum, edgeTop, edgeBottom);
-        Drawable bg = getBackground();
-        if (bg instanceof LiquidGlassDrawable) {
-            ((LiquidGlassDrawable) bg).setBackdropStats(lum, edgeTop, edgeBottom);
-        }
-    }
-
-    /**
-     * 【991】用**落盘留底**给新玻璃打底（本进程还没采到过任何统计时的最后一道底）。
-     *
-     * 命中后写入与 {@link #onBackdropStats} 相同的那些字段，于是"本进程已有一份留底"
-     * 这件事会被后续重建复用；真实样本回来后由 {@link #smoothLum} 正常接手修正。
-     *
-     * @return true = 打底成功
-     */
-    private boolean seedFromPersistedBaseline(LiquidGlassDrawable glass) {
-        if (glass == null) {
-            return false;
-        }
-        final float[] lum = new float[1];
-        final int[] edges = new int[2];
-        if (!BackdropBaseline.load(getContext(), lum, edges)) {
-            return false;
-        }
-        smoothedLum = lum[0];
-        hasLastStats = true;
-        lastEdgeTop = edges[0];
-        lastEdgeBottom = edges[1];
-        glass.setBackdropStats(smoothedLum, lastEdgeTop, lastEdgeBottom);
-        LogGate.debug(TAG, " glass seeded from persisted baseline: lum=" + smoothedLum);
-        return true;
-    }
-
-    /**
-     * 【987 / 988】把一帧背景亮度并入过渡缓冲（设计缘由见 {@link #smoothedLum}）。
-     * 只在拿到**真实新样本**时调用；首帧直接采信（此时还没有"旧值"可保护）。
-     *
-     * 规则（三条，缺一不可）：
-     *   ① 与**当前绘制值**同档（|Δ| ≤ {@link #LUM_STABLE_TOL}）⇒ 每拍最多挪
-     *      {@link #LUM_TRACK_STEP}（真缓变跟得上，来回抖被平均掉），并清候选；
-     *   ② 否则进候选观察：锚点**固定**，**观察期内一步不动** —— 锚点不再滚、画面也不动，
-     *      任何一两拍的转场瞬态都进不了面板；
-     *   ③ 出观察期只有两条路：连续 {@link #LUM_CONFIRM_HITS} 拍命中同一锚点（真换了一整页，
-     *      按 {@link #LUM_CONFIRM_STEP}/拍平滑走完），或候选持续越档超过
-     *      {@link #LUM_CONFIRM_MS}（背景真换了但样本本身很吵，按 {@link #LUM_SLOW_ALPHA}
-     *      做指数平均慢慢跟过去）。两条都走到同档即收工、清候选。
-     *
-     * @return 本次实际生效（喂给霜面）的亮度
-     */
-    private float smoothLum(float fresh) {
-        final float v = Math.max(0f, Math.min(1f, fresh));
-        if (smoothedLum < 0f) {
-            smoothedLum = v;
-            resetLumCandidate();
-            return smoothedLum;
-        }
-        // ① 同档：真实背景在缓变（或只是噪声）⇒ 只跟一点点，并清掉可能残留的候选。
-        //   ⚠️ 988 起这里**不再**直接 `smoothedLum = v` —— 那正是"来回抖被一比一抄进面板"
-        //   的入口（真机日志实测背景亮度在 0.385↔0.432 之间长期来回抖）。
-        if (Math.abs(v - smoothedLum) <= LUM_STABLE_TOL) {
-            smoothedLum = Math.max(0f, Math.min(1f,
-                    smoothedLum + clampStep(v - smoothedLum, LUM_TRACK_STEP)));
-            resetLumCandidate();
-            return smoothedLum;
-        }
-        // ② 明显不同：锚点固定不漂移；观察期内**一步不动**（pendingSlow 之前）。
-        final long now = android.os.SystemClock.uptimeMillis();
-        if (pendingLum < 0f) {
-            pendingLum = v;
-            pendingHits = 1;
-            pendingSinceMs = now;
-            pendingSlow = false;
-        } else if (Math.abs(v - pendingLum) <= LUM_STABLE_TOL) {
-            pendingHits++;
-        } else {
-            // 没有候选 / 新样本离锚点太远（斜坡、抖动都会走到这里）⇒ 重新起锚。
-            //   ⚠️ 刻意**不重置** pendingSinceMs：候选"持续越档多久"是按第一次越档起算的。
-            pendingLum = v;
-            pendingHits = 1;
-        }
-        final boolean hitsConfirmed = pendingHits >= LUM_CONFIRM_HITS;
-        if (!hitsConfirmed && !pendingSlow && now - pendingSinceMs >= LUM_CONFIRM_MS) {
-            pendingSlow = true;
-            logLum("backdrop lum persistent drift -> slow track from " + smoothedLum);
-        }
-        if (hitsConfirmed || pendingSlow) {
-            final float before = smoothedLum;
-            final float move = hitsConfirmed
-                    ? clampStep(v - smoothedLum, LUM_CONFIRM_STEP)      // 真换了一整页：限速走完
-                    : (v - smoothedLum) * LUM_SLOW_ALPHA;               // 很吵的背景：指数平均
-            smoothedLum = Math.max(0f, Math.min(1f, smoothedLum + move));
-            if (Math.abs(v - smoothedLum) <= LUM_STABLE_TOL) {
-                resetLumCandidate();
-                logLum("backdrop lum settled at " + smoothedLum + " (from " + before + ")");
-            }
-        } else if (pendingHits == 1) {
-            // 起锚（候选）。转场来回抖时每拍都会起锚 ⇒ 必须节流，否则刷屏。
-            logLum("backdrop lum candidate " + smoothedLum + " -> " + v
-                    + " (need " + LUM_CONFIRM_HITS + " stable hits within "
-                    + LUM_STABLE_TOL + ", observe " + LUM_CONFIRM_MS + "ms)");
-        }
-        return smoothedLum;
-    }
-
-    /** 【988】清掉亮度候选（回到"同档"或已到位时调用）。 */
-    private void resetLumCandidate() {
-        pendingLum = -1f;
-        pendingHits = 0;
-        pendingSinceMs = 0L;
-        pendingSlow = false;
-    }
-
-    /** 把一步位移夹到 ±max（0 ≤ max）。 */
-    private static float clampStep(float delta, float max) {
-        if (delta > max) {
-            return max;
-        }
-        if (delta < -max) {
-            return -max;
-        }
-        return delta;
-    }
-
-    /** 候选/确认两条日志的公共节流口（2s 一条；这条链路只在切页时会活跃）。 */
-    private void logLum(String msg) {
-        final long now = android.os.SystemClock.uptimeMillis();
-        if (now - lastLumLogMs < 2000L) {
-            return;
-        }
-        lastLumLogMs = now;
-        LogGate.debug(TAG, msg);
-    }
-
-    /**
-     * 按「液态玻璃是否开启 + 视图是否在窗口上 + 有没有矩形来源」三件事，对齐统计采样开关。
-     * 幂等，随便多调。
-     */
-    private void syncBackdropCapture() {
-        final SubtitleStyle st = style();
-        // 【989】采样不再与"液态玻璃开没开"绑定（Ari 2026-10-09 提议）：
-        //   开着 → 正常档（400ms），驱动自适应霜面与光圈染色；
-        //   没开 → **留底档**（2000ms），唯一目的是给"下次开启"留一份可直接打底的基线
-        //          —— 因为用户点保存那一刻宿主在后台、采不到画面，基线只能在"宿主可见"时攒。
-        //   两种情况都要求"视图挂在窗口上 + 有矩形来源"；关掉悬浮窗即刻 stop，不留常驻。
-        boolean want = isAttachedToWindow() && backdropTarget != null;
-        if (want) {
-            HostBackdrop.get().start(backdropTarget, backdropListener);
-            HostBackdrop.get().setPassive(!st.liquidGlass);
-        } else {
-            HostBackdrop.get().stop();
-        }
     }
 
     /**
@@ -694,6 +414,9 @@ public class FloatingSubtitleView extends FrameLayout {
             //   尺寸变化 / 重新挂窗口时机把样式拉回与配置一致。
             if (RemoteConfig.get().liquidGlass != cur.liquidGlass
                     || RemoteConfig.get().liquidGlassBlurPct != cur.liquidGlassBlurPct
+                    || RemoteConfig.get().liquidGlassPanelLum != cur.liquidGlassPanelLum
+                    || RemoteConfig.get().liquidGlassTransparency != cur.liquidGlassTransparency
+                    || RemoteConfig.get().liquidGlassBackdropLum != cur.liquidGlassBackdropLum
                     || (RemoteConfig.get().floatWindowColor & 0x00FFFFFF)
                     != (cur.panelColorTop & 0x00FFFFFF)) {
                 LogGate.debug(TAG, " style stale (view=" + cur.liquidGlass
@@ -715,21 +438,10 @@ public class FloatingSubtitleView extends FrameLayout {
         }
     }
 
-    /**
-     * 【2.2.11b】由窗口层在拖动/缩放期间调用，暂停背景采集。
-     *
-     * 目的：手指按住时用户要的是**跟手**，而背后画面本来就在位移（采了也立刻过期）。
-     * 松手后 {@code false} 会立即补一帧，背景不会长时间缺。
-     */
-    public void setBackdropPaused(boolean paused) {
-        HostBackdrop.get().setPaused(paused);
-    }
-
     @Override
     protected void onAttachedToWindow() {
         super.onAttachedToWindow();
         refreshStyleIfStale();
-        syncBackdropCapture();
         applyBackdropBlur();
     }
 
@@ -781,6 +493,21 @@ public class FloatingSubtitleView extends FrameLayout {
                     || old.liquidGlass != s.liquidGlass
                     || old.liquidGlassBlurPct != s.liquidGlassBlurPct)) {
                 applyPanelBackground();
+            } else if (old != null && (old.liquidGlassPanelLum != s.liquidGlassPanelLum
+                    || old.liquidGlassTransparency != s.liquidGlassTransparency
+                    || old.liquidGlassBackdropLum != s.liquidGlassBackdropLum)) {
+                // 【code 1001】🔴 修 code 1000 的一个真 bug：只有「面板明暗 / 通透度」变了。
+                //
+                //   病根：{@link #applyPanelBackground} 里的 setPanelTuningFromPct 是**唯一**
+                //   把用户这两个值喂给玻璃的地方，而它只被上面那个分支调用；上一版把这两个键
+                //   漏在判据之外 ⇒ 拖滑条时样式对象更新了（日志会打 style refreshed，且带
+                //   新 lum=/transp=），但**玻璃自己的参数从没被重设** ⇒ 面板画面一动不动。
+                //   Ari 2026-10-09 报「加了两个滑条但看不出变化」正是这条。
+                //
+                //   这里**原地重设**而不重建 Drawable：拖滑条会连发多档，每档都 setBackground
+                //   会让面板出现一帧"没有背景的玻璃"（预览侧为此专门写过同款注释，见
+                //   SettingsActivity「复用同一个 Drawable 实例」段）。
+                retunePanelGlass(s);
             }
             LogGate.debug(TAG, " style refreshed (config rev=" + RemoteConfig.revision()
                     + ", source=" + RemoteConfig.source() + ") " + s.summary());
@@ -856,9 +583,6 @@ public class FloatingSubtitleView extends FrameLayout {
      */
     @Override
     protected void onDetachedFromWindow() {
-        // 【2.2.11】窗口摘除即停采集：采集链在窗口不可见时继续跑没有任何意义，
-        //   而且它握着宿主的 Activity 引用与 Handler。
-        HostBackdrop.get().stop();
         closeBtnHandler.removeCallbacks(closeBtnHideTask);
         // 【2.1.5】摘掉可能还挂着的缩放探针，避免它握住已废弃的视图
         if (scrollView != null) {
@@ -871,11 +595,24 @@ public class FloatingSubtitleView extends FrameLayout {
     }
 
     /**
-     * 生成玻璃面板背景。
-     * 有系统模糊时可更通透；无模糊（当前默认档：ColorOS 上系统模糊会糊掉整个屏幕，
-     * 已被 {@code ENABLE_SYSTEM_BLUR_BEHIND=false} 关闭）时提高底色不透明度，
-     * 让面板呈现"磨砂卡"质感，并保证白色字幕在任何背景上都清晰可读。
+     * 【code 1001】把「面板明暗 / 通透度」重新喂给**现有**的玻璃背景（**不重建** Drawable）。
+     *
+     * <p>只在当前背景确实是液态玻璃时有效 —— 非玻璃档走扁平渐变，本来就不吃这两个参数
+     * （那时用户把滑条拖到哪都不该有反应，属于正常）。
+     *
+     * <p>之所以要"原地重设"这条路径：这两个键是**纯参数**，不改变 Drawable 的构造
+     * （圆角 / 阴影环 / 模糊强度都无关），重建一次只会白丢一帧。
      */
+    private void retunePanelGlass(SubtitleStyle s) {
+        final Drawable bg = getBackground();
+        if (s.liquidGlass && bg instanceof LiquidGlassDrawable) {
+            final LiquidGlassDrawable g = (LiquidGlassDrawable) bg;
+            g.setPanelTuningFromPct(s.liquidGlassPanelLum, s.liquidGlassTransparency);
+            // 【code 1002 / 1003】环境背景亮度也一并重喂 —— 它现在是自适应霜面的唯一输入。
+            g.setBackdropLum(Math.max(0f, Math.min(1f, s.liquidGlassBackdropLum / 100f)));
+        }
+    }
+
     private void applyPanelBackground() {
         // 【2.2.9】液态玻璃开启时换绘制后端：LiquidGlassDrawable 自带玻璃观感
         //   （1px 折射边光 + 顶部软受光 + 底部薄受光 + 平底色 + 颗粒霜化），
@@ -895,25 +632,18 @@ public class FloatingSubtitleView extends FrameLayout {
             // 【2.2.11b】模糊强度：有背景时作用在背景位图上（采集侧读同一份配置），
             //   没有背景时由 Drawable 用来柔化自己的受光/边光 —— 两处都拿到同一个值。
             glass.setBlurPct(st.liquidGlassBlurPct);
-            // 【2.2.13】继承旧玻璃的运行时状态（系统模糊生效位 + 背景统计）：
-            //   重建后的新玻璃第一帧就与旧玻璃画得一致，不再"先变黑一拍等统计"。
+            // 【code 1000】用户可调的两个旋钮（明暗 / 通透度）—— 见 LiquidGlassDrawable
+            //   #setPanelTuningFromPct。默认值恰好落回历史标定值，旧配置零回归。
+            glass.setPanelTuningFromPct(st.liquidGlassPanelLum, st.liquidGlassTransparency);
+            // 【2.2.13】继承旧玻璃的运行时状态（系统模糊生效位 + 上一次的亮度）：
+            //   重建后的新玻璃第一帧就与旧玻璃画得一致，不再"先变黑一拍"。
             if (oldBg instanceof LiquidGlassDrawable) {
                 glass.inheritRuntimeStateFrom((LiquidGlassDrawable) oldBg);
-            } else if (hasLastStats) {
-                // 【988】普通悬浮窗 → 液态玻璃：旧底是扁平色块，**没有**可继承的运行时状态。
-                //   若不给它打底，新玻璃会退回**不透明深色底**；而此刻用户通常正停在设置页里
-                //   （宿主在后台），采样被软跳过 —— 真机日志（`LSPosed_20261009_101421`）实测
-                //   10:14:04 切到液态玻璃后直到 10:14:17 才有第一条统计，中间面板一直是深色
-                //   （Ari 看到的"先变成黑色"）。这里把本进程上一次采到的统计原样打给新玻璃，
-                //   第一帧就是自适应玻璃；真实样本回来后由 {@link #smoothLum} 正常接手修正。
-                glass.setBackdropStats(smoothedLum, lastEdgeTop, lastEdgeBottom);
-            } else {
-                // 【991】本进程还没采到过任何统计（典型：刚被系统回收重启，而用户又是
-                //   在设置页里点保存的那一刻才第一次开液态玻璃）⇒ 再退一步读**落盘留底**。
-                //   它来自宿主"上一次可见时"采到的值。之所以要这一层：采集源只能是宿主
-                //   自己的窗口，用户一回到桌面就再也采不到东西（见 util/BackdropBaseline）。
-                seedFromPersistedBaseline(glass);
             }
+            // 【code 1002 / 1003】环境背景亮度 = 用户设定值，**覆盖**上面继承来的旧值。
+            //   ⚠️ 刻意写成 `st.字段` 而不是调 helper：`tools/verify_1001_src.py` 靠抽
+            //   `st.xxx` 来验「消费集 ⊆ 判据覆盖集」—— 走 helper 会让这个键对脚本"隐身"。
+            glass.setBackdropLum(Math.max(0f, Math.min(1f, st.liquidGlassBackdropLum / 100f)));
             bg = glass;
         } else {
             // v13：GlassPanelDrawable 已精简为「只有半透明渐变底」，不再需要传描边宽度。
@@ -934,9 +664,6 @@ public class FloatingSubtitleView extends FrameLayout {
         }
         // 【2.3.1 §6.1.1】面板底色一变就同步 ✕ / 缩放手柄的「灰 ↔ 白」。
         applyControlTint();
-        // 【2.2.11】换过绘制后端之后对齐一次采集开关（液态玻璃开 → 采背景；关 → 停）。
-        //   这里必须调用：本方法既是「视图构建时」也是「运行中改配置时」的唯一出口。
-        syncBackdropCapture();
         // 【2.2.12】模糊强度变了／玻璃开关变了 ⇒ 重新下发模糊半径（关玻璃时下发 0 撤掉）。
         applyBackdropBlur();
     }
