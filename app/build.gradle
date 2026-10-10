@@ -127,6 +127,85 @@ def appVersionTag = '2.3.0'
 //        · 保留不动：霜量固定（不再随背景摆动，切页不会"一会发白一会发暗"）、
 //        989 的留底基线与 991 的留底落盘、988 的噪声鲁棒过渡缓冲。
 //
+//    【2.3.0 / code 1002 / label 1008.23】**背景亮度改为用户可设定（不再只靠采样）**
+//        · 【需求】Ari：把背景均值亮度做成用户可调的数字条，而不是直接采样背景。
+//        · 【新增两项】
+//            liquid_glass_backdrop_auto（背景亮度自动采样，开关，默认 **开** = 历史行为）
+//            liquid_glass_backdrop_lum（背景亮度，0–100，默认 40，映射 L = pct / 100）
+//          两者都在「液态玻璃」开启后出现；亮度滑条再叠一层显隐（仅关闭自动采样时显示）。
+//        · 【关键】自动采样**关掉**后，面板亮度**完全不看背景**：
+//          不抖动、切页与拖动都不跳、宿主在后台也照样生效。
+//          绘制层照旧按「面板明暗」的目标落点反解霜色，只是那个「背景有多亮」由用户给出。
+//        · 【改动面】SubtitleConfig / SubtitleStyle / FloatingSubtitleView /
+//          SettingsActivity / Strings；采样此时只剩「给光圈染色」一个用途，
+//          故手动档把采样周期降到留底档（2000ms，1/5 频率）。
+//        · ⚠️ 手动档**不再有「亮页自动压暗」的保护** —— 把背景亮度填得比实际暗，
+//          面板在亮页上会偏亮、白字对比度下降。已在设置页小字里点明。
+//    【2.3.0 / code 1001 / label 1008.22】**修：两个滑条拖了不起作用 + 明暗暗端加深**
+//        · 【bug · 根因】refreshStyle() 里决定「要不要重设面板背景」的判据漏了
+//          liquid_glass_panel_lum / liquid_glass_transparency 两个键；
+//          而 setPanelTuningFromPct（唯一把用户这两个值喂给玻璃的地方）只被
+//          applyPanelBackground() 调用 ⇒ 拖滑条时样式对象更新了、
+//          style refreshed 日志也照打（带新 lum=/transp=），
+//          但**玻璃自己的参数从没被重设** ⇒ 面板画面一动不动。
+//          真机日志铁证（LSPosed_20261009_212738）：21:25:55 lum=45 →
+//          21:26:22 lum=85 → 21:26:33 lum=30/transp=80，三档都打了
+//          style refreshed，画面毫无变化。
+//        · 【改法】refreshStyle() 加一条 else-if 分支：只有这两个键变时
+//          **原地重设**（retunePanelGlass）而不重建 Drawable
+//          —— 重建会让面板丢一帧背景，拖动滑条时会闪。
+//        · 【顺带加深暗端】面板明暗映射由单段 0.30 + pct × 0.003 改为分段：
+//          pct ≤ 40 ⇒ 0.20 + pct × 0.0055；pct > 40 ⇒ 0.42 + (pct − 40) × 0.003。
+//          ⚠️ 默认 40 处**严格仍 = 0.42**（零回归）。
+//          原因：旧版暗端最低只到 0.30（离默认 −29%），亮端却有 +43%，
+//          两边不对称，用户调「偏暗」明显够不着。现在暗端到 0.20（−52%）。
+//    【2.3.0 / code 1000 / label 1008.21】**悬浮窗明暗改为用户可调（两个滑条）**
+//        · 【需求】Ari：不要写死，让每个用户自己调喜欢的明暗。
+//        · 【新增两个配置项】（键名冻结，旧配置读不到回落默认 = 历史观感）
+//            liquid_glass_panel_lum（面板明暗，0–100，默认 40）
+//              → TARGET_LUM = 0.30 + pct × 0.003（默认 40 → 0.42）
+//            liquid_glass_transparency（通透度，0–100，默认 50）
+//              → 分段插值：0 = 透出 28% / 50 = 72%（默认，= 历史值）/ 100 = 91%
+//        · 【绘制层参数化】LiquidGlassDrawable 的三个标定常量（TARGET_LUM /
+//          ADAPTIVE_VEIL_ALPHA / ADAPTIVE_BASE_BLACK）改为实例字段 + 一个 setter
+//          （setPanelTuningFromPct）。不调用 setter 时恒等于历史值 ⇒ 零回归。
+//        · 【设置页】「其他」卡片在「模糊强度」下新增两个滑条 + 说明小字，
+//          与模糊强度同显隐（仅液态玻璃开启时）；预览与真窗同源。
+//        · 【顺带修正一条认知】通透度同时决定「明暗稳不稳」：
+//          可压上限 L_max = TARGET_LUM / 透出率；默认档 L_max 约 0.58，
+//          而实测最亮页面约 0.59 ⇒ 刚好压不到 ⇒ 这就是「松手后明暗会跳」的根因。
+//          把通透度往「实」调、或明暗往「暗」调，即可补上这个缺口。
+//    【2.3.0 / code 999 / label 1008.20】**修启动竞态：配置读到默认值后不再永久缓存**
+//        · 【现象】Ari 2026-10-09 报：每次启动宿主后液态玻璃失效，
+//          要打开一次设置页才生效。
+//        · 【根因】RemoteConfig 读取链第 ② 档（hook 本进程本地 prefs）在
+//          Application Context 尚未注入时被**整个跳过**，于是回落默认值
+//          （liquidGlass 默认关）；而 sCache 一旦落定就**不再重读**，
+//          整个进程生命周期都用默认配置。日志铁证（work_diag_996b 18:47:33）：
+//            hook-local prefs skipped (no application context attached yet)
+//            config unavailable, using defaults
+//            … 18:48:25 config applied from broadcast / liquidGlass false->true
+//          同一批日志 17:00:53 那次却成功读到本地 prefs ⇒ 启动竞态。
+//        · 【修法】RemoteConfig 新增 sCtxWasMissing：read() 只在
+//          「因缺 ctx 跳过本地 prefs 且最终回落默认值」时置位；
+//          attachContext() 到位后若见该标志则 reload() 一次。
+//          正常读到配置的会话不会被多读。
+//        · 【影响面】不止液态玻璃 —— 启动时所有配置项（字幕样式 / 颜色 /
+//          语言 / 阴影）都可能停在默认值，本轮一并修掉。
+//        · 【顺带】本包同时含 code 998 的样式回退（液态玻璃回到 996 观感）。
+//    【2.3.0 / code 998 / label 1008.19】**样式回退：液态玻璃回到 996 版本**（纯回退，无新增逻辑）
+//        · 【为什么】code 997 的「亮度锁定」为消除切页明暗抖动，把面板加密到
+//          背景透出 28%（原 72%）、霜色锁成常量 —— 明暗确实稳了，但观感变实、
+//          通透感下降，Ari 判定不如 996。⇒ 按 Ari 决定整体回退。
+//        · 【怎么回退】view/LiquidGlassDrawable.java 恢复成 996 内容（其父提交版本），
+//          本质是撤销 997 对这一个文件的全部改动：
+//          ADAPTIVE_VEIL_ALPHA 0.44 → 0.22 · ADAPTIVE_BASE_BLACK 0xBB → 0x14 ·
+//          删 LOCKED_VEIL_LUM · 恢复 hasStats() 与 lum(int)，
+//          霜色重新按背景亮度反解（回到自适应）。
+//        · 【保留】G7 第 5 批重构（PokeThrottle / ScopeWatcher）**不受影响** ——
+//          纯重构、零行为变更，与样式无关，保留。
+//        · 【代价已确认】切页时面板仍会随背景明暗变化 —— 这是 996 的固有行为，
+//          也正是 997 想修的那一条。本轮按 Ari 的取舍回到该观感。
 //    【2.3.0 / code 997 / label 1008.18】**亮度锁定 + 第 5 批重构**（1 项功能变更 + 1 项纯重构）
 //        · 【变化一 · 亮度锁定】液态玻璃面板不再随背景亮度自适应。真机日志实测：
 //          背景候选亮度在 14 秒内被**采纳地连跳三次**（0.21→0.38→0.19→0.37）。
@@ -180,8 +259,8 @@ def appVersionTag = '2.3.0'
 //        ⑥ **诊断日志接LogGate**：7 个文件里只有 5 条 Log.i 是真诊断级（已迁）；
 //        21 条 Log.w 告警按 LogGate 类头铁律 3 **保持常开不动**。
 //
-def appVersionCode = 997
-def appVersionCodeLabel = '1008.18'
+def appVersionCode = 1003
+def appVersionCodeLabel = '1008.24'
 def appVersionName = '2.3.0'
 
 android {
