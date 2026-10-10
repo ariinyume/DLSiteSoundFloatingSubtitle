@@ -220,8 +220,10 @@ def main():
     #   本意（**不触发任何挂起 / 裁决 / UI 状态变更**）没变，判据改为盯「只碰哪几个字段」：
     #   写入的字段必须恰好是「选择键 + 重建窗口」这两个证据字段。
     written = set(re.findall(r'\b([a-zA-Z][A-Za-z0-9]*)\s*=(?!=)', body))
-    check('★ noteObservedPlaylistSelection 是**纯写入**（只碰选择键与重建窗口两个证据字段）',
-          written == {'observedPlaylistSelection', 'playlistRebuiltAtMs'},
+    # 【code 1006 演进】关窗职责已移交 notePlaylistLoaded ⇒ 本方法只剩「选择键」一个写入字段
+    #   （宿主换列表后第一拍就报非零 tc/零时长，在这里关窗会漏掉 238ms 后到达的新作品 JSON）。
+    check('★ noteObservedPlaylistSelection 是**纯写入**（只碰选择键这一个证据字段）',
+          written == {'observedPlaylistSelection'},
           '写入字段 %s' % sorted(written))
     check('★ 且不碰任何挂起/裁决/UI/主人印章状态（本意：它只是证据写入点，不是状态机入口）',
           not (written & {'pendingTrackDecision', 'pendingSoftSuspend', 'softNoSubtitles',
@@ -352,18 +354,24 @@ def main():
     check('新入口把 makeSelection(trackCount, idx) 交给 noteObservedPlaylistSelection',
           'noteObservedPlaylistSelection(' in push
           and 'PlaylistKey.makeSelection(trackCount, idx)' in push)
-    check('★ 新入口无 where 也不发日志（高频调用点，不得刷屏）',
-          'XposedCompat.log' not in push and 'dbg(' not in push)
+    # 【code 1006 演进】新入口多了一条**一次性**诊断日志（宿主状态 Map 没给 `id` 字段时只提示一次，
+    #   由 sLoggedMissingListId 守卫；它决定「按实例记账的真边沿」这条路在本机能不能用）。
+    #   「不得刷屏」的本意一字未变 ⇒ 判据改为「要么不写日志，要么日志必须带一次性守卫」。
+    _has_log = 'XposedCompat.log' in push or 'dbg(' in push
+    check('★ 新入口不得刷屏：要么无日志，要么日志带一次性守卫（sLoggedMissingListId）',
+          (not _has_log) or 'sLoggedMissingListId' in push)
 
     check('settleChange 签名升为四参（带上 toSelection）',
           'private static boolean settleChange(long from, long to, long toSelection, long now)'
           in srcc)
     st = strip_comments(method_body(
         src, 'private static boolean settleChange(long from, long to, long toSelection, long now)'))
-    check('★ 静默例外问满三代认领：ownsCuesFor / ownsCuesForSelection / ownsCuesForRebuiltPlaylist',
+    # 【code 1006 演进】例外扩到第四代（ownsCuesForChangedWork）—— 见 1006_src 的说明。
+    check('★ 静默例外问满四代认领：…For / …Selection / …RebuiltPlaylist / …ChangedWork',
           'ownsCuesFor(to)' in st and 'ownsCuesForSelection(toSelection)' in st
           and 'ownsCuesForRebuiltPlaylist(to, now)' in st
-          and re.search(r'boolean ours = [\s\S]{0,400}?\|\|[\s\S]{0,400}?;', st) is not None)
+          and 'ownsCuesForChangedWork(now)' in st
+          and re.search(r'boolean ours = [\s\S]{0,600}?\|\|[\s\S]{0,600}?;', st) is not None)
     check('放行后让静默窗失效（否则紧接的反向同对会被再静默 20s）',
           'sNotifiedMs = 0L;' in st)
     check('★ 未认领时仍然照旧静默（return false，行为一字未变）',

@@ -1671,3 +1671,95 @@ idx=2 / idx=3 / idx=5 —— 宿主一直是「用户点击 → 立刻取该轨�
 `DLsiteFloat-2.3.1-code1005-debug.apk`，5,575,832 B
 sha256 `9f0b7bec47700a4f528cf362e1eb0a1c4b266e0000473170529e6ffb49d89051`
 versionName 2.3.0 → **2.3.1**；code 1004 → 1005；label 保持 `1008.25`
+
+---
+
+## [2.3.1 / code 1006] — 换作品：插件仍会短暂「无字幕」（code 1005 的第三例）（2026-10-10）
+
+### 【现象】Ari，附截屏 `Screenshot_2026-10-10-22-52-25` 等三张 + 日志 `LSPosed_20261010_225318`
+
+上一轮（code 1005）为「换作品/换章节」补了判据之后，同一形态**又复现一次**：
+这次连着跳转了几个作品，其中仍有一次插件取不到字幕、而**宿主 App 右上角正常显示有字幕**。
+
+### 【根因】两条旧判据各自的命门
+
+真机日志把时间线钉死两处：
+
+```
+22:51:02.563  Loaded 73 cues —— 作品 RJ01126292（用户刚点下新作品）
+22:51:09.847  >>> track changed tc=7 dur=827472 idx=3 -> tc=5 dur=745032 idx=0 [index-gate]
+              | lastJson=7284ms ago -> SUSPEND …                  ← 空窗 17.9s
+22:52:11.455  Loaded 343 cues —— 作品 RJ01536846（同一作品三条音轨、三个 json）
+22:52:13.009  statusMap tc=4 dur=0.0（新列表第一拍：非零 tc、时长仍是 0）
+22:52:17.875  >>> track changed tc=5 dur=1025040 idx=2 -> tc=4 dur=2371608 idx=2 [index-gate]
+              | lastJson=4627ms ago -> SUSPEND …                  ← 空窗 29.7s
+```
+
+- **code 1004 的选择键**（`trackCount + currentIndex`）：换作品时列表被**整个重建**，
+  重建期的读数取不到有效选择键。
+- **code 1005 的重建窗口**两个口子都漏：
+  - ① **起点不是边沿**：宿主同时轮询多个 `playbackState=ended` 的**幽灵实例**
+    （`eb292cf` / `a5a32f2` / `8dd3553`），它们**永远**报 `trackCount=0` ——
+    本会话 22:50:46~22:53:23 共 **222 条**「playlist destroyed」，一秒 1~3 次
+    ⇒ 窗口被反复误开、**永不闭合**，成了纯噪声。
+  - ② **终点关得太早**：新列表**第一拍**就报非零 `trackCount`（时长仍 0），
+    而新作品的字幕 JSON 还在它**之后 238ms**（22:52:13.009 → 22:52:13.247）。
+
+宿主一直是「**用户点击 → 立刻取新作品字幕 → 装载音源 → 才报新索引 / 新身份**」——
+那段空档里选择键与身份键**全是旧作品的**，两条旧判据怎么判都判不对。
+
+### 【修法】改用「作品键」这条**正证据** + 修正窗口口径
+
+字幕 JSON 的请求 URL 形如：
+
+```
+https://play.dl.dlsite.com/content/work/doujin/RJ01127000/RJ01126292/optimized/4e4a45e8….json?Key-Pair-Id=…
+```
+
+作品路径是**宿主自己写死的事实** —— 同一部作品的每条音轨共用**同一个路径**
+（只有哈希文件名不同），换作品必变。
+
+- `PlaylistKey.workKeyOf(url)`：两步纯字符串处理 —— 砍掉 `?` 起的查询串
+  （每次请求签名都不同）、砍掉最后一个 `/` 之后的哈希文件名 ⇒ 得到作品键
+  （如 `…/RJ01126292/optimized`）。
+- `PlaylistKey.cuesBelongToChangedWork`（五参）：手上 cues 的作品键**完全等于**刚换到的作品键
+  + 未超时 15s ⇒ 认领（位置：`PlaylistKey`，纯判定，可在单测里直跑）。
+- `SubtitleRepository`：新增 `cuesWorkKey` / `lastSeenWorkKey`（历史基线，**硬裁决不清**）/
+  `workChangeKey` / `workChangeAtMs` + 常量 `WORK_CHANGE_CLAIM_MS = 15000`；
+  装载 JSON 时若「本次作品键 ≠ 历史基线」就记下**待兑现的换作品**。
+- `tryResumeFromCache` 增**第四条**认领路径 `[code 1006]`（一次性：认领即清）。
+- **窗口口径修正**：起点改成**按实例 `id` 记账的真边沿**（`sLastTcByListId`，
+  只有同一个实例**自己**从非零掉到 0 才算「被销毁」；宿主没给 `id` 时只提示一次、退回不开窗）；
+  终点改由**带时长的权威读数**（`notePlaylistLoaded`）负责，不再由「出现非零 trackCount」关窗。
+
+**换轨判据（三元组身份）一字未改**；980 / 973 / 960 / code 1004 / code 1005 的机器一件没动。
+
+### 【验证】
+
+- JUnit **57 → 68**（+11 条纯函数黄金向量，取值全部来自本轮真机日志实测数字）
+- 源码层 `tools/verify_1006_src.py`（新增）**87/87**
+- dex 层 `tools/verify_1006.py`（新增，对照 code 1005 包）**79/79，45 个有区分力锚**
+  - 常量层（`dexdump` 字段 `value :`）：`WORK_CHANGE_CLAIM_MS = 15000`、`MAX_TRACKED_LIST_IDS = 8`；
+    既有八个时限/尺度常量（15000 / 3500 / 3000 / 15000 / 5000 / 100000 / 10¹² / 1000）一字未动
+  - 负向锚：旧的三参 `onPlaylistSelectionFromStatusMap:(IILjava/lang/String;)V` 在 1006 包里消失
+- 一键全链 `tools/run_all_verify.py` **19/19 全绿 + 1 SKIP**（verify_998.py 缺对照包）
+
+### 【连带修复】
+
+- `tools/verify_1005_src.py`：4 条断言随本轮演进更新（关窗职责移交 / 四参调用 / 四处静默 /
+  版本号改为自洽性），项数 52 → **54**。
+- `tools/verify_1004_src.py`：3 条断言更新（纯写入只剩一个字段 / 一次性告警守卫 / 四处静默），
+  项数保持 **72**。
+- 🔴 **本轮 dex 层首跑红了 5 条，全是判据自身写错**（记在这里别再犯）：
+  - 字段段**没有** `名字:类型` 连写（dexdump 是 name / type 分行；连写只出现在**指令行**）⇒ 13★ 假 FAIL；
+  - `substring` 实际是**两参**重载 `substring:(II)`，我写成单参 `(I)` ⇒ 35★ 假 FAIL；
+  - 编译期常量被**内联成立即数** `const/16 v3, #int 8`，字段名不进指令行 ⇒ 48★ 假 FAIL；
+  - `add()` 的**对照侧判据**被我写成「旧包里有旧形态」（恒为真）⇒ 15★/16★ 被判「无区分力」。
+    正确写法是「**新包有、旧包也没有**」。
+
+### 产物
+
+`DLsiteFloat-2.3.1-code1006-debug.apk`，5,578,596 B
+sha256 `a3e5c48c87a71f8c7ed2ec5ea7053c2e4681722ead1f363674814a37e59f0136`
+versionName 保持 **2.3.1**；code 1005 → 1006；label 保持 `1008.25`
+（Ari 本轮指令：**只升 code，不升版本号**）

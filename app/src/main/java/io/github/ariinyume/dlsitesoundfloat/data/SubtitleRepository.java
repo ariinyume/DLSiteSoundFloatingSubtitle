@@ -305,9 +305,15 @@ public class SubtitleRepository {
      * ⇒ 这份**新轨**字幕被判「上一轨旧数据」隔离 ⇒ 空窗 25s。
      *
      * <p>── 窗口的定义与关闭 ──
-     * 起点 = 观察到 {@code trackCount == 0}（{@link #notePlaylistRebuilt}）；
-     * 终点 = 新的非零 {@code trackCount} 出现（{@link #noteObservedPlaylistSelection} 里关窗）。
+     * 起点 = 观察到**某个播放列表实例自己**从非零 {@code trackCount} 掉到 0（{@link #notePlaylistRebuilt}）；
+     * 终点 = 活跃列表给出一次**带时长**的完整读数（{@link #notePlaylistLoaded}）。
      * 这段窗口里宿主**旧列表已经不存在了**，此刻返回的字幕 JSON 只可能属于**重建后的新列表**。
+     *
+     * <p>⚠️【code 1006】两处口径都在本轮改过，原因见 {@link #notePlaylistLoaded}：
+     * ① 起点必须是「真边沿」—— {@code trackCount == 0} 是宿主**持续**报的（已结束的幽灵列表
+     * 永远这么报，真机 222 条/会话），由 {@code PlayerSourceHook} 按「实例自己掉到 0」去重；
+     * ② 终点不能是「非零 trackCount 出现」—— 新列表**第一拍**就报非零，而新作品的字幕 JSON
+     * 还在它之后 238ms 才到（真机 22:52:13.009 → 22:52:13.247）。
      */
     private volatile long playlistRebuiltAtMs = 0L;
     /**
@@ -328,6 +334,46 @@ public class SubtitleRepository {
      * （{@code NO_SUBTITLE_GRACE_MS_CACHED}）同量级 —— 超过它，等下去也不会有结果。
      */
     private static final long REBUILT_PLAYLIST_CLAIM_MS = 15000L;
+    /**
+     * 【code 1006】手上这份 cues 是**哪一部作品**的 —— 由字幕 JSON 的请求 URL 推出的**作品键**
+     * （见 {@link PlaylistKey#workKeyOf}；{@code null}/空 = 这次加载没拿到 URL）。
+     *
+     * <p>── 为什么需要它（Ari 2026-10-10 22:53 的第三例「无字幕」）──
+     * 宿主取字幕的时机是**用户点击那一刻**，而播放列表切换与换轨通知都要等音源装载 ——
+     * 真机实测这份 JSON 比换轨通知早 <b>4627 / 6419 / 7284ms</b>
+     * （{@code LSPosed_20261010_225318}）。这段空档里宿主报的选择键与身份键**全都还是旧作品的**
+     * ⇒ code 1004（选择键）与 code 1005（重建窗口）都只能看见「旧作品」，判不对归属；
+     * 而窗口本身还会被「已结束的幽灵列表」反复误开（真机 22:50:46~22:53:23 共 222 条）。</p>
+     *
+     * <p>URL 是唯一能在这段空档里**正面指认**归属的证据：同一部作品的所有音轨共用同一个
+     * 作品路径（{@code …/RJ01126292/optimized}），换作品必变。
+     * 写入与销毁都与 {@link #cuesOwnerIdentity} 同生共死（同一次加载盖章、硬裁决一起清）。</p>
+     */
+    private volatile String cuesWorkKey = null;
+    /**
+     * 【code 1006】上一次拿到作品键的那份 JSON 属于哪一部作品 —— 用来判「这次换作品了没」。
+     *
+     * <p>与 {@link #cuesWorkKey} 不同：本字段**不随硬裁决清空**（它是历史基线，不是印章），
+     * 且只在真的拿到 URL 时更新（拿不到 URL 的加载路径不写入，免得把基线冲成 null
+     * 而让下一次加载误判成「换了作品」）。
+     */
+    private volatile String lastSeenWorkKey = null;
+    /**
+     * 【code 1006】最近一次「换了作品」的作品键（= 带来这次换作品的那份 cues 的作品键）。
+     *
+     * <p>只在 {@code 本次加载的作品键 != lastSeenWorkKey} 时写下（见
+     * {@link #loadFromJsonArrayInternal}）——那正是「宿主的取字幕动作跨到了另一部作品」。
+     * 三处清空：① 一次成功认领（{@link #tryResumeFromCache}）；② 「刚加载过 JSON ⇒ 保留」
+     * 那条平静路径（{@link #onTrackChanged}）；③ 硬裁决销毁数据。{@code null} = 没有待兑现的换作品。
+     */
+    private volatile String workChangeKey = null;
+    /** 【code 1006】写下 {@link #workChangeKey} 的时刻（{@code uptimeMillis}；0 = 无）。 */
+    private volatile long workChangeAtMs = 0L;
+    /**
+     * 【code 1006】换作品之后这份 cues 的最长认领时限。与重建窗口
+     * （{@link #REBUILT_PLAYLIST_CLAIM_MS}）同量级 —— 真机实测换作品的提前量 4.6~7.3s。
+     */
+    private static final long WORK_CHANGE_CLAIM_MS = 15000L;
 
     // ---- 播放结束 → 自动关窗（v29）----
     /** Media3 {@code Player} 的播放状态取值（与 App 内部常量对齐）。 */
@@ -475,6 +521,16 @@ public class SubtitleRepository {
     // ======================================================================
 
     public void loadFromJson(String json) {
+        loadFromJson(json, null);
+    }
+
+    /**
+     * 【code 1006】带「作品键」的入口 —— 归属判定的正证据（见 {@link PlaylistKey#workKeyOf}）。
+     *
+     * @param workKey 这份 JSON 的请求 URL 推出的作品键；{@code null} = 这条加载路径拿不到 URL
+     *                （字节流通道）⇒ 不更新历史基线，也不参与「换作品」判定。
+     */
+    public void loadFromJson(String json, String workKey) {
         try {
             JSONObject root = new JSONObject(json);
             JSONObject data = root.optJSONObject("data");
@@ -505,22 +561,27 @@ public class SubtitleRepository {
                 XposedCompat.log("[DLsiteSoundFloat] loadFromJson: no subtitle array found");
                 return;
             }
-            loadFromJsonArrayInternal(webvtt);
-            XposedCompat.log("[DLsiteSoundFloat] Loaded " + getCues().size() + " cues from JSON");
+            loadFromJsonArrayInternal(webvtt, workKey);
+            XposedCompat.log("[DLsiteSoundFloat] Loaded " + getCues().size() + " cues from JSON"
+                    + (workKey != null ? "" : " (no work key on this path)"));
         } catch (Throwable e) {
             XposedCompat.log("[DLsiteSoundFloat] loadFromJson error: " + e.getMessage());
         }
     }
 
     public void loadFromJsonArray(JSONArray webvtt) {
+        loadFromJsonArray(webvtt, null);
+    }
+
+    public void loadFromJsonArray(JSONArray webvtt, String workKey) {
         try {
-            loadFromJsonArrayInternal(webvtt);
+            loadFromJsonArrayInternal(webvtt, workKey);
         } catch (Throwable e) {
             XposedCompat.log("[DLsiteSoundFloat] loadFromJsonArray error: " + e.getMessage());
         }
     }
 
-    private void loadFromJsonArrayInternal(JSONArray webvtt) throws Exception {
+    private void loadFromJsonArrayInternal(JSONArray webvtt, String workKey) throws Exception {
         List<SubtitleCue> newCues = new ArrayList<>();
         // 【1.21.15 问题 1】假阴性取证用的暂存（-1 = 本次没有）
         long falseNegativeLagMs = -1L;
@@ -558,6 +619,22 @@ public class SubtitleRepository {
             cuesOwnerSelection = observedPlaylistSelection;
             cuesLoadedAheadOfIdentity = PlaylistKey.selectionAheadOfIdentity(
                     observedPlaylistSelection, observedPlaylistIdentity);
+            // 【code 1006】第三枚印章：这份 JSON 属于**哪一部作品**（URL 里的作品路径）。
+            //   宿主取字幕的时机是「用户点击那一刻」，而播放列表切换/换轨通知都要等音源装载
+            //   （真机实测提前量 4627 / 6419 / 7284ms）—— 那段空档里宿主报的选择键与身份键
+            //   **全是旧作品的**，code 1004/1005 都判不出归属，只有 URL 能正面指认。
+            //   「本次作品键 ≠ 上一次的作品键」只有一个解释：宿主的取字幕动作跨到了另一部作品
+            //   ⇒ 记下待兑现的换作品（见 ownsCuesForChangedWork 与 PlaylistKey#cuesBelongToChangedWork）。
+            if (workKey != null && !workKey.isEmpty()) {
+                if (lastSeenWorkKey != null && !lastSeenWorkKey.equals(workKey)) {
+                    workChangeKey = workKey;
+                    workChangeAtMs = SystemClock.uptimeMillis();
+                    XposedCompat.log("[DLsiteSoundFloat] [code 1006] subtitle json came from ANOTHER"
+                            + " work -> work change pending (a track change now is that work's)");
+                }
+                lastSeenWorkKey = workKey;
+                cuesWorkKey = workKey;
+            }
             // 【code 1005】再记两件事，供「换作品（列表整体重建）」场景下的归属判定：
             //   ① 到达时刻 —— 给认领加时间上限，防陈旧印章被后来的无关换轨错误兑现；
             //   ② 到达时「列表重建窗口」是否还开着（宿主报过 trackCount==0 且新列表尚未报出）。
@@ -765,6 +842,10 @@ public class SubtitleRepository {
                 pendingStartPosMs = -1L;
                 pendingSawPositionReset = false;
                 pendingPosSamples = 0;
+                // 【code 1006】这份 cues 就是刚换到的那一轨的 ⇒ 待兑现的「换作品」已经兑现
+                //   （无论它是不是靠作品键认出来的）。落下它，免得被后面的无关换轨重复兑现。
+                workChangeKey = null;
+                workChangeAtMs = 0L;
                 suspended = false;
             } else {
                 // 无法确认新音轨是否有字幕 → 挂起显示，稍后判定
@@ -894,9 +975,27 @@ public class SubtitleRepository {
             return;
         }
         observedPlaylistSelection = selection;
-        // 【code 1005】新的非零 trackCount 出现 ⇒ 重建窗口关闭（见 playlistRebuiltAtMs）。
-        //   只关窗、**不**动已经盖在 cues 上的 cuesArrivedDuringRebuild ——
-        //   那份 JSON 是在窗口内到达的，这条证据必须留到换轨通知来兑现。
+        // 【code 1006】这里**不再**关「列表重建窗口」 —— 关窗的职责移给了
+        //   {@link #notePlaylistLoaded}（只认带时长的**权威**读数）。
+        //   真机铁证（LSPosed_20261010_225318）：宿主每换一次播放列表都会**立刻**报一条
+        //   「新列表 tc=4 / duration=0.0」的装载期读数，而新作品的字幕 JSON 还在它之后
+        //   （22:52:13.009 报 tc=4 → 22:52:13.247 才 Loaded 343 cues）——
+        //   旧写法在这里就把窗口关掉了，于是 2.8 秒后的换轨通知把这份新作品字幕当成
+        //   「上一轨旧数据」隔离掉，空了 29.7 秒。
+    }
+
+    /**
+     * 【code 1006】活跃播放列表给出了一次**带时长**（{@code duration > 0}）的完整读数
+     * ⇒ 新列表已经装载完成 ⇒ 关闭「列表重建窗口」（见 {@link #playlistRebuiltAtMs}）。
+     *
+     * <p>为什么必须用它、而不能用「出现非零 trackCount」：宿主换列表时**第一拍**就报非零
+     * {@code trackCount}，但 {@code duration} 仍是 0（音源还没装载），而新作品的字幕 JSON
+     * 恰恰落在「报出非零 trackCount」之后（真机 22:52:13.009 → 22:52:13.247）。
+     * 只认权威读数，窗口才能盖住这段空档。
+     *
+     * <p>无锁写（volatile）：由 {@code PlayerSourceHook} 的权威通道调用。
+     */
+    public void notePlaylistLoaded() {
         if (playlistRebuiltAtMs != 0L) {
             playlistRebuiltAtMs = 0L;
         }
@@ -931,6 +1030,26 @@ public class SubtitleRepository {
         return PlaylistKey.cuesBelongToRebuiltPlaylist(
                 cuesArrivedDuringRebuild, newIdentity, cuesOwnerIdentity,
                 cuesLoadedAtMs, nowMs, REBUILT_PLAYLIST_CLAIM_MS);
+    }
+
+    /**
+     * 【code 1006】手上的 cues 是不是**刚换到的那部作品**的字幕 —— 第三条认领路径的判据。
+     *
+     * <p>无锁读（两个 volatile 字段 + 一次字符串比较）：会被 {@code PlayerSourceHook} 的去抖闸门
+     * 高频调用，不能有任何锁竞争。
+     *
+     * <p>⚠️ 与另外三条的分工（四条互不替代）：
+     * <ul>
+     *   <li>{@link #ownsCuesFor}：切回**同一条**轨（身份键全同）；</li>
+     *   <li>{@link #ownsCuesForSelection}：**同一列表内**换序号，且盖章时选择已跑在身份前面；</li>
+     *   <li>{@link #ownsCuesForRebuiltPlaylist}：**列表被销毁重建**期间到达的 JSON；</li>
+     *   <li>本方法：**换了作品**——宿主在用户点击那一刻就取回了新作品的字幕，此时选择键与身份键
+     *       都还是旧作品的，只有 URL 里的作品键能证明「这次取字幕跨了作品」。</li>
+     * </ul>
+     */
+    public boolean ownsCuesForChangedWork(long nowMs) {
+        return PlaylistKey.cuesBelongToChangedWork(
+                cuesWorkKey, workChangeKey, workChangeAtMs, nowMs, WORK_CHANGE_CLAIM_MS);
     }
 
     /**
@@ -985,21 +1104,34 @@ public class SubtitleRepository {
         //   → 21:41:59.654 换轨通知，lastJson=6135ms 远超 PRELOAD_TOLERANCE_MS(3500) ⇒ 被判「上一轨旧数据」。
         //   窗口判据：这份 cues 到达时「列表重建窗口」还开着 ⇒ 旧列表已不存在 ⇒ 它属于新列表。
         boolean byRebuild = ownsCuesForRebuiltPlaylist(newIdentity, SystemClock.uptimeMillis());
-        if (!byIdentity && !bySelection && !byRebuild) {
+        // 【code 1006】第四条认领路径：**换作品**。宿主在用户点击那一刻就把新作品的字幕取回来了，
+        //   而播放列表切换与换轨通知都要等音源装载（真机提前量 7284ms）—— 那段空档里
+        //   选择键与身份键**全是旧作品的**，code 1004/1005 都拿不到证据；
+        //   而这条 73 cues 的 JSON 明明就摆在手上。唯一的正证据是它 URL 里的作品键：
+        //   与上一份 JSON 的作品键不同 ⇒ 宿主的取字幕动作跨了作品 ⇒ 它就是新作品的
+        //   （真机 22:51:02.563 Loaded 73 cues → 22:51:09.847 换轨通知，lastJson=7284ms）。
+        boolean byWorkChange = ownsCuesForChangedWork(SystemClock.uptimeMillis());
+        if (!byIdentity && !bySelection && !byRebuild && !byWorkChange) {
             return false;
         }
-        final String code = byIdentity ? "[code 980]" : bySelection ? "[code 1004]" : "[code 1005]";
+        final String code = byIdentity ? "[code 980]" : bySelection ? "[code 1004]"
+                : byRebuild ? "[code 1005]" : "[code 1006]";
         final String why = byIdentity
                 ? " -> BACK to the playlist these cues belong to"
                 : bySelection
                 ? " -> cues were already the NEW track's (selection ran ahead of identity)"
-                : " -> the playlist was rebuilt (trackCount went to 0) and this json arrived"
-                        + " inside that window, so it belongs to the NEW playlist";
+                : byRebuild
+                ? " -> the playlist was rebuilt (trackCount went to 0) and this json arrived"
+                        + " inside that window, so it belongs to the NEW playlist"
+                : " -> this json came from a DIFFERENT work than the previous json,"
+                        + " so it is the newly selected work's";
         final String how = byIdentity
                 ? "host reuses its own json, no need to wait"
                 : bySelection
                 ? "json arrived before the switch was reported, no need to wait"
-                : "json arrived while the playlist was being rebuilt, no need to wait";
+                : byRebuild
+                ? "json arrived while the playlist was being rebuilt, no need to wait"
+                : "json was fetched for another work at click time, no need to wait";
         int cueCount;
         long posNow;
         boolean reopened = false;
@@ -1037,6 +1169,10 @@ public class SubtitleRepository {
             // 【code 1005】重建窗口的认领是**一次性**的：兑现后就把旗标落下，
             //   否则同一份印章会在后续某次无关换轨上被再次兑现（渲染出不属于那轨的内容）。
             cuesArrivedDuringRebuild = false;
+            // 【code 1006】换作品同样是一次性的：这次换轨已经兑现了它，落下免得被后面的
+            //   无关换轨重复兑现（那时手上的 cues 可能已经是别的内容了）。
+            workChangeKey = null;
+            workChangeAtMs = 0L;
             if (autoClosedForNoSubtitle) {
                 autoClosedForNoSubtitle = false;
                 floatingWindowOpen = true;
@@ -1192,6 +1328,10 @@ public class SubtitleRepository {
                         // 【code 1005】重建窗口的印章同样与数据同生共死（数据没了就没有归属可谈）。
                         cuesArrivedDuringRebuild = false;
                         cuesLoadedAtMs = 0L;
+                        // 【code 1006】作品键印章同样与数据同生共死。
+                        cuesWorkKey = null;
+                        workChangeKey = null;
+                        workChangeAtMs = 0L;
                         currentSubtitles = new ArrayList<>();
                         currentCueIndex = -1;
                         lastScannedSecond = Integer.MIN_VALUE;

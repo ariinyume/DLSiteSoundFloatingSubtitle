@@ -193,11 +193,20 @@ def main():
     sel = norm(method_body(repoc, 'public void noteObservedPlaylistSelection('))
     check('③ noteObservedPlaylistSelection 对 0 值早退（不让未知选择键冲掉已知的）',
           'if (selection <= 0L) { return; }' in sel)
-    check('③ 新列表出现即关窗（playlistRebuiltAtMs 归零）',
+    # 【code 1006 演进】关窗职责已从本方法**移交**给 notePlaylistLoaded（只认带时长的权威读数）。
+    #   原因：宿主每换一次列表都会**立刻**报一条「新列表 tc>0 / duration=0」的装载期读数，
+    #   在这里关窗会把 238ms 后到达的新作品 JSON 排除在窗口之外
+    #   （真机 22:52:13.009 报 tc=4 → 22:52:13.247 才 Loaded 343 cues）。⇒ 恢复为「纯写入」。
+    check('③ noteObservedPlaylistSelection 只写选择键、**不再**关窗（职责已移交 notePlaylistLoaded）',
           'observedPlaylistSelection = selection;' in sel
-          and 'playlistRebuiltAtMs = 0L;' in sel)
-    check('③ 关窗**不**动已盖在 cues 上的旗标（那份证据要留到换轨通知兑现）',
+          and 'playlistRebuiltAtMs' not in sel)
+    check('③ 纯写入不**动**已盖在 cues 上的旗标（那份证据要留到换轨通知兑现）',
           'cuesArrivedDuringRebuild' not in sel)
+    check('③【code 1006】关窗新家 notePlaylistLoaded 存在，且只认「带时长的权威读数」',
+          'public void notePlaylistLoaded()' in repoc
+          and re.search(r'public void notePlaylistLoaded\(\) \{ '
+                        r'if \(playlistRebuiltAtMs != 0L\) \{ playlistRebuiltAtMs = 0L; \} \}',
+                        norm(repoc)) is not None)
     load = norm(repoc)
     check('③ 装载时同步盖两枚新印章：到达时刻 + 「窗口是否还开着」',
           'cuesLoadedAtMs = SystemClock.uptimeMillis(); cuesArrivedDuringRebuild = playlistRebuiltAtMs != 0L;'
@@ -219,10 +228,13 @@ def main():
           'boolean byIdentity' in res and 'boolean bySelection' in res and 'boolean byRebuild' in res)
     check('④ 第三条路径真的接了查询方法（不是写了变量没用）',
           'boolean byRebuild = ownsCuesForRebuiltPlaylist(newIdentity, SystemClock.uptimeMillis());' in res)
-    check('④ 三条路径缺失时一律 return false（任一成立才继续）',
-          'if (!byIdentity && !bySelection && !byRebuild) { return false; }' in res)
-    check('④ 日志 code 三分支：980 / 1004 / 1005',
-          'byIdentity ? "[code 980]" : bySelection ? "[code 1004]" : "[code 1005]"' in res)
+    # 【code 1006 演进】第四条认领路径（作品键）已加入，这两条断言同步放宽到四路。
+    check('④ 四条路径缺失时一律 return false（任一成立才继续）',
+          'if (!byIdentity && !bySelection && !byRebuild && !byWorkChange) { return false; }' in res)
+    check('④ 日志 code 四分支：980 / 1004 / 1005 / 1006',
+          'byIdentity ? "[code 980]" : bySelection ? "[code 1004]"'
+          in res
+          and ': byRebuild ? "[code 1005]" : "[code 1006]"' in res)
     check('④ code 1005 的 why 说清「列表重建窗口内到达 ⇒ 属于新列表」',
           'the playlist was rebuilt (trackCount went to 0) and this json arrived' in res
           and 'so it belongs to the NEW playlist' in res)
@@ -241,9 +253,12 @@ def main():
     #    该串在 PlayerPositionHook 里第一次出现就是**调用点**（后面跟 `;` 不跟 `{`），
     #    method_body 会一路找到下一个 `{` ⇒ 抽出的是错位片段（真踩过，两条断言一真一假）。
     posn = norm(posc)
+    # 【code 1006 演进】推送点中间多了「取实例 id」两步，故拆成「条件存在」+「实参形态」两条断言
+    #   （原来那条把 `{` 与调用点写进同一个正则，加入 id 之后必然假 FAIL）。
     check('⑤ PlayerPositionHook 的推送条件**不再**要求 trackCount > 0（重建期报 0 必须收得到）',
-          re.search(r'if \(isPlaylistMap && !halted && curIdx >= 0\) \{ '
-                    r'PlayerSourceHook\.onPlaylistSelectionFromStatusMap\(', posn) is not None)
+          re.search(r'if \(isPlaylistMap && !halted && curIdx >= 0\) \{', posn) is not None
+          and 'PlayerSourceHook.onPlaylistSelectionFromStatusMap(trackCount, curIdx, listId, where)'
+          in posn)
     check('⑤ 旧写法 `trackCount > 0 && !halted && curIdx >= 0` 在 PlayerPositionHook 里彻底消失',
           'trackCount > 0 && !halted && curIdx >= 0' not in posc)
     check('⑤ 仍要求 !halted 与 curIdx >= 0（作废列表 / 读不到序号一律不推）',
@@ -252,9 +267,10 @@ def main():
           posn.find('PlayerSourceHook.onPlaylistSelectionFromStatusMap')
           < posn.find('if (!authoritative)'))
     entry = norm(method_body(srcc, 'public static void onPlaylistSelectionFromStatusMap('))
+    # 【code 1006 演进】开窗调用现在多带一个实例 id（`where + " id=" + listId`）—— 见 1006_src 的说明。
     check('⑤ PlayerSourceHook 按 trackCount 分流：0 ⇒ 开窗口，> 0 ⇒ 推选择键',
           'if (trackCount <= 0) {' in entry
-          and 'repo.notePlaylistRebuilt(where);' in entry
+          and re.search(r'repo\.notePlaylistRebuilt\(where \+ " id=" \+ listId\);', entry) is not None
           and 'repo.noteObservedPlaylistSelection(PlaylistKey.makeSelection(trackCount, idx));' in entry)
     check('⑤ 分流里 trackCount<=0 那条分支以 return 结束（不会顺手把 0 当选择键推下去）',
           re.search(r'if \(trackCount <= 0\) \{[\s\S]*?return;[\s\S]*?\}', entry) is not None)
@@ -266,12 +282,15 @@ def main():
 
     # ══════════════ ⑥ 去抖闸门：静默例外扩到第三条 ══════════════
     settle = norm(method_body(srcc, 'private static boolean settleChange('))
-    check('⑥ settleChange 的静默例外现在问三处： ownsCuesFor / ownsCuesForSelection / ownsCuesForRebuiltPlaylist',
+    # 【code 1006 演进】例外扩到第四条（ownsCuesForChangedWork）—— 见 1006_src 的说明。
+    check('⑥ settleChange 的静默例外现在问四处： ownsCuesFor / …Selection / …RebuiltPlaylist / …ChangedWork',
           'ownsCuesFor(to)' in settle
           and 'ownsCuesForSelection(toSelection)' in settle
-          and 'ownsCuesForRebuiltPlaylist(to, now)' in settle)
-    check('⑥ 三处用 || 连成同一个 ours 判据（任一条成立即放行）',
-          re.search(r'boolean ours = [^;]*ownsCuesFor[^;]*ownsCuesForSelection[^;]*ownsCuesForRebuiltPlaylist[^;]*;',
+          and 'ownsCuesForRebuiltPlaylist(to, now)' in settle
+          and 'ownsCuesForChangedWork(now)' in settle)
+    check('⑥ 四处用 || 连成同一个 ours 判据（任一条成立即放行）',
+          re.search(r'boolean ours = [^;]*ownsCuesFor[^;]*ownsCuesForSelection[^;]*'
+                    r'ownsCuesForRebuiltPlaylist[^;]*ownsCuesForChangedWork[^;]*;',
                     settle) is not None)
     check('⑥ 放行后仍让静默窗失效（sNotifiedMs = 0L）—— 铁律 51 的既有收口没被改掉',
           'sNotifiedMs = 0L;' in settle)
@@ -293,7 +312,12 @@ def main():
           a_own == [2], '实参个数 %s' % a_own)
 
     # ══════════════ ⑧ 版本号四处 + 横幅纪律 ══════════════
-    check('⑧ build.gradle: appVersionCode = 1005', 'def appVersionCode = 1005' in gra)
+    # 【随轮次推进】code 每轮 +1（Ari 本轮要求「只升 code、不升 versionName」），故**不钉死**具体值，
+    #   改为「gradle 定义存在 + ≥ 1005」+ 下面几条横幅/履历与它自洽。
+    m_code = re.search(r'def appVersionCode = (\d+)', gra)
+    vcode = m_code.group(1) if m_code else '?'
+    check('⑧ build.gradle 定义了 appVersionCode 且 ≥ 1005（不钉死具体值，随轮次推进）',
+          m_code is not None and int(vcode) >= 1005, 'code=%s' % vcode)
     # 【随轮次推进】versionName 本轮按 Ari 指令由 2.3.0 升到 **2.3.1**，因此**不钉死**它，
     #   改为守「三处同值」：gradle 的 name / tag + 常开横幅（横幅是装机核对的唯一锚）。
     m_name = re.search(r"def appVersionName = '([\d.]+)'", gra)
@@ -302,8 +326,8 @@ def main():
     check('⑧ 版本自洽：appVersionName == appVersionTag（APK 文件名与 versionName 同源）',
           m_name is not None and m_tag is not None and m_name.group(1) == m_tag.group(1),
           'name=%s tag=%s' % (vname, m_tag.group(1) if m_tag else '?'))
-    keep = 'XposedCompat.log("[DLsiteSoundFloat] ==== BUILD %s / code 1005");' % vname
-    check('⑧ 常开横幅那一行是 code 1005、且 versionName 与 build.gradle 一致（装机前核这一行）',
+    keep = 'XposedCompat.log("[DLsiteSoundFloat] ==== BUILD %s / code %s");' % (vname, vcode)
+    check('⑧ 常开横幅那一行用当前 code、且 versionName 与 build.gradle 一致（装机前核这一行）',
           keep in mod, 'expected: %s' % keep)
     check('⑧ 常开横幅只有一行：旧的 code 1004 常开行已被替换（不是两行并存）',
           not re.search(r'XposedCompat\.log\("\[DLsiteSoundFloat\] '
@@ -311,10 +335,12 @@ def main():
     check('⑧ 常开横幅里不写具体文件名/被删标识符（横幅纪律，防负向锚自伤）',
           all(ch not in keep for ch in
               ('AudioPlaylist', 'ExoPlayerImpl', 'Duration', 'cuesBelongToRebuiltPlaylist')))
-    seg = re.search(r'==== BUILD %s / code 1005 （([\s\S]*?)"\);' % re.escape(vname), mod)
-    check('⑧ 调试段里的 code 1005 履历含四段（现象/根因/修法/连带）+ 尾部写明「版本号 2.3.0→2.3.1」',
+    seg = re.search(r'==== BUILD %s / code %s （([\s\S]*?)"\);' % (re.escape(vname), vcode), mod)
+    check('⑧ 调试段里的当前 code 履历含四段（现象/根因/修法/连带）+ 尾部写明「版本号」变化',
           seg is not None and all(k in seg.group(1) for k in ('①', '②', '③', '④'))
-          and '版本号 2.3.0→2.3.1' in seg.group(1))
+          and '版本号' in seg.group(1))
+    check('⑧ code 1005 的历史段仍在（履历是追加式、不覆盖；它的横幅保持当时的 2.3.1）',
+          '==== BUILD 2.3.1 / code 1005 （' in mod)
     check('⑧ code 1004 的历史段仍在（履历是追加式、不覆盖；它的横幅保持当时的 2.3.0）',
           '==== BUILD 2.3.0 / code 1004 （' in mod)
 

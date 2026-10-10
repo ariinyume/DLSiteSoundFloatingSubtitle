@@ -309,6 +309,12 @@ public class PlayerSourceHook {
         //   这里**只写一个 volatile 字段**，不触发任何状态变更 —— 宿主会交替读到多个
         //   列表实例，拿它直接驱动 UI 就会变成抖动源。
         SubtitleRepository.getInstance().noteObservedPlaylistIdentity(identity);
+        // 【code 1006】活跃列表给出了一次**带时长**的完整读数 ⇒ 新列表已经装载完成 ⇒
+        //   关闭「列表重建窗口」。关窗的职责从 noteObservedPlaylistSelection 移到这里：
+        //   那条路也在接收「新列表刚建出来、duration 还是 0」的装载期读数
+        //   （真机 22:52:13.009 报 tc=4 duration=0.0 → 22:52:13.247 才 Loaded 343 cues），
+        //   在那儿关窗会把新作品的字幕挡在窗外，换来 29.7 秒空窗。
+        SubtitleRepository.getInstance().notePlaylistLoaded();
 
         // 【code 977→978】只在「本进程首次观测到身份」时种基线。
         //   🔴 977 之前这里还有一条 `|| since > INDEX_STALE_MS(30000)` 的早退。
@@ -378,7 +384,35 @@ public class PlayerSourceHook {
      */
     private static volatile int sLastNonZeroTrackCount = 0;
 
-    public static void onPlaylistSelectionFromStatusMap(int trackCount, int idx, String where) {
+    /**
+     * 【code 1006】每个**播放列表实例**上一次报过的非零 {@code trackCount}，键 = 状态 Map 里的
+     * {@code id}（宿主给每个 AudioPlaylist 生成的 UUID，真机 {@code a6d71ebc-…}）。
+     *
+     * <p>── 为什么需要它（Ari 2026-10-10 22:53 第三例的直接成因）──
+     * code 1005 把「{@code trackCount == 0}」当成「播放列表被销毁」的信号，判据用的是全局的
+     * {@link #sLastNonZeroTrackCount}。真机日志 {@code LSPosed_20261010_225318} 推翻了这个前提：
+     * 宿主**同时持有并轮流轮询多个已结束的旧列表实例**（{@code eb292cf} / {@code a5a32f2} /
+     * {@code 8dd3553}），它们**永远**报 {@code trackCount=0 playbackState=ended}，
+     * 于是「非零 → 0」这条边沿每秒成立 1~3 次（本会话 22:50:46~22:53:23 共 <b>222 条</b>
+     * {@code [code 1005] playlist destroyed}），窗口变成永远悬着的噪声 ——
+     * 而真正需要它的那 4.7 秒反而没被盖住。
+     *
+     * <p>改成按实例记账后，「销毁」只在**同一个实例自己**从非零掉到 0 时成立一次
+     * （本会话：{@code eb292cf} / {@code a5a32f2} / {@code 8dd3553} / {@code 1978507} … 各一次），
+     * 而宿主每换一次选择都会新建一个列表实例、旧的那份随之结束 ⇒ 这个边沿恰好就是
+     * 「用户刚选了一个新东西」的时刻。
+     *
+     * <p>容量刻意很小（宿主同时活着的实例数是个位数）；满了就丢最旧的键。
+     */
+    private static final java.util.LinkedHashMap<String, Integer> sLastTcByListId =
+            new java.util.LinkedHashMap<>();
+    /** {@link #sLastTcByListId} 的容量上限。 */
+    private static final int MAX_TRACKED_LIST_IDS = 8;
+    /** 宿主没给 {@code id} 时只提示一次（此后退回「不开窗」，见下方注释）。 */
+    private static volatile boolean sLoggedMissingListId = false;
+
+    public static void onPlaylistSelectionFromStatusMap(int trackCount, int idx, String listId,
+                                                        String where) {
         SubtitleRepository repo = SubtitleRepository.getInstance();
         if (trackCount <= 0) {
             // 【code 1005】宿主换作品/章节时把播放列表整个销毁重建，重建期报 trackCount == 0。
@@ -387,14 +421,40 @@ public class PlayerSourceHook {
             //   真机 21:41:53.139（trackCount=0）→ 21:41:53.505 新轨 JSON 到达（仅隔 366ms）
             //   → 21:41:58.241 新列表才第一次可读（tc=8 idx=2）。
             //
-            //   只在「非零 → 0」的跳变上开窗：本会话 316 条 statusMap 里只有 1 条 trackCount=0，
-            //   正是这一次销毁；若不分跳变，冷启动的空列表读数也会开窗，判据就退化了。
+            // 【code 1006】但这条读数**不是边沿**：宿主同时轮询多个已结束的旧列表实例，它们永远报
+            //   trackCount=0（真机 222 条/会话）。⇒ 先按实例 id 去重，只认「**这个实例自己**
+            //   从非零掉到 0」那一次（见 sLastTcByListId 的说明）。
+            //   全局的 sLastNonZeroTrackCount 保留作「本会话确实见过活跃列表」的兜底，
+            //   避免冷启动时的空列表也来开窗。
             if (sLastNonZeroTrackCount > 0) {
-                repo.notePlaylistRebuilt(where);
+                boolean realEdge;
+                synchronized (sLastTcByListId) {
+                    realEdge = listId != null && sLastTcByListId.remove(listId) != null;
+                }
+                if (realEdge) {
+                    repo.notePlaylistRebuilt(where + " id=" + listId);
+                } else if (listId == null && !sLoggedMissingListId) {
+                    sLoggedMissingListId = true;
+                    XposedCompat.log(TAG + " status map has no `id` field -> per-instance"
+                            + " destroy edge unavailable (rebuild window disabled on this host)");
+                }
             }
             return;
         }
         sLastNonZeroTrackCount = trackCount;
+        if (listId != null) {
+            synchronized (sLastTcByListId) {
+                if (!sLastTcByListId.containsKey(listId)
+                        && sLastTcByListId.size() >= MAX_TRACKED_LIST_IDS) {
+                    java.util.Iterator<String> it = sLastTcByListId.keySet().iterator();
+                    if (it.hasNext()) {
+                        it.next();
+                        it.remove();
+                    }
+                }
+                sLastTcByListId.put(listId, trackCount);
+            }
+        }
         repo.noteObservedPlaylistSelection(PlaylistKey.makeSelection(trackCount, idx));
     }
 
@@ -475,7 +535,12 @@ public class PlayerSourceHook {
                     // 【code 1005】换作品/章节时列表整体重建，选择键取不到值 ⇒ 前两条都认不出来；
                     //   而「重建窗口内到达的那份 cues」正是新列表的字幕（真机 21:41:53.505 那份）。
                     || SubtitleRepository.getInstance()
-                            .ownsCuesForRebuiltPlaylist(to, now);
+                            .ownsCuesForRebuiltPlaylist(to, now)
+                    // 【code 1006】窗口两条（1004 选择键 / 1005 重建窗）都有各自的命门，最终用
+                    //   **作品键**这条正证据兜底：手上 cues 的来源作品 == 刚检测到变化的那个作品
+                    //   ⇒ 这份 cues 本来就是它的，没有裁决窗要保护。
+                    //   真机 22:51：新作品 JSON 早 7284ms 到达，旧两条判据全认不出来。
+                    || SubtitleRepository.getInstance().ownsCuesForChangedWork(now);
             if (ours) {
                 dbg("change " + from + "->" + to
                         + " back to the playlist our cues belong to (or cues already the new"

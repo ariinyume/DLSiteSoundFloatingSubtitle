@@ -294,7 +294,13 @@ public class PlayerPositionHook {
         Object idxObj = m.get("currentIndex");
         int curIdx = idxObj instanceof Number ? ((Number) idxObj).intValue() : -1;
         if (isPlaylistMap && !halted && curIdx >= 0) {
-            PlayerSourceHook.onPlaylistSelectionFromStatusMap(trackCount, curIdx, where);
+            // 【code 1006】连实例标识一起传下去：宿主同时轮询多个 playbackState=ended 的幽灵实例，
+            //   它们**永远**报 `trackCount=0`（真机 22:50:46~22:53:23 共 222 条，一秒 1~3 次），
+            //   旧判据把「读到 0」当成「列表刚被销毁」⇒ 窗口被反复误开、永不闭合，成了纯噪声。
+            //   正确口径：只有**同一个实例**自己从「非零 → 0」走一次，才是真边沿（见 PlayerSourceHook）。
+            Object idObj = m.get("id");
+            String listId = idObj instanceof String ? (String) idObj : null;
+            PlayerSourceHook.onPlaylistSelectionFromStatusMap(trackCount, curIdx, listId, where);
         }
 
         if (!authoritative) {

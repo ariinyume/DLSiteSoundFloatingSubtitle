@@ -919,4 +919,164 @@ public class GoldenVectorTest {
                         false, ID_NEW_LIST, ID_OLD_LIST,
                         T0, T0 + REAL_1005_JSON_LEAD_MS, CLAIM_MS));
     }
+
+    // ────────────────────────────────────────────────────────────────────
+    // PlaylistKey（code 1006：换作品时仍短暂「无字幕」（1005 的第三例）的根修）
+    //
+    // 真机（LSPosed_20261010_225318，截屏 2026-10-10-22-52-25 等三张）：
+    //   22:51:02.563  Loaded 73 cues —— 作品 RJ01126292（用户刚点下新作品）
+    //   22:51:09.847  >>> track changed tc=7 dur=827472 idx=3 -> tc=5 dur=745032 idx=0
+    //                 | lastJson=7284ms ago -> SUSPEND   → 空窗 17.9s
+    //   22:52:11.455  Loaded 343 cues —— 作品 RJ01536846（同一作品三条音轨三个 json）
+    //   22:52:13.009  statusMap tc=4 dur=0.0（新列表第一拍：非零 tc、时长仍为 0）
+    //   22:52:17.875  >>> track changed tc=5 dur=1025040 idx=2 -> tc=4 dur=2371608 idx=2
+    //                 | lastJson=4627ms ago -> SUSPEND   → 空窗 29.7s
+    //
+    // 机制：宿主在「用户点击那一刻」就把新作品的字幕取回来了，而播放列表切换与换轨通知
+    //       都要等音源装载 ⇒ 那段空档里选择键与身份键**全是旧作品的**，旧两条判据都无证据。
+    //       唯一能正面指认归属的，是 JSON 请求 URL 里的作品路径（同一作品各音轨共用）。
+    // ────────────────────────────────────────────────────────────────────
+
+    /**
+     * 真机那条字幕 URL（作品 RJ01126292 的第 1 条音轨）。
+     *
+     * <p>⚠️ {@code Policy} / {@code Signature} 已截断为示例值 —— 本判据只砍 {@code ?} 之后的
+     * 查询串，内容与结果无关；路径部分与哈希文件名与真机日志逐字节一致。
+     */
+    private static final String URL_WORK_A_JSON_1 =
+            "https://play.dl.dlsite.com/content/work/doujin/RJ01127000/RJ01126292/optimized/"
+            + "4e4a45e886d3841c3c29bd72a61e2652.json"
+            + "?Key-Pair-Id=K2KNQ20FMJHVOK&Policy=eyJTdGF0ZW1lbnQ...&Signature=gl6T25zCM6Dz...";
+
+    /** 同一部作品的**另一条音轨**（真机 22:51 会话里 RJ01126292 的另一次请求）。 */
+    private static final String URL_WORK_A_JSON_2 =
+            "https://play.dl.dlsite.com/content/work/doujin/RJ01127000/RJ01126292/optimized/"
+            + "959ebee409018c895a4090bd05d37450.json"
+            + "?Key-Pair-Id=K2KNQ20FMJHVOK&Policy=eyJTdGF0ZW1lbnQ...&Signature=gl6T25zCM6Dz...";
+
+    /** 真机 22:52 会话里那部作品（RJ01536846，三条音轨各一个 json）。 */
+    private static final String URL_WORK_B_JSON_1 =
+            "https://play.dl.dlsite.com/content/work/doujin/RJ01537000/RJ01536846/optimized/"
+            + "0c989544dc18478aaf4ec2f7e44c531a.json"
+            + "?Key-Pair-Id=K2KNQ20FMJHVOK&Policy=eyJTdGF0ZW1lbnQ...&Signature=HnHQrwlktckZkCK...";
+
+    /** 作品 A 的作品键（= 砍掉查询串与哈希文件名之后的路径）。 */
+    private static final String WORK_KEY_A =
+            "https://play.dl.dlsite.com/content/work/doujin/RJ01127000/RJ01126292/optimized";
+
+    /** 作品 B 的作品键。 */
+    private static final String WORK_KEY_B =
+            "https://play.dl.dlsite.com/content/work/doujin/RJ01537000/RJ01536846/optimized";
+
+    /** 真机实测：新作品的 JSON 比换轨通知早到 7284ms（22:51:02.563 → 22:51:09.847）。 */
+    private static final long REAL_1006_JSON_LEAD_MS = 7284L;
+
+    /** 真机第二处：早到 4627ms（22:52:13.247 → 22:52:17.875）。 */
+    private static final long REAL_1006_JSON_LEAD_MS_2 = 4627L;
+
+    /** 真机 URL ⇒ 作品键（同时验「砍查询串」与「砍哈希文件名」两步）。 */
+    @Test
+    public void workKeyOf_realDeviceUrl() {
+        assertEquals(WORK_KEY_A, PlaylistKey.workKeyOf(URL_WORK_A_JSON_1));
+        assertEquals(WORK_KEY_B, PlaylistKey.workKeyOf(URL_WORK_B_JSON_1));
+    }
+
+    /** 同一部作品的每条音轨（哈希文件名各不相同）必须得到**同一个**作品键。 */
+    @Test
+    public void workKeyOf_sameWorkTracksShareKey() {
+        assertEquals("同一作品的另一条音轨仍是同一个键",
+                PlaylistKey.workKeyOf(URL_WORK_A_JSON_1),
+                PlaylistKey.workKeyOf(URL_WORK_A_JSON_2));
+    }
+
+    /** 换作品必得到不同的键 —— 这是整条判据的立足点。 */
+    @Test
+    public void workKeyOf_differsAcrossWorks() {
+        assertFalse("不同作品绝不能撞键（否则会拿上一部作品的字幕冒充）",
+                PlaylistKey.workKeyOf(URL_WORK_A_JSON_1)
+                        .equals(PlaylistKey.workKeyOf(URL_WORK_B_JSON_1)));
+    }
+
+    /** 查询串每次请求都不同（签名时效）⇒ 必须被忽略，否则同一份 JSON 的两次请求会被当成两部作品。 */
+    @Test
+    public void workKeyOf_queryStringIgnored() {
+        String sameHashOtherSignature = URL_WORK_A_JSON_2.substring(
+                0, URL_WORK_A_JSON_2.indexOf('?')) + "?Key-Pair-Id=OTHER&Signature=BRANDNEW...";
+        assertEquals("同 hash 换一组签名 ⇒ 仍是同一个键",
+                PlaylistKey.workKeyOf(URL_WORK_A_JSON_2),
+                PlaylistKey.workKeyOf(sameHashOtherSignature));
+    }
+
+    /** 退化输入一律返回 null（调用方当「无证据」，绝不凭坏数据认领）。 */
+    @Test
+    public void workKeyOf_nullAndDegenerate() {
+        assertNull(PlaylistKey.workKeyOf(null));
+        assertNull("没有路径分隔 ⇒ 取不出作品键", PlaylistKey.workKeyOf("subtitle.json"));
+        assertNull("斜杠在位置 0（前面没有任何东西可当键）⇒ 取不出",
+                PlaylistKey.workKeyOf("/subtitle.json"));
+        assertEquals("只有一层目录也照样取（域名/目录层数都不是必要条件）",
+                "a", PlaylistKey.workKeyOf("a/b.json"));
+    }
+
+    /** 真机那一份：这次 JSON 的作品键 == 刚换到的作品键 + 7284ms ≤ 15000ms ⇒ 认领。 */
+    @Test
+    public void changedWork_claimsWhenKeysMatch() {
+        assertTrue(PlaylistKey.cuesBelongToChangedWork(
+                WORK_KEY_B, WORK_KEY_B, T0, T0 + REAL_1006_JSON_LEAD_MS, CLAIM_MS));
+        assertTrue("第二处提前量同样认领", PlaylistKey.cuesBelongToChangedWork(
+                WORK_KEY_A, WORK_KEY_A, T0, T0 + REAL_1006_JSON_LEAD_MS_2, CLAIM_MS));
+    }
+
+    /** 安全阀：换作品的**不是**手上这份 cues（键不等）⇒ 绝不认领（防跨作品冒充）。 */
+    @Test
+    public void changedWork_noWhenKeyDiffers() {
+        assertFalse("手上是 A 的 cues，待兑现的是 B ⇒ 不认",
+                PlaylistKey.cuesBelongToChangedWork(
+                        WORK_KEY_A, WORK_KEY_B, T0, T0 + 1000L, CLAIM_MS));
+    }
+
+    /** 没有待兑现的换作品（null），或手上 cues 的作品键未知（null / 空）⇒ 都不认领。 */
+    @Test
+    public void changedWork_noWhenEitherKeyMissing() {
+        assertFalse("没有待兑现的换作品",
+                PlaylistKey.cuesBelongToChangedWork(WORK_KEY_A, null, T0, T0 + 1000L, CLAIM_MS));
+        assertFalse("手上 cues 没拿到 URL",
+                PlaylistKey.cuesBelongToChangedWork(null, WORK_KEY_A, T0, T0 + 1000L, CLAIM_MS));
+        assertFalse("空串按「没拿到」处理",
+                PlaylistKey.cuesBelongToChangedWork("", WORK_KEY_A, T0, T0 + 1000L, CLAIM_MS));
+    }
+
+    /** 时限：恰好 15000ms 仍认（闭区间），多 1ms 就放弃 —— 防陈旧印章被无关换轨兑现。 */
+    @Test
+    public void changedWork_boundaryAtTolerance() {
+        assertTrue(PlaylistKey.cuesBelongToChangedWork(
+                WORK_KEY_A, WORK_KEY_A, T0, T0 + CLAIM_MS, CLAIM_MS));
+        assertFalse(PlaylistKey.cuesBelongToChangedWork(
+                WORK_KEY_A, WORK_KEY_A, T0, T0 + CLAIM_MS + 1L, CLAIM_MS));
+        assertFalse("真机 4627ms 之外再放大到超时限也必须放弃",
+                PlaylistKey.cuesBelongToChangedWork(
+                        WORK_KEY_A, WORK_KEY_A, T0, T0 + 16000L, CLAIM_MS));
+    }
+
+    /** 时钟回退 / 换作品时刻未知 ⇒ 不认领（防御式，绝不凭坏数据盖章）。 */
+    @Test
+    public void changedWork_noOnBadClock() {
+        assertFalse("now 早于换作品时刻（时钟回退）",
+                PlaylistKey.cuesBelongToChangedWork(
+                        WORK_KEY_A, WORK_KEY_A, T0 + 1000L, T0, CLAIM_MS));
+        assertFalse("换作品时刻未知(0)",
+                PlaylistKey.cuesBelongToChangedWork(WORK_KEY_A, WORK_KEY_A, 0L, T0, CLAIM_MS));
+    }
+
+    /** 端到端复演真机那 7.3 秒：换作品 → JSON 先到 → 音源装载 → 换轨通知 → 认领。 */
+    @Test
+    public void realDevice1006Chain_claimsJsonOfTheChangedWork() {
+        assertTrue("换轨通知到达 ⇒ 认领这份 cues（不再空窗 17.9 秒）",
+                PlaylistKey.cuesBelongToChangedWork(
+                        WORK_KEY_A, WORK_KEY_A, T0, T0 + REAL_1006_JSON_LEAD_MS, CLAIM_MS));
+        assertFalse("反面：若没有这条作品键判据（旧世界），同样输入确实救不了它（正是本轮 bug）",
+                PlaylistKey.cuesBelongToChangedWork(
+                        WORK_KEY_A, /* 旧世界拿不到作品键 */ null,
+                        T0, T0 + REAL_1006_JSON_LEAD_MS, CLAIM_MS));
+    }
 }

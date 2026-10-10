@@ -18,6 +18,7 @@
  */
 package io.github.ariinyume.dlsitesoundfloat.hook;
 
+import io.github.ariinyume.dlsitesoundfloat.data.PlaylistKey;
 import io.github.ariinyume.dlsitesoundfloat.data.SubtitleRepository;
 import io.github.ariinyume.dlsitesoundfloat.util.NetLogFile;
 import io.github.ariinyume.dlsitesoundfloat.util.Shape;
@@ -688,7 +689,12 @@ public class NetworkHook {
         }
         NetLogFile.log("RESP url=" + url + " ctype=" + cts + " len=" + len
                 + " peeked=" + text.length());
-        submit(text, repo, "build.peek");
+        // 【code 1006】把 URL 里的「作品键」一起交给数据层 —— 这是换作品时唯一能**正面指认**
+        //   这份 JSON 归属的证据：宿主在用户点击那一刻就取回了新作品的字幕，而播放列表切换与
+        //   换轨通知都要等音源装载（真机提前量 4627 / 6419 / 7284ms），那段空档里宿主报的
+        //   选择键与身份键**全是旧作品的**。同一部作品的每条音轨共用同一个作品路径。
+        String workKey = urlLc.contains(".json") ? PlaylistKey.workKeyOf(url) : null;
+        submit(text, repo, "build.peek", workKey);
     }
 
     /**
@@ -888,7 +894,7 @@ public class NetworkHook {
             return;
         }
         // ④ 结构判据 + 解析
-        submit(text, repo, via);
+        submit(text, repo, via, null);
     }
 
     /** 字节流入口（RN 的 bytes() / expo-fetch 的累加器字节）。 */
@@ -914,7 +920,7 @@ public class NetworkHook {
                 }
             }
         }
-        submit(decodeUtf8(data, 0, data.length), repo, via);
+        submit(decodeUtf8(data, 0, data.length), repo, via, null);
     }
 
     /**
@@ -950,7 +956,7 @@ public class NetworkHook {
                 && !containsAscii(data, "start_time")) {
             return;
         }
-        submit(decodeUtf8(data, 0, data.length), repo, via);
+        submit(decodeUtf8(data, 0, data.length), repo, via, null);
     }
 
     /**
@@ -958,8 +964,11 @@ public class NetworkHook {
      *
      * <p>{@code cueCount} 去重：同一条正文可能从多个通道各来一次
      * （例如 RN 与 expo-fetch 同时命中），靠「刚解析过同样的内容」避免重复刷日志。
+     *
+     * @param workKey 【code 1006】这份 JSON 的作品键（{@link PlaylistKey#workKeyOf}）；
+     *                {@code null} = 本通道拿不到 URL（字节流那两条），此时不参与换作品判定。
      */
-    private static void submit(String text, SubtitleRepository repo, String via) {
+    private static void submit(String text, SubtitleRepository repo, String via, String workKey) {
         if (text == null || text.isEmpty()) {
             return;
         }
@@ -984,7 +993,7 @@ public class NetworkHook {
         NetLogFile.log("RESP body via=" + via + " len=" + text.length()
                 + " hasSubtitleJson=true");
         try {
-            repo.loadFromJson(text);
+            repo.loadFromJson(text, workKey);
             int n = repo.getCues().size();
             sParsedCount++;
             XposedCompat.log(TAG + " >> parsed subtitle JSON via=" + via + " cues=" + n

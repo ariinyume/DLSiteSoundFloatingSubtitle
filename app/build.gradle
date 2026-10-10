@@ -259,7 +259,9 @@ def appVersionTag = '2.3.1'
 //        ⑥ **诊断日志接LogGate**：7 个文件里只有 5 条 Log.i 是真诊断级（已迁）；
 //        21 条 Log.w 告警按 LogGate 类头铁律 3 **保持常开不动**。
 //
-def appVersionCode = 1005
+// 【code 1006】Ari 要求「这次修复不要升版本号，升 code 就行」⇒ versionName/tag 保持 2.3.1、
+//   label 保持 1008.25，只把 versionCode 推到 1006（修「换作品时插件短暂无字幕」的第三例）。
+def appVersionCode = 1006
 def appVersionCodeLabel = '1008.25'
 def appVersionName = '2.3.1'
 

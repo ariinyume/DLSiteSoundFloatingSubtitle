@@ -73,6 +73,34 @@ package io.github.ariinyume.dlsitesoundfloat.data;
  * 而新轨的 JSON 恰恰落在「列表已销毁、新列表还没报出来」的那 4.7 秒里。
  * 补上的判据是{@link #cuesBelongToRebuiltPlaylist 列表重建窗口}：从 {@code trackCount == 0}
  * 到新的非零 {@code trackCount} 之间到达的 JSON，只可能属于重建后的新列表。
+ *
+ * <h3>── 【code 1006】窗口也不可靠：换成「作品键」这个**正证据** ──</h3>
+ * {@code Ari 2026-10-10 22:53} 第三次报同一现象（连跳几个作品时又出现一次）。真机日志
+ * {@code LSPosed_20261010_225318} 把前两条判据的命门一起暴露了：
+ * <pre>
+ *   22:51:02.563  Loaded 73 cues（= 新作品 RJ01126292 的字幕，宿主在点击那一刻就取回了）
+ *   22:51:02.673  [code 1005] playlist destroyed (trackCount=0)   ← 窗口此时才开，晚了 110ms
+ *   22:51:09.847  >>> track changed tc=7 dur=827472 idx=3 -> tc=5 dur=745032 idx=0
+ *                 | lastJson=7284ms ago -> SUSPEND … [973 previous-track cues quarantined]
+ *   22:51:24.847  [code 960] soft verdict（软裁决定案）
+ *   22:51:27.719  Loaded 99 cues（宿主**again** 重发）→ FALSE NEGATIVE，空了 17.9 秒
+ * </pre>
+ * 两条旧判据各自缺什么，一眼可见：
+ * <ul>
+ *   <li>{@code trackCount == 0} 不是「销毁」的**边沿** —— 宿主同时轮询多个**已结束**的旧列表实例
+ *       （真机 {@code eb292cf}/{@code a5a32f2}/{@code 8dd3553}，永远报 {@code trackCount=0
+ *       playbackState=ended}），窗口于是每秒重开 1~3 次，成了永远悬着的噪声；</li>
+ *   <li>更要命的是**时序**：这条 73 cues 的 JSON 比「窗口打开」早 110ms、比「换轨通知」早
+ *       7284ms 到达 —— 宿主取字幕的时机是**用户点击那一刻**，而播放列表切换与换轨通知都要
+ *       等音源装载（实测提前量 4627 / 6419 / 7284ms）。这段时间里选择键与身份键**都还是旧作品的**
+ *       ⇒ 两条旧判据都只能看见「旧作品」，永远判不对。</li>
+ * </ul>
+ * 唯一能在这段空档里**正面指认**这份 JSON 归属的，是它自己的 URL：
+ * {@code …/content/work/doujin/RJ01127000/RJ01126292/optimized/<hash>.json} 里的作品路径。
+ * 于是第三条判据只看一件事：<b>这份 JSON 的「作品键」与上一份 JSON 的作品键不同</b>
+ * ⇒ 宿主的取字幕动作已经跨到另一部作品 ⇒ 换轨通知到达时直接认领
+ * （见 {@link #cuesBelongToChangedWork}）。它不依赖 {@code trackCount}、不依赖时长、
+ * 也不依赖窗口是否开着，因此不受「窗口被误开/被提前关掉」影响。
  */
 public final class PlaylistKey {
 
@@ -217,5 +245,80 @@ public final class PlaylistKey {
             return false;
         }
         return nowMs - arrivedAtMs <= toleranceMs;
+    }
+
+    /**
+     * 【code 1006】从字幕 JSON 的**请求 URL** 里取出「作品键」—— 归属判定的**正证据**。
+     *
+     * <p>真机 URL 形如：{@code https://play.dl.dlsite.com/content/work/doujin/RJ01127000
+     * /RJ01126292/optimized/4e4a45e8….json?Key-Pair-Id=…&Policy=…&Signature=…}。
+     * 取法刻意**不认域名、不认路径结构**，只做两步纯字符串处理：
+     * <ol>
+     *   <li>砍掉 {@code ?} 起的查询串（每次请求都不同，必须去掉，否则同一份 JSON 的两次请求会
+     *       被当成两部作品）；</li>
+     *   <li>砍掉最后一个 {@code /} 之后的文件名（同一部作品的每一条音轨各有自己的 hash 文件名，
+     *       去掉它才能得到「一部作品一个键」）。</li>
+     * </ol>
+     * 于是同一部作品的所有音轨得到同一个键（…{@code /RJ01126292/optimized}），
+     * 换作品必得到不同的键。宿主日后改目录名也不影响 —— 只要作品号还在路径里。
+     *
+     * @return 作品键；{@code null} = 拿不到（URL 为空 / 没有路径分隔）—— 调用方一律当「无证据」
+     */
+    public static String workKeyOf(String url) {
+        if (url == null) {
+            return null;
+        }
+        int q = url.indexOf('?');
+        String s = q >= 0 ? url.substring(0, q) : url;
+        int slash = s.lastIndexOf('/');
+        if (slash <= 0) {
+            return null;
+        }
+        String key = s.substring(0, slash);
+        return key.isEmpty() ? null : key;
+    }
+
+    /**
+     * 【code 1006】手上的 cues 是不是**刚换到的那部作品**的字幕 —— 第三条认领判据。
+     *
+     * <h3>── 为什么需要它（code 1004 / 1005 都没覆盖的那段空档）──</h3>
+     * 宿主是「用户点击 → 立刻取新轨字幕 → 装载音源 → 才报新索引/新身份」。真机实测这份 JSON 比
+     * 换轨通知早 <b>4627 / 6419 / 7284ms</b>（{@code LSPosed_20261010_225318}），
+     * 而在这段空档里宿主报的**选择键与身份键全都还是旧作品的**（列表对象直到点击后 100~300ms
+     * 才换成新的，而新列表又要几秒才有 {@code duration}）。⇒ 只看那两条键，怎么判都是「旧作品」。
+     *
+     * <p>本判据改问一个**宿主自己写死的事实**：这份 JSON 的 URL 属于哪部作品。
+     * 「这份 JSON 的作品键 ≠ 上一份 JSON 的作品键」只有一个解释：<b>宿主的取字幕动作已经跨到了
+     * 另一部作品</b>。所以换轨通知到达时（且这份 cues 还没被别的路径认领）直接认领即可。
+     *
+     * <h3>── 为什么不会拿上一部作品的字幕冒充（安全阀）──</h3>
+     * 判据要求 {@code workChangeKey} 与手上 cues 的作品键**完全相等**（否则返回 false）：
+     * {@code workChangeKey} 只在「一次加载的作品键 ≠ 上一次加载的作品键」时才被写下
+     * （见 {@code SubtitleRepository#loadFromJsonArrayInternal}），且会被
+     * 「平静加载 / 已认领 / 硬裁决」三处清掉。⇒ 想冒充必须同时满足「换轨目标那一次
+     * 换作品正是手上这份 cues 带来的」——那本来就是真的。
+     *
+     * @param cuesWorkKey    手上这份 cues 的作品键（{@code null}/空 = 没拿到 URL ⇒ 不认）
+     * @param workChangeKey  最近一次「换了作品」的作品键（{@code null} = 没有待兑现的换作品）
+     * @param workChangeAtMs 那次换作品的时刻（{@code uptimeMillis}；{@code ≤ 0} = 无）
+     * @param nowMs          本次换轨通知的时刻
+     * @param toleranceMs    认领时限（超过则放弃，防陈旧印章被后来的无关换轨兑现）
+     * @return true = 这份 cues 就是刚换到的那部作品的，直接恢复渲染
+     */
+    public static boolean cuesBelongToChangedWork(String cuesWorkKey,
+                                                  String workChangeKey,
+                                                  long workChangeAtMs,
+                                                  long nowMs,
+                                                  long toleranceMs) {
+        if (cuesWorkKey == null || cuesWorkKey.isEmpty()) {
+            return false;
+        }
+        if (workChangeKey == null || !workChangeKey.equals(cuesWorkKey)) {
+            return false;                       // 换作品的不是手上这份 cues ⇒ 无证据
+        }
+        if (workChangeAtMs <= 0L || nowMs < workChangeAtMs) {
+            return false;
+        }
+        return nowMs - workChangeAtMs <= toleranceMs;
     }
 }
