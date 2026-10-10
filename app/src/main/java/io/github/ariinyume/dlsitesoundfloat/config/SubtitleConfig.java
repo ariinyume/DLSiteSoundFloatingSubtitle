@@ -148,6 +148,43 @@ public final class SubtitleConfig {
      */
     public static final String K_LIQUID_GLASS_BLUR_PCT = "liquid_glass_blur_pct";
 
+    /**
+     * 【code 1000】**明暗度**（0–100，默认 50）—— 玻璃面板最终落在多亮。
+     *
+     * <p>映射（【code 1003】分段点随默认值移到 50）：
+     * {@code pct ≤ 50 ⇒ 0.20 + pct × 0.0044}、{@code pct > 50 ⇒ 0.42 + (pct − 50) × 0.0036}；
+     * 0 → **0.20** 最暗、**50 → 0.42**（与历史标定值一致）、100 → **0.60** 最亮。
+     * 这是**自适应霜面的目标落点**：面板会被压/抬向这个亮度。
+     *
+     * <p>⚠️ 键名冻结（PRD §FR-09 规则 4）：新增键，旧配置读不到时回落默认值，天然兼容。
+     */
+    public static final String K_LIQUID_GLASS_PANEL_LUM = "liquid_glass_panel_lum";
+
+    /**
+     * 【code 1000】**通透度**（0–100，默认 50）—— 背后能透出多少。
+     *
+     * <p>50 = 与历史观感一致（背景透出约 72%）；0 = 最实（约 30%）；100 = 最透（约 91%）。
+     * ⚠️ **它同时决定「明暗稳不稳」**：透出越多，面板越跟着背后的页面走 ——
+     * 可压上限 L_max = TARGET_LUM / 透出率，超过上限的亮页会压不到目标而跟着变。
+     *
+     * <p>⚠️ 键名冻结（PRD §FR-09 规则 4）：新增键，旧配置读不到时回落默认值，天然兼容。
+     */
+    public static final String K_LIQUID_GLASS_TRANSPARENCY = "liquid_glass_transparency";
+
+    /**
+     * 【code 1002 / 1003】**环境背景亮度**（0–100，默认 50）—— 自适应霜面的**唯一**亮度输入。
+     *
+     * <p>映射：{@code L = pct / 100}（0 → 纯黑页 · 40 → 0.40 · 50 → 0.50 · 100 → 纯白页）。
+     * 面板照旧按「明暗度」的目标落点反解霜色，只是那个"背景有多亮"由用户直接给出。
+     *
+     * <p>🔴 【code 1003】删除了「背景亮度自动采样」那套（含开关与本键的自动档）——
+     * 亮度**恒定**由本键给出，不再读宿主窗口。旧配置里残留的那个布尔键（code 1002 引入）
+     * 直接忽略（本类不再解析它）。
+     *
+     * <p>⚠️ 键名冻结（PRD §FR-09 规则 4）：新增键，旧配置读不到时回落默认值，天然兼容。
+     */
+    public static final String K_LIQUID_GLASS_BACKDROP_LUM = "liquid_glass_backdrop_lum";
+
     // ==================================================================
     // 枚举取值（PRD §十「范围/枚举」列）
     // ==================================================================
@@ -227,19 +264,34 @@ public final class SubtitleConfig {
     public static final int FLOAT_WINDOW_COLOR_DEF = 0xFF0E1420;
 
     /**
-     * 【2.2.11b】「模糊强度」范围与默认值。
+     * 【2.2.11b / code 1003】「模糊强度」范围与默认值。
      *
-     * 【2.2.14】范围由 0–100 / 步长 1 收窄为 **50–100 / 步长 5**（Ari 2026-10-08 第二次真机反馈：
-     * 「调整范围改成 50% 到 100%，步长 5%」）。理由：50% 以下在真机上既糊不开
-     * （半径太小、看不出玻璃质感），又只剩很薄的一层填充 —— 属于无效区间，
-     * 留着只会让滑条大部分行程是"没反应"。
-     * ⚠️ 渲染层仍按通用的 0–100 口径处理（{@code clamp()} 会把旧配置里的低值夹到 50，
-     * 消费侧不做任何下限假设），因此存量配置不会出格。
+     * 【2.2.14】曾由 0–100 / 步长 1 收窄为 **50–100 / 步长 5**。
+     * 【code 1003】按 Ari 的调整项表**放开回 0–100 / 步长 5、默认 50** ——
+     * 于是「模糊强度 0% = 完全透明」这条语义在 UI 上重新可达（渲染层本来就支持 0）。
      */
-    public static final int LIQUID_GLASS_BLUR_PCT_MIN = 50;
+    public static final int LIQUID_GLASS_BLUR_PCT_MIN = 0;
     public static final int LIQUID_GLASS_BLUR_PCT_MAX = 100;
     public static final int LIQUID_GLASS_BLUR_PCT_STEP = 5;
-    public static final int LIQUID_GLASS_BLUR_PCT_DEF = 60;
+    public static final int LIQUID_GLASS_BLUR_PCT_DEF = 50;
+
+    /** 【code 1000/1003】明暗度（0–100，默认 50）。语义见 {@link #K_LIQUID_GLASS_PANEL_LUM}。 */
+    public static final int LIQUID_GLASS_PANEL_LUM_MIN = 0;
+    public static final int LIQUID_GLASS_PANEL_LUM_MAX = 100;
+    public static final int LIQUID_GLASS_PANEL_LUM_STEP = 5;
+    public static final int LIQUID_GLASS_PANEL_LUM_DEF = 50;
+
+    /** 【code 1000】通透度（0–100，默认 50）。语义见 {@link #K_LIQUID_GLASS_TRANSPARENCY}。 */
+    public static final int LIQUID_GLASS_TRANSPARENCY_MIN = 0;
+    public static final int LIQUID_GLASS_TRANSPARENCY_MAX = 100;
+    public static final int LIQUID_GLASS_TRANSPARENCY_STEP = 5;
+    public static final int LIQUID_GLASS_TRANSPARENCY_DEF = 50;
+
+    /** 【code 1002/1003】环境背景亮度（0–100，默认 50）。语义见 {@link #K_LIQUID_GLASS_BACKDROP_LUM}。 */
+    public static final int LIQUID_GLASS_BACKDROP_LUM_MIN = 0;
+    public static final int LIQUID_GLASS_BACKDROP_LUM_MAX = 100;
+    public static final int LIQUID_GLASS_BACKDROP_LUM_STEP = 5;
+    public static final int LIQUID_GLASS_BACKDROP_LUM_DEF = 50;
 
     // ==================================================================
     // 字段（默认值即 PRD §十「默认值」列）
@@ -280,6 +332,15 @@ public final class SubtitleConfig {
 
     /** 【2.2.11b】模糊强度（0–100，默认 60）。语义见 {@link #K_LIQUID_GLASS_BLUR_PCT}。 */
     public int liquidGlassBlurPct = LIQUID_GLASS_BLUR_PCT_DEF;
+
+    /** 【code 1000/1003】明暗度（0–100，默认 50）。语义见 {@link #K_LIQUID_GLASS_PANEL_LUM}。 */
+    public int liquidGlassPanelLum = LIQUID_GLASS_PANEL_LUM_DEF;
+
+    /** 【code 1000】通透度（0–100，默认 50）。语义见 {@link #K_LIQUID_GLASS_TRANSPARENCY}。 */
+    public int liquidGlassTransparency = LIQUID_GLASS_TRANSPARENCY_DEF;
+
+    /** 【code 1002/1003】环境背景亮度（0–100，默认 50）。语义见 {@link #K_LIQUID_GLASS_BACKDROP_LUM}。 */
+    public int liquidGlassBackdropLum = LIQUID_GLASS_BACKDROP_LUM_DEF;
 
     /** PRD §FR-07：SystemUI 未授权时**只置灰 UI、不写这个键**，避免把「未授权」记成「用户主动关」。 */
     public boolean statusbarSubtitleEnabled = true;
@@ -323,6 +384,9 @@ public final class SubtitleConfig {
         c.floatWindowColor = floatWindowColor;
         c.liquidGlass = liquidGlass;
         c.liquidGlassBlurPct = liquidGlassBlurPct;
+        c.liquidGlassPanelLum = liquidGlassPanelLum;
+        c.liquidGlassTransparency = liquidGlassTransparency;
+        c.liquidGlassBackdropLum = liquidGlassBackdropLum;
         c.statusbarSubtitleEnabled = statusbarSubtitleEnabled;
         c.keepScreenOn = keepScreenOn;
         c.hotReload = hotReload;
@@ -352,6 +416,9 @@ public final class SubtitleConfig {
                 && floatWindowColor == o.floatWindowColor
                 && liquidGlass == o.liquidGlass
                 && liquidGlassBlurPct == o.liquidGlassBlurPct
+                && liquidGlassPanelLum == o.liquidGlassPanelLum
+                && liquidGlassTransparency == o.liquidGlassTransparency
+                && liquidGlassBackdropLum == o.liquidGlassBackdropLum
                 && statusbarSubtitleEnabled == o.statusbarSubtitleEnabled
                 && keepScreenOn == o.keepScreenOn
                 && hotReload == o.hotReload
@@ -386,6 +453,12 @@ public final class SubtitleConfig {
         inactiveScalePct = clampInt(inactiveScalePct, INACTIVE_SCALE_PCT_MIN, INACTIVE_SCALE_PCT_MAX);
         liquidGlassBlurPct = clampInt(liquidGlassBlurPct,
                 LIQUID_GLASS_BLUR_PCT_MIN, LIQUID_GLASS_BLUR_PCT_MAX);
+        liquidGlassPanelLum = clampInt(liquidGlassPanelLum,
+                LIQUID_GLASS_PANEL_LUM_MIN, LIQUID_GLASS_PANEL_LUM_MAX);
+        liquidGlassTransparency = clampInt(liquidGlassTransparency,
+                LIQUID_GLASS_TRANSPARENCY_MIN, LIQUID_GLASS_TRANSPARENCY_MAX);
+        liquidGlassBackdropLum = clampInt(liquidGlassBackdropLum,
+                LIQUID_GLASS_BACKDROP_LUM_MIN, LIQUID_GLASS_BACKDROP_LUM_MAX);
 
         activeScale = clampFloat(activeScale, ACTIVE_SCALE_MIN, ACTIVE_SCALE_MAX);
         lineSpacingDp = clampFloat(lineSpacingDp, LINE_SPACING_MIN, LINE_SPACING_MAX);
@@ -442,6 +515,9 @@ public final class SubtitleConfig {
             o.put(K_FLOAT_WINDOW_COLOR, argbToHex(floatWindowColor));
             o.put(K_LIQUID_GLASS, liquidGlass);
             o.put(K_LIQUID_GLASS_BLUR_PCT, liquidGlassBlurPct);
+            o.put(K_LIQUID_GLASS_PANEL_LUM, liquidGlassPanelLum);
+            o.put(K_LIQUID_GLASS_TRANSPARENCY, liquidGlassTransparency);
+            o.put(K_LIQUID_GLASS_BACKDROP_LUM, liquidGlassBackdropLum);
             o.put(K_STATUSBAR_SUBTITLE_ENABLED, statusbarSubtitleEnabled);
             o.put(K_KEEP_SCREEN_ON, keepScreenOn);
             o.put(K_HOT_RELOAD, hotReload);
@@ -483,6 +559,11 @@ public final class SubtitleConfig {
         c.floatWindowColor = hexToArgb(o.optString(K_FLOAT_WINDOW_COLOR, null), c.floatWindowColor);
         c.liquidGlass = o.optBoolean(K_LIQUID_GLASS, c.liquidGlass);
         c.liquidGlassBlurPct = o.optInt(K_LIQUID_GLASS_BLUR_PCT, c.liquidGlassBlurPct);
+        c.liquidGlassPanelLum = o.optInt(K_LIQUID_GLASS_PANEL_LUM, c.liquidGlassPanelLum);
+        c.liquidGlassTransparency = o.optInt(K_LIQUID_GLASS_TRANSPARENCY,
+                c.liquidGlassTransparency);
+        c.liquidGlassBackdropLum = o.optInt(K_LIQUID_GLASS_BACKDROP_LUM,
+                c.liquidGlassBackdropLum);
         c.statusbarSubtitleEnabled = o.optBoolean(K_STATUSBAR_SUBTITLE_ENABLED, c.statusbarSubtitleEnabled);
         c.keepScreenOn = o.optBoolean(K_KEEP_SCREEN_ON, c.keepScreenOn);
         c.hotReload = o.optBoolean(K_HOT_RELOAD, c.hotReload);
@@ -517,6 +598,9 @@ public final class SubtitleConfig {
         e.putInt(K_FLOAT_WINDOW_COLOR, floatWindowColor);
         e.putBoolean(K_LIQUID_GLASS, liquidGlass);
         e.putInt(K_LIQUID_GLASS_BLUR_PCT, liquidGlassBlurPct);
+        e.putInt(K_LIQUID_GLASS_PANEL_LUM, liquidGlassPanelLum);
+        e.putInt(K_LIQUID_GLASS_TRANSPARENCY, liquidGlassTransparency);
+        e.putInt(K_LIQUID_GLASS_BACKDROP_LUM, liquidGlassBackdropLum);
         e.putBoolean(K_STATUSBAR_SUBTITLE_ENABLED, statusbarSubtitleEnabled);
         e.putBoolean(K_KEEP_SCREEN_ON, keepScreenOn);
         e.putBoolean(K_HOT_RELOAD, hotReload);
@@ -549,6 +633,11 @@ public final class SubtitleConfig {
         c.floatWindowColor = p.getInt(K_FLOAT_WINDOW_COLOR, c.floatWindowColor);
         c.liquidGlass = p.getBoolean(K_LIQUID_GLASS, c.liquidGlass);
         c.liquidGlassBlurPct = p.getInt(K_LIQUID_GLASS_BLUR_PCT, c.liquidGlassBlurPct);
+        c.liquidGlassPanelLum = p.getInt(K_LIQUID_GLASS_PANEL_LUM, c.liquidGlassPanelLum);
+        c.liquidGlassTransparency = p.getInt(K_LIQUID_GLASS_TRANSPARENCY,
+                c.liquidGlassTransparency);
+        c.liquidGlassBackdropLum = p.getInt(K_LIQUID_GLASS_BACKDROP_LUM,
+                c.liquidGlassBackdropLum);
         c.statusbarSubtitleEnabled = p.getBoolean(K_STATUSBAR_SUBTITLE_ENABLED, c.statusbarSubtitleEnabled);
         c.keepScreenOn = p.getBoolean(K_KEEP_SCREEN_ON, c.keepScreenOn);
         c.hotReload = p.getBoolean(K_HOT_RELOAD, c.hotReload);
@@ -615,6 +704,8 @@ public final class SubtitleConfig {
                 + " spacing=" + round1(lineSpacingDp) + "/" + round1(wrapExtraSpacingDp)
                 + " floatWindow=" + argbToHex(floatWindowColor)
                 + " liquidGlass=" + liquidGlass + "/" + liquidGlassBlurPct + "%"
+                + " lum=" + liquidGlassPanelLum + " transp=" + liquidGlassTransparency
+                + " bdLum=" + liquidGlassBackdropLum
                 + " debugLog=" + debugLog;
     }
 

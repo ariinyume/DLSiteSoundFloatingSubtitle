@@ -181,6 +181,21 @@ public final class SubtitleStyle {
      */
     public final int liquidGlassBlurPct;
 
+    /**
+     * 【code 1000/1003】明暗度（0–100，默认 50）—— 玻璃面板最终落在多亮。
+     * 由 {@code LiquidGlassDrawable#setPanelTuningFromPct} 换算成 TARGET_LUM。
+     */
+    public final int liquidGlassPanelLum;
+
+    /** 【code 1000】通透度（0–100，默认 50）—— 背后透出多少（同时也决定明暗稳不稳）。 */
+    public final int liquidGlassTransparency;
+
+    /**
+     * 【code 1002/1003】环境背景亮度（0–100，默认 50）—— 自适应霜面的**唯一**亮度输入，
+     * 映射 {@code L = pct / 100}。code 1003 起不再有「自动采样」档。
+     */
+    public final int liquidGlassBackdropLum;
+
     private SubtitleStyle(SubtitleConfig c, DisplayMetrics dm) {
         float density = (dm == null || dm.density <= 0f) ? 1f : dm.density;
         SubtitleConfig cfg = c == null ? SubtitleConfig.defaults() : c;
@@ -253,6 +268,9 @@ public final class SubtitleStyle {
         // ── 【2.2.9】液态玻璃开关（渲染后端选型，见 LiquidGlassDrawable）─────────
         this.liquidGlass = cfg.liquidGlass;
         this.liquidGlassBlurPct = cfg.liquidGlassBlurPct;
+        this.liquidGlassPanelLum = cfg.liquidGlassPanelLum;
+        this.liquidGlassTransparency = cfg.liquidGlassTransparency;
+        this.liquidGlassBackdropLum = cfg.liquidGlassBackdropLum;
     }
 
     /** 「配置 + 屏幕密度」→ 绘制参数（唯一换算入口）。 */
@@ -294,6 +312,9 @@ public final class SubtitleStyle {
                 && panelColorBottom == o.panelColorBottom
                 && liquidGlass == o.liquidGlass
                 && liquidGlassBlurPct == o.liquidGlassBlurPct
+                && liquidGlassPanelLum == o.liquidGlassPanelLum
+                && liquidGlassTransparency == o.liquidGlassTransparency
+                && liquidGlassBackdropLum == o.liquidGlassBackdropLum
                 && activeTypeface == o.activeTypeface
                 && inactiveTypeface == o.inactiveTypeface;
     }
@@ -308,7 +329,11 @@ public final class SubtitleStyle {
                 + " shadow[color=" + hex(shadowColor) + " r=" + shadowRadiusPx + " dy=" + shadowDyPx + "]"
                 + " gravity=" + gravity + " padV=" + linePadV + "dp wrapExtra=" + wrapExtraSpacingPx + "px"
                 + " panel[" + hex(panelColorTop) + "->" + hex(panelColorBottom)
-                + (liquidGlass ? " liquidGlass/" + liquidGlassBlurPct + "%" : "") + "]";
+                + (liquidGlass ? " liquidGlass/" + liquidGlassBlurPct + "%"
+                        + " lum=" + liquidGlassPanelLum
+                        + " transp=" + liquidGlassTransparency
+                        + " bdLum=" + liquidGlassBackdropLum
+                        : "") + "]";
     }
 
     private static String hex(int c) {
