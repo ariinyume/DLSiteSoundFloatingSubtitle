@@ -46,8 +46,10 @@ import java.util.Random;
  *        真机已验收：面板背后是真糊过的画面，可调、可全局、零权限、零额外功耗。
  *        因此本类**不再自己采背景、也不再自己糊位图**；
  *      · **玻璃本身**（底色/受光/边光/颗粒）→ 本类。
- *      · **背景统计**（均值亮度、上下缘颜色）→ {@code util/HostBackdrop}，
- *        只用来自适应霜面与给光圈染色，**不贴位图**。
+ *      · **背景亮度** → 由设置页「环境背景亮度」滑条给出（{@link #setBackdropLum}），
+ *        只用来自适应霜面，**不贴位图、不采样**。
+ *        ⚠️【code 1003】原先那套「采宿主窗口均值亮度 + 上下缘颜色」已整体删除：
+ *        亮度改由用户给定，光圈也固定为冷白色（{@link #P_RIM_TOP}）。
  *    历史坑（避免重新踩）：窗口标志 {@code FLAG_BLUR_BEHIND} 在这台机上只有整屏效果，
  *    且 App 侧显式设置模糊区域**实测无效**；公开的 {@code View#setBackgroundBlurRadius}
  *    在本 ROM 里**已被删除**。详见 {@code ColorOS17_液态玻璃_悬浮窗可行性分析.md} §7。
@@ -124,23 +126,18 @@ public class LiquidGlassDrawable extends Drawable {
      * ⚠️ 【2.2.12b】从 46% 提到 69%：46% 是照着"参考弹窗实测 +0.17"调的，那在**静止截图**上
      *    是对的，但真机使用中 Ari 反馈"完全看不到光圈" —— 浮窗是压在**运动画面**上的，
      *    参考弹窗是压在静止设置页上的，两者对边光的可辨识度要求不同。取更亮的一档。
-     */
-    private static final int P_RIM_TOP = 0xB0FFFFFF;
-    /** 折射边光：下缘 42%（同步提亮，保持"上亮下暗"的关系不变）。 */
-    private static final int P_RIM_BOTTOM = 0x6BFFFFFF;
-    /** 内圈二次折射（更淡的一圈，给玻璃边"厚度层次"）。 */
-    private static final int P_RIM_INNER_TOP = 0x0CFFFFFF;
-    /** 【2.2.13】边缘光圈的**染色比例**：背景色占多少（其余仍是白）。
      *
-     * ⚠️【2.2.13 从 0.62 降到 0.22】Ari 反馈"上下边缘发紫色的光，很奇怪"——
-     *    0.62 时六成边光颜色来自背景边缘色，而 ColorOS17 参考机上的背景恰好是紫调封面，
-     *    染出来的就是一条紫光。参考弹窗的实测边光基本是**白**的，只随背景"稍稍有点不一样"，
-     *    所以染色只留两成作点缀，其余回白。
+     * 【code 1003】**光圈固定为冷白色**（不再是纯白、也不再随背景上下缘染色）：
+     * 底色取略偏蓝的冷白 {@code 0xEFF4FF}，观感比纯白更"薄"、更像玻璃边缘的折射。
      */
-    private static final float EDGE_TINT = 0.22f;
+    private static final int P_RIM_TOP = 0xB0EFF4FF;
+    /** 折射边光：下缘 42%（同步提亮，保持"上亮下暗"的关系不变）。 */
+    private static final int P_RIM_BOTTOM = 0x6BEFF4FF;
+    /** 内圈二次折射（更淡的一圈，给玻璃边"厚度层次"）。 */
+    private static final int P_RIM_INNER_TOP = 0x0CEFF4FF;
     /** 【2.2.12b】光圈描边宽度（dp）。1dp 在 3x 屏上只有 3px，压在运动画面上太细。 */
     private static final float RIM_WIDTH_DP = 1.4f;
-    private static final int P_RIM_INNER_BOTTOM = 0x10FFFFFF;
+    private static final int P_RIM_INNER_BOTTOM = 0x10EFF4FF;
     /** 颗粒霜化强度（白点 alpha 上限）：均值约 5%。 */
     private static final int P_GRAIN_MAX_ALPHA = 0x1C;
 
@@ -177,15 +174,7 @@ public class LiquidGlassDrawable extends Drawable {
     //    亮背景侧（纯白页）则由旧版的 0.58 收到 0.42，白字对比度**同时变好**
     //    （这与 2.2.14 "空白页面几乎有点看不太清字幕"的诉求同向）。
     //    钉住亮度这条机制一字未动 —— 切页仍旧不跳，只是整块的落点更暗、更"烟熏"。
-    /**
-     * 面板最终亮度的**目标落点**（见上方 990 段的标定依据）。
-     *
-     * <p>⚠️【code 997】本值**不再参与运行时计算** —— 霜色锁定后不再有「把亮度压到目标」
-     * 这个动作。保留它是因为：① 它是 989~992 四轮标定的**唯一设计基准**，
-     * 上方与 {@link #LOCKED_VEIL_LUM}、{@link #ADAPTIVE_VEIL_ALPHA} 的注释都引用它；
-     * ② {@link #LOCKED_VEIL_LUM} 的取值正是按「让典型背景下的面板落点回到本值」推出来的
-     * —— 即锁定后**仍然落在同一个 0.42 上**，只是不再逐帧校正。
-     */
+    /** 面板最终亮度的目标落点（见上方 990 段的标定依据）。 */
     private static final float TARGET_LUM = 0.42f;
     /**
      * 【991】霜面的**固定密度**（有真实背景时，面内那一层"玻璃料"的不透明度）。
@@ -217,45 +206,8 @@ public class LiquidGlassDrawable extends Drawable {
      *    ⚠️ 本值只决定"玻璃占多少"，不再承担"把最亮页也压暗"的职责；
      *       往上调＝更实更暗但会洗色，往下调＝更透、颜色更接近页面本身。
      *    霜色同时改回**中性冷灰**（去掉 991 那套"取背景色相"的做法 —— 那是"变奇怪"的另一半）。
-     *
-     * ⚠️【code 997：0.22 → 0.44 —— "切页时暗时亮"的根治】
-     *    Ari 2026-10-09 第四次反馈：宿主内切页时浮窗**时暗时亮**。
-     *    真机日志（`work_diag_996b`）铁证 —— 背景候选亮度在 14 秒里被采纳地连跳三次：
-     *    {@code 0.2069 → 0.3779 → 0.1948 → 0.3718}。
-     *    两个叠加因由：
-     *      ① **霜色剧烈摆动**：按 {@link #TARGET_LUM} 反解，背景 0.1948 需要**纯白霜**
-     *         （cv 被夹到 1.0），背景 0.3718 只需**中灰霜**（cv≈0.69）——
-     *         均值亮度虽然都落在 0.42，"纯白灰"与"紫灰"的**质感**差异肉眼极明显；
-     *      ② **背景透出率高达 72%**（面板总不透明度仅 28%）⇒ 背景自己一抖，
-     *         面板亮度就跟着抖 0.127。
-     *    ⇒ 本值抬到 **0.44**，配合 {@link #ADAPTIVE_BASE_BLACK} 抬高，
-     *      把背景透出率压到 **28%**（面板总不透明度 72%）；
-     *      同时霜色**改为锁定**（{@link #LOCKED_VEIL_LUM}，不再解方程、不再读背景亮度）。
-     *    实测效果：同样的背景抖动下，面板亮度变化从 **0.127 降到 0.050**（-61%），
-     *    且**霜色恒定 ⇒ 不再有"白灰↔紫灰"的质感剧变**。
-     *    ⚠️ 物理约束（990/991 注释里已写死）：单层半透明面板**不可能同时**做到
-     *      "亮度恒定"与"完全通透"。本版按 Ari 的选择取**亮度恒定**，牺牲部分通透感。
-     *      本值往回调＝更透但更抖，往上调＝更实但更稳。
      */
-    private static final float ADAPTIVE_VEIL_ALPHA = 0.44f;
-    /**
-     * 【code 997】**锁定的霜色亮度**（0–1）—— 面板不再随背景亮度改变自身填充。
-     *
-     * <p>取代原「解 {@code X·(1-α) + cv·α = TARGET_LUM} 反解 cv」的做法。
-     * 原做法在**每一帧**都要读实测背景亮度，于是背景一抖面板就跟着变色；
-     * 新做法把 cv 钉成常量 ⇒ 面板的**自身填充完全恒定**，
-     * 剩下的唯一变量是「背景透过来的那 28%」（已由 {@link #ADAPTIVE_VEIL_ALPHA}
-     * 与 {@link #ADAPTIVE_BASE_BLACK} 共同压缩）。
-     *
-     * <p>取值依据：让**典型背景**（实测 0.19~0.37）下的面板落点与 Ari 截图
-     * （2026-10-09 18:53:37，背景亮度 ≈0.372）那一刻的观感一致 ——
-     * 面板 ≈ {@code 0.372×0.28 + 0.72×0.44 ≈ 0.42}，即原先的目标落点。
-     *
-     * <p>⚠️ 代价（已知且接受）：**很亮的页面**（纯白 ≈1.0）面板会到 ≈0.60，
-     * 白字对比度从原自适应的 2.2:1 降到约 1.6:1。这是"锁定亮度"的必然代价 ——
-     * 想要亮页也可读，只能把本值调低（但暗页会跟着更暗），或放弃锁定。
-     */
-    private static final float LOCKED_VEIL_LUM = 0.72f;
+    private static final float ADAPTIVE_VEIL_ALPHA = 0.22f;
     /**
      * 【989】「玻璃材质量」的淡出起点（以 {@code fill} 计）。
      *
@@ -272,16 +224,8 @@ public class LiquidGlassDrawable extends Drawable {
      * 且亮侧压到 0.32 就到头了；这一层与背景亮度无关，给白字一个最低对比度地板，
      * 同时让玻璃本体更像"一块有厚度的材质"而不是纯色片。
      * 与所有面内填充一致 ×fill（模糊强度 0% 时不留，见 FILL_EXP）。
-     *
-     * ⚠️【code 997：0x14 → 0xBB（8% → 73%）】
-     *    原值 8% 是当"对比度地板"用的，那时面板靠自适应霜色压亮度；
-     *    本版改为**锁定亮度**后，这一层成了"压住背景透出"的主力：
-     *    名义 0xBB(73%) × fill(默认 0.682) ≈ **有效 50%**，
-     *    与 {@link #ADAPTIVE_VEIL_ALPHA} 0.44 合起来 ⇒ 背景透出率
-     *    {@code (1-0.50)×(1-0.44) = 28%}（原为 72%）。
-     *    ⚠️ 与所有面内填充一样 ×fill ⇒ **模糊强度 0% 时仍然全透明**（既有语义未破）。
      */
-    private static final int ADAPTIVE_BASE_BLACK = 0xBB000000;
+    private static final int ADAPTIVE_BASE_BLACK = 0x14000000;
 
     // —— 【2.2.13】"玻璃填充量"随「模糊强度」走 ——
     //
@@ -409,11 +353,8 @@ public class LiquidGlassDrawable extends Drawable {
      * 零额外功耗，且天生全局），本类只负责"玻璃本身"，不再自己糊一张背景位图。
      */
     private boolean systemBlurActive = false;
-    /** 背景均值亮度（0..1）；< 0 = 未知（取不到宿主画面）。用于自适应霜面。 */
+    /** 背景均值亮度（0..1）；< 0 = 未知（用户没给值）。用于自适应霜面。 */
     private float backdropMeanLum = -1f;
-    /** 背景在面板**上缘 / 下缘**的平均色（0xFFRRGGBB），用于给边光染色。0 = 未知。 */
-    private int edgeTopColor = 0;
-    private int edgeBottomColor = 0;
     /** 【2.2.12】仅供设置页预览的背景位图（真窗恒为 null，见 {@link #setPreviewBackdrop}）。 */
     private Bitmap previewBackdrop;
     private final RectF pvDst = new RectF();
@@ -427,6 +368,29 @@ public class LiquidGlassDrawable extends Drawable {
      *    （强度越高 → 顶部受光带越宽、边光衰减越缓、内圈细边光越淡 ⇒ 越"磨砂"）。
      */
     private int blurPct = 60;
+
+    // ==================================================================
+    // 【code 1000】用户可调的两个旋钮（默认 = 上面那几个标定常量，零回归）
+    // ==================================================================
+    //
+    // 由 SettingsActivity 的两个滑条驱动（配置项 liquid_glass_panel_lum /
+    // liquid_glass_transparency），经 {@link #setPanelTuningFromPct} 换算到这里。
+    // ⚠️ 不调用 setter 时，三个字段恒等于历史标定值 ⇒ 观感与改动前**完全一致**。
+    //
+    //   ① panelTargetLum —— 面板最终落在多亮（自适应霜面的目标落点）
+    //   ② panelVeilAlpha —— 霜面密度（越小越透）
+    //   ③ panelBaseBlack —— 薄黑底的 alpha（越大越实，也给白字更高对比度）
+    //
+    // 「背景透出率」= (1 − panelBaseBlack的α) × (1 − panelVeilAlpha)，
+    // 它同时决定「明暗稳不稳」：透出越多，面板越跟着背后的页面走
+    // （可压上限 = panelTargetLum / 透出率，超出上限的亮页会压不到目标）。
+
+    /** 面板最终亮度的目标落点（默认 0.42，见 {@link #TARGET_LUM}）。 */
+    private float panelTargetLum = TARGET_LUM;
+    /** 霜面密度（默认 0.22，见 {@link #ADAPTIVE_VEIL_ALPHA}）。 */
+    private float panelVeilAlpha = ADAPTIVE_VEIL_ALPHA;
+    /** 薄黑底颜色（默认 0x14000000，见 {@link #ADAPTIVE_BASE_BLACK}；只有 alpha 有意义）。 */
+    private int panelBaseBlack = ADAPTIVE_BASE_BLACK;
 
     /** 面板玻璃（烟熏中性）。{@code density} 用于把「1dp 描边」换算成 px。 */
     public LiquidGlassDrawable(float radiusPx, float density) {
@@ -481,41 +445,97 @@ public class LiquidGlassDrawable extends Drawable {
     }
 
     /**
-     * 【2.2.12】背景统计（由 {@code util/HostBackdrop} 提供，只用于两件事，**不再贴位图**）：
-     *   ① 均值亮度 → 选自适应霜面，保证白字在任何背景上都有对比度；
-     *   ② 上/下缘平均色 → 给「边缘光圈」染色（C17 那种"光圈颜色随背景走"）。
+     * 【code 1000】按用户的两个滑条值（0–100）换算并设置面板观感参数。
      *
-     * @param meanLum 背景均值亮度（0..1）
-     * @param edgeTop 背景在面板上缘的平均色（0xFFRRGGBB）
-     * @param edgeBottom 背景在面板下缘的平均色
+     * <p><b>明暗度</b>（0–100，默认 50）—— 分段线性，分段点即默认值：
+     * {@code pct ≤ 50 ⇒ 0.20 + pct × 0.0044}（0 → **0.20** 最暗）、
+     * {@code pct > 50 ⇒ 0.42 + (pct − 50) × 0.0036}（100 → **0.60** 最亮）；
+     * **默认 50 严格 = 0.42**，与历史标定一致（【code 1003】分段点由 40 随默认值移到 50）。
+     * ⚠️ 面板的**实际**亮度还受「通透度」限制：透出率高时面板基本等于背后页面的亮度，
+     * 想暗下去必须同时把通透度往「实」调（可压下限 ≈ L × (1−薄黑底) × (1−霜面α)）。
+     *
+     * <p><b>通透度</b>（0–100，默认 50）：分段线性插值，**默认值必须落回历史观感** ——
+     *
+     * <pre>
+     *   通透度  霜面 α   薄黑底 α   背景透出
+     *     0     0.55     0x60       0.62×0.45 ≈ 28%
+     *    50     0.22     0x14       0.92×0.78 ≈ 72%   ← 默认（= 历史值）
+     *   100     0.06     0x08       0.97×0.94 ≈ 91%
+     * </pre>
+     *
+     * ⚠️ 通透度越高 ⇒ 面板越跟着背后的页面明暗走（这是物理，不是 bug）：
+     * {@code 可压上限 L_max = TARGET_LUM / 透出率}，超过上限的亮页会压不到目标。
+     * 默认档的 {@code L_max ≈ 0.58}，而实测最亮页面约 0.59 —— 刚好压不到；
+     * 用户把通透度往「实」调、或把明暗往「暗」调，都能把这个缺口补上。
+     *
+     * @param lumPct          面板明暗 0–100（越界自动夹取）
+     * @param transparencyPct 通透度 0–100（越界自动夹取）
      */
-    public void setBackdropStats(float meanLum, int edgeTop, int edgeBottom) {
-        this.backdropMeanLum = meanLum;
-        this.edgeTopColor = edgeTop;
-        this.edgeBottomColor = edgeBottom;
+    public void setPanelTuningFromPct(int lumPct, int transparencyPct) {
+        final int lp = Math.max(0, Math.min(100, lumPct));
+        final int tp = Math.max(0, Math.min(100, transparencyPct));
+        // 【code 1001 / 1003】分段线性，**在默认 50 处严格等于 0.42**（零回归）：
+        //     pct ≤ 50 ⇒ 0.20 → 0.42（每档 0.0044）· pct > 50 ⇒ 0.42 → 0.60（每档 0.0036）
+        //   为什么加暗端（1001）：旧版是单段 0.30 + pct×0.003，暗端最低只到 0.30 ——
+        //   离默认 0.42 只有 **-29%**，而亮端有 +43%，两边不对称，
+        //   用户拿它调"偏暗"时明显觉得够不着（Ari 2026-10-09 的诉求就是这个）。
+        //   现在暗端到 0.20（离默认 **-52%**），与亮端量级对称。
+        //   ⚠️【code 1003】分段点随默认值由 40 移到 50（默认 50 仍严格 = 0.42，零回归）。
+        //   ⚠️ 与「通透度」联动看：透出率越高，面板越跟着背后的页面走 ——
+        //   想真正"暗下去"要把通透度往**实**调（见 setPanelTuningFromPct 的说明）。
+        panelTargetLum = lp <= 50 ? (0.20f + lp * 0.0044f)
+                                  : (0.42f + (lp - 50) * 0.0036f);
+
+        final float t;
+        final int blackAlpha;          // 0–255
+        if (tp <= 50) {
+            t = tp / 50f;                                    // 0 = 最实 … 1 = 默认
+            panelVeilAlpha = 0.55f + t * (ADAPTIVE_VEIL_ALPHA - 0.55f);
+            blackAlpha = Math.round(0x60 + t * (0x14 - 0x60));
+        } else {
+            t = (tp - 50) / 50f;                             // 0 = 默认 … 1 = 最透
+            panelVeilAlpha = ADAPTIVE_VEIL_ALPHA + t * (0.06f - ADAPTIVE_VEIL_ALPHA);
+            blackAlpha = Math.round(0x14 + t * (0x08 - 0x14));
+        }
+        panelBaseBlack = blackAlpha << 24;                   // RGB 恒为 0（纯黑）
         invalidateSelf();
     }
 
-    /** 清掉背景统计（宿主窗口取不到时）。 */
-    public void clearBackdropStats() {
-        if (backdropMeanLum < 0f && edgeTopColor == 0 && edgeBottomColor == 0) {
+    /** 【code 1000】当前「背景透出率」（0..1）—— 供诊断日志用。 */
+    public float transparency() {
+        return (1f - ((panelBaseBlack >>> 24) & 0xFF) / 255f) * (1f - panelVeilAlpha);
+    }
+
+    /** 【code 1000】当前自适应可压上限（背景亮度超过它就会压不到目标）。 */
+    public float maxCompensableLum() {
+        final float tr = transparency();
+        return tr <= 0.01f ? 9f : panelTargetLum / tr;
+    }
+
+    /**
+     * 【code 1002 / 1003】设置面板的**背景亮度**输入 —— 自适应霜面据此反解霜色。
+     *
+     * <p>【code 1003】起这个值**只有一个来源**：用户在设置页「环境背景亮度」里填的固定值
+     * （{@code pct / 100}）。原先的「采宿主窗口均值亮度」那套（含自动/手动开关）已整体删除，
+     * 因此本方法不再接收上下缘颜色 —— 光圈已固定为冷白色，不再染色。
+     *
+     * @param meanLum 背景亮度（0..1）
+     */
+    public void setBackdropLum(float meanLum) {
+        if (this.backdropMeanLum == meanLum) {
             return;
         }
-        backdropMeanLum = -1f;
-        edgeTopColor = 0;
-        edgeBottomColor = 0;
+        this.backdropMeanLum = meanLum;
         invalidateSelf();
     }
 
     /**
-     * 【2.2.13】继承另一块玻璃的**运行时状态**（系统模糊是否生效 + 背景统计）。
+     * 【2.2.13】继承另一块玻璃的**运行时状态**（系统模糊是否生效 + 背景亮度）。
      *
      * 修的是「保存模糊强度后面板先变黑，要拖一下才恢复」的另一半根因：
      * 改滑条会 {@code applyPanelBackground()} 重建一整块玻璃 —— 新玻璃
-     * {@code systemBlurActive=false}、没有任何背景统计，要等下一帧采样（400ms 周期，
-     * 且宿主在后台时采样被软跳过、可能**迟迟不来**）才回到自适应档；那一小段时间里
-     * 它走静态深色底 ⇒ 用户看到的就是"先变黑"。现在重建时把旧玻璃的这两个状态
-     * **原样带过来**：新玻璃第一帧就画得和旧玻璃一模一样，再由正常的重下发流程接手。
+     * {@code systemBlurActive=false}、没有亮度输入，会先走静态深色底。现在重建时把旧玻璃
+     * 这两个状态**原样带过来**：新玻璃第一帧就画得和旧玻璃一模一样。
      * 必须在 {@code setBackground()} 之前调用（本方法不主动 invalidate）。
      */
     public void inheritRuntimeStateFrom(LiquidGlassDrawable old) {
@@ -524,18 +544,12 @@ public class LiquidGlassDrawable extends Drawable {
         }
         systemBlurActive = old.systemBlurActive;
         backdropMeanLum = old.backdropMeanLum;
-        edgeTopColor = old.edgeTopColor;
-        edgeBottomColor = old.edgeBottomColor;
     }
 
-    // 【code 997】原 `hasStats()`（`return backdropMeanLum >= 0f;`）已移除。
-    //   它此前只服务 draw() 的填充分支 —— 那个分支已改为「锁定填充」，不再需要
-    //   「是否拿到背景亮度」这个前提；而它注释里提到的另一半职责（光圈染色是否启用）
-    //   实际由 `edgeTopColor` / `edgeBottomColor` 自身是否有效来判，与本方法无关。
-    //   ⚠️ `backdropMeanLum` 字段**保留**：`setBackdropStats` 是跨类 API（由
-    //   `FloatingSubtitleView` 调用），且 `inheritRuntimeStateFrom` 要传递它；
-    //   它现在不参与填充计算，只作为「背景确实在变、而面板不再跟着变」的诊断依据。
-    //   如需彻底移除，要连带改 `setBackdropStats` 签名与全部调用方。
+    /** 是否拿到了背景统计（决定自适应霜面与光圈染色是否启用）。 */
+    private boolean hasStats() {
+        return backdropMeanLum >= 0f;
+    }
 
     /**
      * 【2.2.12】**仅供设置页预览**：铺一张背景位图在面内。
@@ -633,7 +647,7 @@ public class LiquidGlassDrawable extends Drawable {
 
         // ── ②③ 面内填充：两套**互斥**策略，取决于"背后到底糊没糊" ──
         //
-        //   A. 系统背景模糊已生效 + 拿到背景统计（{@code util/BackdropBlur} + {@code HostBackdrop}）
+        //   A. 系统背景模糊已生效 + 拿到背景亮度（{@code util/BackdropBlur} + {@link #setBackdropLum}）
         //      → **自适应霜面**：把面板的均值亮度压/抬向 {@link #TARGET_LUM}。
         //        【991/992】口径：**霜量写死**（{@link #ADAPTIVE_VEIL_ALPHA} × 模糊强度）、
         //        霜色是**中性灰**、由霜色的亮度去补足差额。于是切页时"糊度"不动；
@@ -652,23 +666,15 @@ public class LiquidGlassDrawable extends Drawable {
             paint.setFilterBitmap(false);
         }
 
-        // 【code 997】条件从 `(systemBlurActive || previewBackdrop != null) && hasStats()`
-        //   收窄为 **只看 systemBlurActive**，两个理由：
-        //     ① **去掉 hasStats()**：锁定填充不需要背景亮度这把钥匙，而且
-        //        「统计暂时拿不到 ⇒ 切静态深色底」本身也是一次可见的明暗跳，正好一并消掉；
-        //     ② **去掉 previewBackdrop**：设置页预览必须让底图可见（用户要靠它看滑条效果），
-        //        而本配方的不透明度 72% 会把底图压到只剩 28% ⇒ 预览会变成一片近乎全黑，
-        //        滑条看不出变化。⇒ 预览**保留原静态档**（与改动前一致，行为不变）。
-        //   ⚠️ 已知代价：预览页的观感与真窗**不再同源**（原本也不同源，非本次引入）。
-        if (systemBlurActive) {
-            // 【2.2.14】恒定薄黑底（×fill）：压住背景透出的主力（code 997 起，见常量注释）。
-            final int baseBlack = a(scaleAlpha(ADAPTIVE_BASE_BLACK, fill));
+        if ((systemBlurActive || previewBackdrop != null) && hasStats()) {
+            // 【2.2.14】恒定薄黑底（×fill）：先铺在霜面之下，作为白字的对比度地板。
+            final int baseBlack = a(scaleAlpha(panelBaseBlack, fill));
             if ((baseBlack >>> 24) != 0) {
                 paint.setShader(null);
                 paint.setColor(baseBlack);
                 canvas.drawRect(rect, paint);
             }
-            // ──【code 997】霜面：**密度与霜色都写死** —— 面板自身填充完全恒定 ──
+            // ──【991 / 992】霜面：**密度写死，由霜色的亮度去补到目标落点** ──
             //
             // 演进（每一版的反例都写在类头 ADAPTIVE_VEIL_ALPHA 段）：
             //   · 旧版：霜量 = 斜率 × 与目标的差 × fill ⇒ 密度随背景大幅摆动
@@ -676,16 +682,23 @@ public class LiquidGlassDrawable extends Drawable {
             //   · 989/990：霜色写死白/黑，反解**霜量**把亮度钉住 ⇒ 密度摆得更凶（到 58%）；
             //   · 991：霜量写死、反解**霜色** ⇒ 密度与亮度都稳，但密度取到 0.45 时
             //     只能用灰去补亮度，面板被洗成一片灰水洗色（"颜色变奇怪"）；
-            //   · 992：密度降到 0.22（背景色透出约 78%），霜色回到**中性灰**，仍由它补亮度
-            //     —— 但霜色每帧由实测背景亮度反解 ⇒ 背景在 0.19↔0.37 之间抖时，
-            //     霜色在「纯白 ↔ 中灰」之间跟着跳（= Ari 第四次反馈的"时暗时亮"）；
-            //   · **997（本版）**：霜色**锁定**为 {@link #LOCKED_VEIL_LUM}，**不解方程、
-            //     不读背景亮度**；同时把霜面密度抬到 0.44 + 薄黑底抬到 73%，
-            //     把背景透出率从 72% 压到 28% ⇒ 面板亮度变化 0.127 → 0.050。
+            //   · 992（本版）：密度降到 0.22（背景色透出约 78%，回到用户认可的观感），
+            //     霜色回到**中性灰**（不再自己带背景色相），仍由它补亮度。
+            // 现在就一件事：解 X·(1-α) + cv·α = TARGET_LUM ⇒ cv = (TARGET − X·(1-α)) / α。
+            final float l = Math.max(0f, Math.min(1f, backdropMeanLum));
+            final float ab = ((baseBlack >>> 24) & 0xFF) / 255f;
+            final float cb = lum(panelBaseBlack);
+            final float xAfterBase = l * (1f - ab) + cb * ab;
             final float material = Math.min(1f, fill / MATERIAL_FADE_FILL);
-            final float aFinal = ADAPTIVE_VEIL_ALPHA * material;
+            final float aFinal = panelVeilAlpha * material;
             if (aFinal > 0.004f) {
-                final float cv = Math.max(0f, Math.min(1f, LOCKED_VEIL_LUM));
+                // 解 X·(1-α) + cv·α = TARGET_LUM ⇒ cv = (TARGET − X·(1-α)) / α
+                float cv = (panelTargetLum - xAfterBase * (1f - aFinal)) / aFinal;
+                if (!(cv > 0f)) {
+                    cv = 0f;     // 背景比目标还亮、压不到 ⇒ 霜色到底（面板会略亮于目标）
+                } else if (cv > 1f) {
+                    cv = 1f;
+                }
                 final int veilAdaptive =
                         (Math.round(aFinal * 255f) << 24) | veilRgb(cv);
                 paint.setShader(null);
@@ -840,10 +853,17 @@ public class LiquidGlassDrawable extends Drawable {
         paint.setStyle(Paint.Style.FILL);
     }
 
-    // 【code 997】原 `lum(int)`（Rec.709 感知亮度）已移除 —— 它是「反解霜色方程」的
-    //   配套工具，霜色锁定后不再需要。⚠️ 若将来要恢复按背景亮度自适应，从 git 历史
-    //   取回该方法即可；`FloatingSubtitleView` / `HostBackdrop` 另有一套等价的加权换算，
-    //   与本次改动无关。
+    /**
+     * 【989】一个颜色的感知亮度（Rec.709 加权，0..1）。
+     *
+     * 自适应霜面用它把「薄黑底之后的背景亮度」与「霜色」放进同一条方程里反解霜量
+     * （见 {@link #draw}）。Rec.709 加权（0.2126/0.7152/0.0722）。
+     */
+    private static float lum(int color) {
+        return (0.2126f * ((color >> 16) & 0xFF)
+                + 0.7152f * ((color >> 8) & 0xFF)
+                + 0.0722f * (color & 0xFF)) / 255f;
+    }
 
     /**
      * 【991 / 992】按目标亮度 {@code cv} 生成霜色（RGB，不含 alpha）—— **中性灰**。
@@ -926,7 +946,7 @@ public class LiquidGlassDrawable extends Drawable {
                 return COFF_RIM_TOP;
             case KIND_PANEL:
             default:
-                return tintByEdge(P_RIM_TOP, edgeTopColor);
+                return P_RIM_TOP;
         }
     }
 
@@ -938,41 +958,7 @@ public class LiquidGlassDrawable extends Drawable {
                 return COFF_RIM_BOTTOM;
             case KIND_PANEL:
             default:
-                return tintByEdge(P_RIM_BOTTOM, edgeBottomColor);
-        }
-    }
-
-    /**
-     * 【2.2.12】把边光**按背景边缘色染色** —— 即「边缘光圈的颜色随实时背景走」（C17 那种）。
-     *
-     * ⚠️ 为什么不是"把背景色调淡一点掺进白色"：那样在暗背景上光圈会跟着一起暗下去，
-     *    而 C17 的光圈无论背景明暗都始终是**亮圈**。所以这里只取背景色的**色相**，
-     *    把饱和度抬一点、亮度钉在高位，得到一个"亮而带色"的光圈，再与基础白按
-     *    {@link #EDGE_TINT} 的比例混合（避免过艳）。
-     *
-     * 取不到背景统计（{@code edge == 0}）或系统模糊没生效时**原样返回**（纯白边光），
-     * 所以这条染色在任何情况下都只是"更好看"，不会让面板变得不可读。
-     */
-    private int tintByEdge(int base, int edge) {
-        if (edge == 0) {
-            return base;
-        }
-        try {
-            final float[] hsv = new float[3];
-            android.graphics.Color.colorToHSV(edge | 0xFF000000, hsv);
-            // 【2.2.12b】把色相"提纯"得更狠一点：原来 1.5 倍在低饱和背景上几乎看不出染色。
-            hsv[1] = Math.min(1f, hsv[1] * 1.9f + 0.08f);
-            hsv[2] = Math.max(0.90f, hsv[2]);
-            final int colored = android.graphics.Color.HSVToColor(hsv);
-            final int r = Math.round(((base >> 16) & 0xFF) * (1f - EDGE_TINT)
-                    + ((colored >> 16) & 0xFF) * EDGE_TINT);
-            final int g = Math.round(((base >> 8) & 0xFF) * (1f - EDGE_TINT)
-                    + ((colored >> 8) & 0xFF) * EDGE_TINT);
-            final int b = Math.round((base & 0xFF) * (1f - EDGE_TINT)
-                    + (colored & 0xFF) * EDGE_TINT);
-            return (base & 0xFF000000) | (clamp255(r) << 16) | (clamp255(g) << 8) | clamp255(b);
-        } catch (Throwable t) {
-            return base;
+                return P_RIM_BOTTOM;
         }
     }
 
