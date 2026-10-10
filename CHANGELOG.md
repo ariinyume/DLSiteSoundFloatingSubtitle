@@ -1584,3 +1584,76 @@ versionName 保持 **2.3.0** ✅ **Ari 已真机确认（关闭态卡底间距 +
 `DLsiteFloat-2.3.0-code1004-debug.apk`，5,573,872 B
 sha256 `aee7b0989f30976b4312ae83b1f0c77ee91c138222b4c2e0048fcd4146fe78d4`
 versionName 保持 **2.3.0**、code 1003 → 1004
+
+---
+
+## [2.3.0 / code 1005] — 换作品/换章节：列表整体重建时同样会短暂「无字幕」（2026-10-10）
+
+### 【现象】Ari，附截屏 `Screenshot_2026-10-10-21-42-19` + 日志 `LSPosed_20261010_214410`
+
+上一轮（code 1004）修好「同一列表内换音轨」之后，又抓到**另一个形态**：
+切到另一部作品 / 另一个章节时，插件先把悬浮窗关掉、显示「无字幕」，
+约 25 秒后才自己恢复 —— 而宿主 App 那边一直正常显示字幕。
+
+### 【根因】换作品时播放列表被**整个销毁重建**，选择键在这一段取不到值
+
+真机日志把时间线钉死：
+
+```
+21:41:53.139  statusMap  currentIndex=0 trackCount=0 duration=0.0 idle   ← 列表已销毁
+21:41:53.505  optimized/c0d71242….json 到达（246 cues）                   ← 新轨字幕，仅隔 366ms
+21:41:58.241  statusMap  currentIndex=2 trackCount=8 duration=0.0        ← 新列表首次可读
+21:41:59.654  >>> track changed tc=6 dur=835560 idx=5 -> tc=8 dur=1286040 idx=2 [index-gate]
+21:41:59.654  lastJson=6135ms ago | cues=246 -> SUSPEND … [973 previous-track cues quarantined]
+21:42:04.657  no subtitle json yet -> auto-closed floating window early
+21:42:14.654  [code 960] soft verdict -> display stays cleared（截屏正落在这一段窗口里）
+21:42:24.987  subtitles arrived -> reopen（用户此时已点了下一条音轨）
+```
+
+- code 1004 补的「选择键」由 `(trackCount, currentIndex)` 构成；`trackCount == 0` 时
+  `makeSelection` 只能返回 0（未知）⇒ **那条路在这类场景里根本没有证据可用**。
+- 新旧列表的 `trackCount` 又不同（6 → 8）⇒ 防「跨作品冒充」的安全阀必然不放行
+  （那是刻意设的，不能拆）。
+- 于是这份**新轨**的字幕被判成「上一轨的旧数据」隔离 ⇒ 空窗 25 秒。
+
+旁证：本会话三条 JSON 的「早到量」分别是 6.1s / 6.2s / 5.9s，一一对应换轨通知里的
+idx=2 / idx=3 / idx=5 —— 宿主一直是「用户点击 → 立刻取该轨字幕 → 装载音源 → 约 6 秒后报新索引」。
+
+### 【修法】新增「列表重建窗口」判据：窗口内到达的 JSON 只可能属于新列表
+
+| 窗口 | 起点 | 终点 | 含义 |
+| --- | --- | --- | --- |
+| 🆕 列表重建窗口 | 观察到 `trackCount == 0` | 新的非零 `trackCount` 出现 | 旧列表已不存在，此刻返回的字幕 JSON 只属于**重建后的新列表** |
+
+- `PlayerPositionHook` 的采集条件**去掉「有曲目」**：`trackCount == 0` 的读数照收 ——
+  那条读数是「列表已销毁」的唯一信号。
+- `PlayerSourceHook` 按 `trackCount` 分流：`0` ⇒ 开窗；`> 0` ⇒ 推选择键并关窗。
+  只在**「非零 → 0」的跳变**上开窗 —— 冷启动的空列表不算
+  （本会话 316 条 statusMap 里只有 1 条 `trackCount=0`，正是这次销毁；不分跳变判据就会退化）。
+- 装载 JSON 时同步盖两枚新印章：到达时刻 + 「窗口是否还开着」。
+- `tryResumeFromCache` 增加第三条认领路径：**窗口内到达 + 目标换了列表 + 未超时**
+  ⇒ 直接恢复渲染，日志 `[code 1005] … -> RESUME from cache`。
+
+两道保险：① 目标 `trackCount` 必须与盖章时那份**不同**（相同就交给 code 1004 的选择键）；
+② 从这份 cues 到达到换轨通知不得超过 15 秒（真机实测 6135ms）。
+
+**换轨判据本身仍然一字未改**（还是三元组身份）；980 / 973 / 960 那几轮的机器一件没动。
+
+### 【验证】
+
+- JUnit **46 → 57**（+11 条纯函数黄金向量，取值全部来自本轮真机日志实测数字）
+- 源码层 `tools/verify_1005_src.py`（新增）**52/52**
+- dex 层 `tools/verify_1005.py`（新增，对照 code 1004 包）**50/50，28 个有区分力锚**
+  - 常量层（`dexdump` 字段 `value :`）：`REBUILT_PLAYLIST_CLAIM_MS = 15000`；
+    既有七个时限常量（3500 / 3000 / 15000 / 5000 / 100000 / 10¹² / 1000）一字未动
+  - 按**指令偏移**证「推送早于权威门」：新包 `|008d:` < `|00fe:`
+- 一键全链 `tools/run_all_verify.py` **17/17 + 1 SKIP**
+
+### 【连带修复】
+
+- `tools/verify_1004_src.py` 的 7 条断言随本轮演进更新（三条认领路径 / 三处静默例外 /
+  推送条件去掉「有曲目」 / 版本号改为自洽性检查），项数 70 → 72。
+- 🔴 **新坑**：本仓库 `core.autocrlf=true`，一次 `git rebase` 就把工作区的 `.java`
+  从 LF 换成 CRLF（仓库内其实仍是 LF，`git diff` 完全看不出来）——
+  写死 `\n` 的**跨行判据**当场 `ValueError` 崩掉（不是假 FAIL，是整个脚本中断）。
+  ⇒ 验证脚本读源码一律先**把行尾归一化成 LF**（与铁律「判据先归一化再匹配」同一病根）。

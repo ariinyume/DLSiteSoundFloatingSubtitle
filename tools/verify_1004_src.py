@@ -49,7 +49,18 @@ def check(label, ok, detail=''):
 
 
 def read(p):
-    return io.open(p, encoding='utf-8', newline='').read()
+    """读源码，并**把行尾统一成 LF** —— 判据不能被磁盘上的 CRLF/LF 风格左右（铁律 53）。
+
+    ⚠️ 真踩过（code 1005 轮）：本仓库 `core.autocrlf=true`，而上一轮末尾做过一次
+       `git rebase` ⇒ 工作区里的 `PlayerSourceHook.java` 被**重新检出成纯 CRLF**，
+       而本脚本里 `notifyTrackChanged` 那个跨行签名 needle 写的是 `\\n`
+       ⇒ `str.index(sig)` 抛 `ValueError`，**整个脚本崩掉**（一键全链里表现为「脚本异常」，
+       而不是假 FAIL，更不容易被注意到）。仓库内的文件其实仍是 LF（git 会按 autocrlf
+       在提交时规范化，所以 `git diff --stat` 一直很干净）—— 也就是说：**磁盘形态会漂，
+       判据不能依赖它**。顺带一提，这条与铁律 53 是同一个病根：判据的「字符级形态」
+       比「语义」脆弱。
+    """
+    return io.open(p, encoding='utf-8', newline='').read().replace('\r\n', '\n')
 
 
 def strip_comments(src):
@@ -205,11 +216,25 @@ def main():
                         repoc) is not None)
 
     body = strip_comments(method_body(repo, 'public void noteObservedPlaylistSelection('))
-    stmts = [s.strip() for s in body[body.index('{') + 1:body.rindex('}')].split(';')
-             if s.strip()]
-    check('★ noteObservedPlaylistSelection 是**纯写入**（体内只有一句赋值，无任何副作用）',
-          len(stmts) == 1 and stmts[0] == 'observedPlaylistSelection = selection',
-          '体内语句 %d 条：%s' % (len(stmts), stmts))
+    # 【code 1005 起】本体多了「0 值早退」与「关窗」两步 ⇒ 不再是「体内只有一句赋值」。
+    #   本意（**不触发任何挂起 / 裁决 / UI 状态变更**）没变，判据改为盯「只碰哪几个字段」：
+    #   写入的字段必须恰好是「选择键 + 重建窗口」这两个证据字段。
+    written = set(re.findall(r'\b([a-zA-Z][A-Za-z0-9]*)\s*=(?!=)', body))
+    check('★ noteObservedPlaylistSelection 是**纯写入**（只碰选择键与重建窗口两个证据字段）',
+          written == {'observedPlaylistSelection', 'playlistRebuiltAtMs'},
+          '写入字段 %s' % sorted(written))
+    check('★ 且不碰任何挂起/裁决/UI/主人印章状态（本意：它只是证据写入点，不是状态机入口）',
+          not (written & {'pendingTrackDecision', 'pendingSoftSuspend', 'softNoSubtitles',
+                          'previousTrackCuesHidden', 'currentSubtitles', 'floatingWindowOpen',
+                          'cuesOwnerIdentity', 'cuesOwnerSelection', 'cuesLoadedAheadOfIdentity',
+                          'cuesArrivedDuringRebuild', 'observedPlaylistIdentity'}),
+          '越界字段 %s' % sorted(written & {'pendingTrackDecision', 'pendingSoftSuspend',
+                                          'softNoSubtitles', 'previousTrackCuesHidden',
+                                          'currentSubtitles', 'floatingWindowOpen',
+                                          'cuesOwnerIdentity', 'cuesOwnerSelection',
+                                          'cuesLoadedAheadOfIdentity',
+                                          'cuesArrivedDuringRebuild',
+                                          'observedPlaylistIdentity'}))
     check('noteObservedPlaylistSelection 是 public', 'public void noteObservedPlaylistSelection' in repoc)
 
     body = strip_comments(method_body(repo, 'public boolean ownsCuesForSelection('))
@@ -239,10 +264,13 @@ def main():
           'newIdentity != 0L && newIdentity == cuesOwnerIdentity' in safe)
     check('★ tryResumeFromCache 新增 bySelection（code 1004 认领）',
           'boolean bySelection = ownsCuesForSelection(newSelection);' in safe)
-    check('两条路径都认不出时立即返回 false（不进挂起）',
-          'if (!byIdentity && !bySelection)' in safe and 'return false;' in safe)
-    check('★ 日志码按路径区分：byIdentity ⇒ [code 980]，否则 ⇒ [code 1004]',
-          'byIdentity ? "[code 980]" : "[code 1004]"' in safe)
+    check('所有认领路径都认不出时立即返回 false（不进挂起）',
+          '!byIdentity' in safe and '!bySelection' in safe and '!byRebuild' in safe
+          and 'return false;' in safe)
+    check('★ 日志码按路径区分：byIdentity ⇒ [code 980]，bySelection ⇒ [code 1004]',
+          'byIdentity ? "[code 980]" : bySelection ? "[code 1004]"' in safe)
+    check('★ 第三条路径（code 1005 列表重建窗口）有自己的日志码，不借用 1004 的',
+          '"[code 1005]"' in safe)
     check('认领日志含真机可核对的证据字段（cues / pos / RESUME from cache）',
           'RESUME from cache' in safe and '" | cues="' in safe and '" | pos="' in safe)
     check('★ 无 cues 时不认领（印章与数据同生同灭）',
@@ -295,8 +323,8 @@ def main():
     check('★ 源码层：选择键推送写在权威门 `if (!authoritative)` **之前**',
           i_push >= 0 and i_gate >= 0 and i_push < i_gate,
           'push@%d gate@%d' % (i_push, i_gate))
-    check('推送条件 = 是列表 + 有曲目 + 未作废 + 序号可读（4 个条件一个不少）',
-          'isPlaylistMap && trackCount > 0 && !halted && curIdx >= 0' in cons)
+    check('推送条件 = 是列表 + 未作废 + 序号可读（3 个条件；**不再**要求「有曲目」）',
+          'isPlaylistMap && !halted && curIdx >= 0' in cons)
     check('★ curIdx 只读一次并被后面的 ④ 段复用（避免同一帧两次取值不一致）',
           pos.count('m.get("currentIndex")') == 1 and cons.count('curIdx') >= 3,
           'm.get 次数=%d curIdx 用点=%d' % (pos.count('m.get("currentIndex")'), cons.count('curIdx')))
@@ -332,9 +360,10 @@ def main():
           in srcc)
     st = strip_comments(method_body(
         src, 'private static boolean settleChange(long from, long to, long toSelection, long now)'))
-    check('★ 静默例外同时问 ownsCuesFor 与 ownsCuesForSelection（两代认领都放行）',
+    check('★ 静默例外问满三代认领：ownsCuesFor / ownsCuesForSelection / ownsCuesForRebuiltPlaylist',
           'ownsCuesFor(to)' in st and 'ownsCuesForSelection(toSelection)' in st
-          and re.search(r'boolean ours = [\s\S]{0,200}?\|\|[\s\S]{0,200}?;', st) is not None)
+          and 'ownsCuesForRebuiltPlaylist(to, now)' in st
+          and re.search(r'boolean ours = [\s\S]{0,400}?\|\|[\s\S]{0,400}?;', st) is not None)
     check('放行后让静默窗失效（否则紧接的反向同对会被再静默 20s）',
           'sNotifiedMs = 0L;' in st)
     check('★ 未认领时仍然照旧静默（return false，行为一字未变）',
@@ -362,15 +391,27 @@ def main():
                         r'boolean indexVerified, long identity\)', srcc))
 
     # ══════════════ ⑤ 版本四处 + 横幅纪律 ══════════════
-    check('appVersionCode = 1004', re.search(r"def appVersionCode = 1004\b", gradle) is not None)
+    # 【随轮次推进】本脚本不再钉死「本轮的 code 是几」——那会在每一轮变红。
+    #   改为守**自洽性**：appVersionCode 必须 ≥ 1004（本脚本是 1004 起引入的），
+    #   且常开横幅里的 code 必须与它一致（防手滑只改一处）。
+    #   「本轮 code 具体等于几」由该轮自己的 verify_NNNN_src.py 负责。
+    m_ver = re.search(r'def appVersionCode = (\d+)', gradle)
+    m_ban = re.search(
+        r'XposedCompat\.log\("\[DLsiteSoundFloat\] ==== BUILD [^"]*? / code (\d+)"\);', mod)
+    check('版本自洽：appVersionCode ≥ 1004，且常开横幅里的 code 与它一致',
+          m_ver is not None and m_ban is not None
+          and int(m_ver.group(1)) >= 1004 and m_ver.group(1) == m_ban.group(1),
+          'gradle=%s banner=%s' % (m_ver.group(1) if m_ver else '?',
+                                   m_ban.group(1) if m_ban else '?'))
     check("appVersionCodeLabel = '1008.25'",
           re.search(r"def appVersionCodeLabel = '1008\.25'", gradle) is not None)
     check("appVersionName = '2.3.0'",
           re.search(r"def appVersionName = '2\.3\.0'", gradle) is not None)
     check("appVersionTag = '2.3.0'",
           re.search(r"def appVersionTag = '2\.3\.0'", gradle) is not None)
-    check('常开横幅 = BUILD 2.3.0 / code 1004（版本核验锚点）',
-          'XposedCompat.log("[DLsiteSoundFloat] ==== BUILD 2.3.0 / code 1004");' in mod)
+    check('常开横幅格式稳定：==== BUILD <versionName> / code <code>（装机核对的唯一锚）',
+          re.search(r'XposedCompat\.log\("\[DLsiteSoundFloat\] '
+                    r'==== BUILD \d+\.\d+\.\d+ / code \d+"\);', mod) is not None)
     banners = re.findall(r'XposedCompat\.log\("\[DLsiteSoundFloat\] ==== BUILD ([^"]*)"',
                          mod)
     check('★ 常开横幅只有一行（历史段全部归入调试开关）', len(banners) == 1, str(banners))

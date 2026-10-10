@@ -797,4 +797,126 @@ public class GoldenVectorTest {
         assertTrue("换轨通知到达 ⇒ 认领这份 cues（不再变「无字幕」）",
                 PlaylistKey.cuesBelongToTarget(ahead, selectionAtLoad, targetSelection));
     }
+
+    // ────────────────────────────────────────────────────────────────────
+    // PlaylistKey（code 1005：换作品/换章节时列表整体重建 → 插件短暂「无字幕」的根修）
+    //
+    // 真机（LSPosed_20261010_214410，截屏 2026-10-10-21-42-19）：
+    //   21:41:53.139  statusMap  currentIndex=0 trackCount=0 duration=0.0 idle  ← 列表销毁
+    //   21:41:53.505  optimized/c0d71242….json 到达（新轨 idx=2 的字幕，仅隔 366ms）
+    //   21:41:58.241  statusMap  currentIndex=2 trackCount=8 duration=0.0       ← 新列表首次可读
+    //   21:41:59.654  >>> track changed  tc=6 dur=835560 idx=5 -> tc=8 dur=1286040 idx=2
+    //                 | lastJson=6135ms ago -> SUSPEND … [973 previous-track cues quarantined]
+    // ────────────────────────────────────────────────────────────────────
+
+    /** 真机两代列表的身份键（旧：六轨 835.56s 第 5 首；新：八轨 1286.04s 第 2 首）。 */
+    private static final long ID_OLD_LIST = 6000835560005L;
+    private static final long ID_NEW_LIST = 8001286040002L;
+
+    /** 真机实测：这份 JSON 比换轨通知早到 6135ms（列表重建 + 音源装载都比单纯换轨慢）。 */
+    private static final long REAL_1005_JSON_LEAD_MS = 6135L;
+
+    /** 认领时限（与 {@code SubtitleRepository.REBUILT_PLAYLIST_CLAIM_MS} 同值）。 */
+    private static final long CLAIM_MS = 15000L;
+
+    /** 时钟基准 —— 只有相对差有意义，取个远离 0 的值以免和「未知(0)」混淆。 */
+    private static final long T0 = 1_000_000L;
+
+    /** 身份键分量拆分对得上真机读数（tc / durMs / idx 三项互不重叠）。 */
+    @Test
+    public void identityKey_realDevice1005Values() {
+        assertEquals(6, PlaylistKey.identityTrackCount(ID_OLD_LIST));
+        assertEquals(5, PlaylistKey.identityIndex(ID_OLD_LIST));
+        assertEquals(8, PlaylistKey.identityTrackCount(ID_NEW_LIST));
+        assertEquals(2, PlaylistKey.identityIndex(ID_NEW_LIST));
+    }
+
+    /** 真机那一份：窗口内到达 + 换了列表（6→8）+ 6135ms ≤ 15000ms ⇒ 认领。 */
+    @Test
+    public void rebuiltPlaylist_claimsJsonArrivedInWindow() {
+        assertTrue(PlaylistKey.cuesBelongToRebuiltPlaylist(
+                true, ID_NEW_LIST, ID_OLD_LIST,
+                T0, T0 + REAL_1005_JSON_LEAD_MS, CLAIM_MS));
+    }
+
+    /** 没观察到「列表归零」⇒ 这条判据无从谈起（退回旧行为：隔离 + 等宿主重发）。 */
+    @Test
+    public void rebuiltPlaylist_noWhenNotArrivedDuringRebuild() {
+        assertFalse(PlaylistKey.cuesBelongToRebuiltPlaylist(
+                false, ID_NEW_LIST, ID_OLD_LIST,
+                T0, T0 + REAL_1005_JSON_LEAD_MS, CLAIM_MS));
+    }
+
+    /** 同一份列表（曲目数相同）⇒ 不是「重建」，交给 code 1004 的选择键判。 */
+    @Test
+    public void rebuiltPlaylist_noOnSameTrackCount() {
+        assertFalse("同一列表内换序号（6→6）不算重建",
+                PlaylistKey.cuesBelongToRebuiltPlaylist(
+                        true, 6000944784003L, ID_OLD_LIST, T0, T0 + 1000L, CLAIM_MS));
+    }
+
+    /** 目标身份未知（老信号路径）⇒ 不认领。 */
+    @Test
+    public void rebuiltPlaylist_noWhenNewIdentityUnknown() {
+        assertFalse(PlaylistKey.cuesBelongToRebuiltPlaylist(
+                true, 0L, ID_OLD_LIST, T0, T0 + 1000L, CLAIM_MS));
+    }
+
+    /** 目标身份里曲目数为 0（非列表身份）⇒ 不认领。 */
+    @Test
+    public void rebuiltPlaylist_noWhenNewTrackCountZero() {
+        long identityWithZeroTc = 1_286_040_000L + 2L;      // tc=0 ⇒ identityTrackCount == 0
+        assertEquals(0, PlaylistKey.identityTrackCount(identityWithZeroTc));
+        assertFalse(PlaylistKey.cuesBelongToRebuiltPlaylist(
+                true, identityWithZeroTc, ID_OLD_LIST, T0, T0 + 1000L, CLAIM_MS));
+    }
+
+    /** 换轨通知迟到超过时限 ⇒ 放弃认领（防陈旧印章被无关换轨错误兑现）。 */
+    @Test
+    public void rebuiltPlaylist_noWhenTooLate() {
+        assertFalse(PlaylistKey.cuesBelongToRebuiltPlaylist(
+                true, ID_NEW_LIST, ID_OLD_LIST, T0, T0 + 16000L, CLAIM_MS));
+    }
+
+    /** 时限边界：恰好 15000ms 仍算认领（闭区间），多 1ms 就不算。 */
+    @Test
+    public void rebuiltPlaylist_boundaryAtTolerance() {
+        assertTrue(PlaylistKey.cuesBelongToRebuiltPlaylist(
+                true, ID_NEW_LIST, ID_OLD_LIST, T0, T0 + CLAIM_MS, CLAIM_MS));
+        assertFalse(PlaylistKey.cuesBelongToRebuiltPlaylist(
+                true, ID_NEW_LIST, ID_OLD_LIST, T0, T0 + CLAIM_MS + 1L, CLAIM_MS));
+    }
+
+    /** 时钟回退 / 到达时刻未知 ⇒ 不认领（防御式，绝不凭坏数据盖章）。 */
+    @Test
+    public void rebuiltPlaylist_noOnBadClock() {
+        assertFalse("now 早于到达时刻（时钟回退）",
+                PlaylistKey.cuesBelongToRebuiltPlaylist(
+                        true, ID_NEW_LIST, ID_OLD_LIST, T0 + 1000L, T0, CLAIM_MS));
+        assertFalse("到达时刻未知(0)",
+                PlaylistKey.cuesBelongToRebuiltPlaylist(
+                        true, ID_NEW_LIST, ID_OLD_LIST, 0L, T0, CLAIM_MS));
+    }
+
+    /** 盖章时身份未知（JSON 比任何权威读数都早）⇒ 仍然认领：它不可能是「上一轨」的。 */
+    @Test
+    public void rebuiltPlaylist_claimsWhenOwnerIdentityUnknown() {
+        assertTrue(PlaylistKey.cuesBelongToRebuiltPlaylist(
+                true, ID_NEW_LIST, 0L, T0, T0 + 1000L, CLAIM_MS));
+    }
+
+    /** 端到端复演真机那 6.1 秒：列表销毁 → JSON 到达 → 新列表可读 → 通知 → 认领。 */
+    @Test
+    public void realDevice1005Chain_claimsJsonOfTheRebuiltPlaylist() {
+        // 装载那一刻的印章还是**旧列表**（21:41:53.505 时新列表还没报出来）
+        assertTrue("换轨通知到达 ⇒ 认领这份 cues（不再空窗 25 秒、不再被 973 隔离）",
+                PlaylistKey.cuesBelongToRebuiltPlaylist(
+                        true, ID_NEW_LIST, ID_OLD_LIST,
+                        T0, T0 + REAL_1005_JSON_LEAD_MS, CLAIM_MS));
+        // 反面：若没观察到列表归零（= 这条新判据不存在时的旧世界），同样输入必须不认领
+        assertFalse("没有「列表重建窗口」这条证据时，旧判据确实救不了它（正是本轮 bug）",
+                PlaylistKey.cuesBelongToRebuiltPlaylist(
+                        false, ID_NEW_LIST, ID_OLD_LIST,
+                        T0, T0 + REAL_1005_JSON_LEAD_MS, CLAIM_MS));
+    }
 }

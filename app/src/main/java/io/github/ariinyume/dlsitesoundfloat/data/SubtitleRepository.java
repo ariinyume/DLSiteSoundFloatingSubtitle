@@ -286,6 +286,48 @@ public class SubtitleRepository {
      * 只在**同一列表内换序号**时为 true；跨作品（序号相同）一律 false，避免拿上一部作品的字幕冒充。
      */
     private volatile boolean cuesLoadedAheadOfIdentity = false;
+    /**
+     * 【code 1005】**列表重建窗口**的起点 —— 最近一次观察到宿主把播放列表整个销毁
+     * （{@code trackCount == 0}）的时刻（{@code uptimeMillis}；0 = 不在窗口内）。
+     *
+     * <p>── 为什么需要它（Ari 2026-10-10 21:42 的第二例「无字幕」）──
+     * 上一次（code 1004）修的是**同一列表内换序号**；这一次是**换作品/章节**：
+     * <pre>
+     *   21:41:53.139  statusMap: currentIndex=0 trackCount=0 duration=0.0 idle   ← 列表已销毁
+     *   21:41:53.505  optimized/c0d71242….json 到达（新轨 idx=2 的字幕，仅隔 366ms）
+     *   21:41:58.241  statusMap: currentIndex=2 trackCount=8 duration=0.0        ← 新列表第一次可读
+     *   21:41:59.654  >>> track changed tc=6 dur=835560 idx=5 -> tc=8 dur=1286040 idx=2
+     *                 | lastJson=6135ms ago -> SUSPEND … [973 previous-track cues quarantined]
+     * </pre>
+     * {@code trackCount == 0} ⇒ 选择键只能取到 0（未知，见 {@link PlaylistKey#makeSelection}），
+     * 连 code 1004 那条路都没有证据可用；而新旧列表 {@code trackCount} 不同（6→8）
+     * ⇒ {@code selectionAheadOfIdentity} 必然 false（那是防跨作品冒充的安全阀，不能拆）。
+     * ⇒ 这份**新轨**字幕被判「上一轨旧数据」隔离 ⇒ 空窗 25s。
+     *
+     * <p>── 窗口的定义与关闭 ──
+     * 起点 = 观察到 {@code trackCount == 0}（{@link #notePlaylistRebuilt}）；
+     * 终点 = 新的非零 {@code trackCount} 出现（{@link #noteObservedPlaylistSelection} 里关窗）。
+     * 这段窗口里宿主**旧列表已经不存在了**，此刻返回的字幕 JSON 只可能属于**重建后的新列表**。
+     */
+    private volatile long playlistRebuiltAtMs = 0L;
+    /**
+     * 【code 1005】手上这份 cues 是否在「列表重建窗口」内到达（见 {@link #playlistRebuiltAtMs}）。
+     *
+     * <p>为 true ⇒ 换轨通知到达时可以直接认领给新列表，不必等宿主重发（它不会重发）。
+     * 与 {@link #cuesOwnerIdentity} 同生共死（同一次加载盖章、硬裁决一起清）。
+     */
+    private volatile boolean cuesArrivedDuringRebuild = false;
+    /**
+     * 【code 1005】手上这份 cues 的到达时刻（{@code uptimeMillis}），给重建认领加一道**时间上限**
+     * （见 {@link PlaylistKey#cuesBelongToRebuiltPlaylist}）—— 防止陈旧印章被后来的无关换轨错误兑现。
+     */
+    private volatile long cuesLoadedAtMs = 0L;
+    /**
+     * 【code 1005】重建窗口内到达的 cues 的最长认领时限：真机实测这份 JSON 比换轨通知早到
+     * <b>6135ms</b>（列表重建 + 音源装载都比单纯换轨慢）。取 15s 与软挂起窗
+     * （{@code NO_SUBTITLE_GRACE_MS_CACHED}）同量级 —— 超过它，等下去也不会有结果。
+     */
+    private static final long REBUILT_PLAYLIST_CLAIM_MS = 15000L;
 
     // ---- 播放结束 → 自动关窗（v29）----
     /** Media3 {@code Player} 的播放状态取值（与 App 内部常量对齐）。 */
@@ -516,6 +558,14 @@ public class SubtitleRepository {
             cuesOwnerSelection = observedPlaylistSelection;
             cuesLoadedAheadOfIdentity = PlaylistKey.selectionAheadOfIdentity(
                     observedPlaylistSelection, observedPlaylistIdentity);
+            // 【code 1005】再记两件事，供「换作品（列表整体重建）」场景下的归属判定：
+            //   ① 到达时刻 —— 给认领加时间上限，防陈旧印章被后来的无关换轨错误兑现；
+            //   ② 到达时「列表重建窗口」是否还开着（宿主报过 trackCount==0 且新列表尚未报出）。
+            //      窗口内到达 ⇒ 旧列表已经不存在 ⇒ 这份 JSON 只可能属于**重建后的新列表**。
+            //      真机 21:41:53.139（trackCount=0）→ 21:41:53.505（这份 JSON）→ 21:41:58.241
+            //      才报出新列表；若没有这条判据，6.1s 后的换轨通知会把它当「上一轨旧数据」隔离。
+            cuesLoadedAtMs = SystemClock.uptimeMillis();
+            cuesArrivedDuringRebuild = playlistRebuiltAtMs != 0L;
             // v18：重建「字幕行精确匹配集」，供 isKnownSubtitleText() 做 O(1) 精确判定
             subtitleLineSet.clear();
             for (SubtitleCue c : newCues) {
@@ -839,7 +889,48 @@ public class SubtitleRepository {
      * 宿主切音轨时 {@code currentIndex} 先翻、时长后到，新轨字幕 JSON 就落在中间。
      */
     public void noteObservedPlaylistSelection(long selection) {
+        if (selection <= 0L) {
+            // 非零 trackCount 才会得到非 0 的选择键；真收到 0 就当作「无信息」，不改窗口。
+            return;
+        }
         observedPlaylistSelection = selection;
+        // 【code 1005】新的非零 trackCount 出现 ⇒ 重建窗口关闭（见 playlistRebuiltAtMs）。
+        //   只关窗、**不**动已经盖在 cues 上的 cuesArrivedDuringRebuild ——
+        //   那份 JSON 是在窗口内到达的，这条证据必须留到换轨通知来兑现。
+        if (playlistRebuiltAtMs != 0L) {
+            playlistRebuiltAtMs = 0L;
+        }
+    }
+
+    /**
+     * 【code 1005】由 {@code PlayerSourceHook} 在读到宿主把播放列表**整个销毁**
+     * （{@code trackCount == 0}）时调用 —— 打开「列表重建窗口」（见 {@link #playlistRebuiltAtMs}）。
+     *
+     * <p>这不是状态变更，只是记一个时刻：宿主切作品/章节时列表会被销毁重建，
+     * 重建期任何键都读不到，而新轨的字幕 JSON 恰恰落在这一段（真机 21:41:53.139 → 21:41:53.505，
+     * 只隔 366ms）。窗口内到达的 JSON 只可能属于重建后的新列表。
+     *
+     * <p>无锁写（volatile）：会被 {@code PlayerPositionHook} 的 statusMap 路径高频调用。
+     */
+    public void notePlaylistRebuilt(String where) {
+        if (playlistRebuiltAtMs != 0L) {
+            return;                     // 窗口已开，保留首次时刻
+        }
+        playlistRebuiltAtMs = SystemClock.uptimeMillis();
+        XposedCompat.log("[DLsiteSoundFloat] [code 1005] playlist destroyed (trackCount=0) via "
+                + where + " -> rebuild window OPEN (a json arriving now belongs to the NEXT playlist)");
+    }
+
+    /**
+     * 【code 1005】该身份是不是「列表重建窗口内到达的那份 cues」的兑现对象
+     * （= 列表重建后新轨的身份）—— 供去抖闸门与 {@link #tryResumeFromCache} 共用。
+     *
+     * <p>无锁读（三个字段都是 volatile）：会被 {@code PlayerSourceHook} 的去抖闸门高频调用。
+     */
+    public boolean ownsCuesForRebuiltPlaylist(long newIdentity, long nowMs) {
+        return PlaylistKey.cuesBelongToRebuiltPlaylist(
+                cuesArrivedDuringRebuild, newIdentity, cuesOwnerIdentity,
+                cuesLoadedAtMs, nowMs, REBUILT_PLAYLIST_CLAIM_MS);
     }
 
     /**
@@ -887,16 +978,28 @@ public class SubtitleRepository {
         //   真机 2026-10-10 18:41:04.429 就是这条：84 cues 在 18:40:58.556 到手（身份印章还是 idx=1），
         //   换轨通知 5.9s 后才到（idx=3）——旧判据只会把它隔离成「上一轨的旧数据」⇒ 永久「无字幕」。
         boolean bySelection = ownsCuesForSelection(newSelection);
-        if (!byIdentity && !bySelection) {
+        // 【code 1005】第三条认领路径：**换作品/换章节**时宿主把整个播放列表销毁重建，
+        //   重建期报 trackCount==0 ⇒ 选择键无从取值（只能取到 0），code 1004 那条路没证据可用；
+        //   而新旧列表的 trackCount 不同，selectionAheadOfIdentity 也必然 false。
+        //   真机 21:41:53.139（trackCount=0）→ 21:41:53.505 新轨 JSON 到达 → 21:41:58.241 新列表才可读
+        //   → 21:41:59.654 换轨通知，lastJson=6135ms 远超 PRELOAD_TOLERANCE_MS(3500) ⇒ 被判「上一轨旧数据」。
+        //   窗口判据：这份 cues 到达时「列表重建窗口」还开着 ⇒ 旧列表已不存在 ⇒ 它属于新列表。
+        boolean byRebuild = ownsCuesForRebuiltPlaylist(newIdentity, SystemClock.uptimeMillis());
+        if (!byIdentity && !bySelection && !byRebuild) {
             return false;
         }
-        final String code = byIdentity ? "[code 980]" : "[code 1004]";
+        final String code = byIdentity ? "[code 980]" : bySelection ? "[code 1004]" : "[code 1005]";
         final String why = byIdentity
                 ? " -> BACK to the playlist these cues belong to"
-                : " -> cues were already the NEW track's (selection ran ahead of identity)";
+                : bySelection
+                ? " -> cues were already the NEW track's (selection ran ahead of identity)"
+                : " -> the playlist was rebuilt (trackCount went to 0) and this json arrived"
+                        + " inside that window, so it belongs to the NEW playlist";
         final String how = byIdentity
                 ? "host reuses its own json, no need to wait"
-                : "json arrived before the switch was reported, no need to wait";
+                : bySelection
+                ? "json arrived before the switch was reported, no need to wait"
+                : "json arrived while the playlist was being rebuilt, no need to wait";
         int cueCount;
         long posNow;
         boolean reopened = false;
@@ -931,6 +1034,9 @@ public class SubtitleRepository {
             }
             // 屏上镜像清掉：本轨内容由 cue 路径负责，下一帧就是正确的行
             currentSubtitles = new ArrayList<>();
+            // 【code 1005】重建窗口的认领是**一次性**的：兑现后就把旗标落下，
+            //   否则同一份印章会在后续某次无关换轨上被再次兑现（渲染出不属于那轨的内容）。
+            cuesArrivedDuringRebuild = false;
             if (autoClosedForNoSubtitle) {
                 autoClosedForNoSubtitle = false;
                 floatingWindowOpen = true;
@@ -1083,6 +1189,9 @@ public class SubtitleRepository {
                         // 【code 1004】选择键印章与「选择跑在身份前面」同生共死：数据没了就没有归属可谈。
                         cuesOwnerSelection = 0L;
                         cuesLoadedAheadOfIdentity = false;
+                        // 【code 1005】重建窗口的印章同样与数据同生共死（数据没了就没有归属可谈）。
+                        cuesArrivedDuringRebuild = false;
+                        cuesLoadedAtMs = 0L;
                         currentSubtitles = new ArrayList<>();
                         currentCueIndex = -1;
                         lastScannedSecond = Integer.MIN_VALUE;

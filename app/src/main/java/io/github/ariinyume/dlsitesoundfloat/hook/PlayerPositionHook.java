@@ -285,9 +285,15 @@ public class PlayerPositionHook {
         //    没有这条选择键，数据层就给这份新轨的 JSON 盖上上一轨的印章，
         //    5.9s 后的换轨通知再把它当「旧数据」隔离 ⇒ 永久「无字幕」（用户报的 bug）。
         // 只写一个 volatile 字段，不触发任何状态变更（与 noteObservedPlaylistIdentity 同理）。
+        //
+        // 【code 1005】这里**不**要求 trackCount > 0：宿主换作品/章节时会把播放列表整个销毁重建，
+        //   重建期报的正是 `trackCount == 0`（真机 21:41:53.139 `currentIndex=0 trackCount=0
+        //   duration=0.0 idle`）。那条读数本身没有选择键可推，但它是「旧列表已不存在」的**唯一信号** ——
+        //   而新轨的字幕 JSON 就落在它之后 366ms（21:41:53.505）。PlayerSourceHook 会按 trackCount
+        //   分流：0 ⇒ 开「列表重建窗口」，> 0 ⇒ 推选择键并关窗。
         Object idxObj = m.get("currentIndex");
         int curIdx = idxObj instanceof Number ? ((Number) idxObj).intValue() : -1;
-        if (isPlaylistMap && trackCount > 0 && !halted && curIdx >= 0) {
+        if (isPlaylistMap && !halted && curIdx >= 0) {
             PlayerSourceHook.onPlaylistSelectionFromStatusMap(trackCount, curIdx, where);
         }
 

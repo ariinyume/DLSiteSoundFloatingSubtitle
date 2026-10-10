@@ -367,9 +367,35 @@ public class PlayerSourceHook {
      * **之前** —— 装载期那些 {@code duration == 0} 的读数也照样推。
      * 那正是新轨字幕 JSON 到达的时刻（真机实测早了 165ms），没有它数据层就认不出这份 JSON 的归属。
      */
+    /**
+     * 【code 1005】最近一次读到的**非零** {@code trackCount}（0 = 本次会话还没读到活跃列表）。
+     *
+     * <p>只用来分辨「列表真的被销毁重建」与「本来就是空列表」：宿主换作品/章节时，
+     * 旧列表（真机 {@code 11b202d}，262 次读数全是 {@code tc=6 idx=5}）会被一个新实例
+     * （真机 {@code 1aacba9}）取代，而新实例**第一次报到就是 {@code trackCount=0}**。
+     * 只有「之前确实有过非零列表」时，那条 0 才算「销毁」（见
+     * {@link #onPlaylistSelectionFromStatusMap}）—— 否则 App 冷启动时的空列表也会开窗。
+     */
+    private static volatile int sLastNonZeroTrackCount = 0;
+
     public static void onPlaylistSelectionFromStatusMap(int trackCount, int idx, String where) {
-        SubtitleRepository.getInstance().noteObservedPlaylistSelection(
-                PlaylistKey.makeSelection(trackCount, idx));
+        SubtitleRepository repo = SubtitleRepository.getInstance();
+        if (trackCount <= 0) {
+            // 【code 1005】宿主换作品/章节时把播放列表整个销毁重建，重建期报 trackCount == 0。
+            //   这时没有选择键可推（makeSelection 只能返回 0），但这条读数本身是关键信号：
+            //   旧列表已经不存在了 ⇒ 打开「列表重建窗口」，之后到达的字幕 JSON 只可能属于新列表。
+            //   真机 21:41:53.139（trackCount=0）→ 21:41:53.505 新轨 JSON 到达（仅隔 366ms）
+            //   → 21:41:58.241 新列表才第一次可读（tc=8 idx=2）。
+            //
+            //   只在「非零 → 0」的跳变上开窗：本会话 316 条 statusMap 里只有 1 条 trackCount=0，
+            //   正是这一次销毁；若不分跳变，冷启动的空列表读数也会开窗，判据就退化了。
+            if (sLastNonZeroTrackCount > 0) {
+                repo.notePlaylistRebuilt(where);
+            }
+            return;
+        }
+        sLastNonZeroTrackCount = trackCount;
+        repo.noteObservedPlaylistSelection(PlaylistKey.makeSelection(trackCount, idx));
     }
 
     /**
@@ -445,7 +471,11 @@ public class PlayerSourceHook {
             // 【code 1004】同一个例外也适用于「本次换轨的目标正是宿主刚为新轨取回的那份 cues」
             //   （选择键认领）—— 同样没有裁决窗要保护，硬静默只会把「无字幕」白挂 20s。
             boolean ours = SubtitleRepository.getInstance().ownsCuesFor(to)
-                    || SubtitleRepository.getInstance().ownsCuesForSelection(toSelection);
+                    || SubtitleRepository.getInstance().ownsCuesForSelection(toSelection)
+                    // 【code 1005】换作品/章节时列表整体重建，选择键取不到值 ⇒ 前两条都认不出来；
+                    //   而「重建窗口内到达的那份 cues」正是新列表的字幕（真机 21:41:53.505 那份）。
+                    || SubtitleRepository.getInstance()
+                            .ownsCuesForRebuiltPlaylist(to, now);
             if (ours) {
                 dbg("change " + from + "->" + to
                         + " back to the playlist our cues belong to (or cues already the new"

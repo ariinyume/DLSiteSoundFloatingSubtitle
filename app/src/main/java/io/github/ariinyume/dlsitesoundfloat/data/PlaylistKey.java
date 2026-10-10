@@ -66,6 +66,13 @@ package io.github.ariinyume.dlsitesoundfloat.data;
  *
  * <p>本类**只做纯算术**：不持有任何状态、不读不写任何字段、无 Android 依赖 ⇒ 可单测
  * （见 {@code GoldenVectorTest} 里的真机黄金向量）。
+ *
+ * <h3>── 【code 1005】选择键也失效的那一半：换作品 ──</h3>
+ * {@code Ari 2026-10-10 21:42} 又报了一次同样的现象，但这次是**切作品/章节**：
+ * 宿主把播放列表整个销毁重建，重建期报 {@code trackCount == 0}（选择键无法取值），
+ * 而新轨的 JSON 恰恰落在「列表已销毁、新列表还没报出来」的那 4.7 秒里。
+ * 补上的判据是{@link #cuesBelongToRebuiltPlaylist 列表重建窗口}：从 {@code trackCount == 0}
+ * 到新的非零 {@code trackCount} 之间到达的 JSON，只可能属于重建后的新列表。
  */
 public final class PlaylistKey {
 
@@ -152,5 +159,63 @@ public final class PlaylistKey {
         return loadedAheadOfIdentity
                 && targetSelection > 0L
                 && targetSelection == cuesOwnerSelection;
+    }
+
+    /**
+     * 【code 1005】手上的 cues 是不是**列表重建后的新轨**的字幕 —— 第二条认领判据。
+     *
+     * <h3>── 为什么 1004 的选择键在换作品时会失效 ──</h3>
+     * 宿主切<b>作品 / 章节</b>时会把播放列表整个销毁重建，重建过程中会报出
+     * {@code trackCount == 0}：
+     * <pre>
+     *   21:41:53.139  statusMap: currentIndex=0 trackCount=0 duration=0.0 idle   ← 列表已销毁
+     *   21:41:53.505  optimized/c0d71242….json 到达（= 新轨 idx=2 的字幕，仅隔 366ms）
+     *   21:41:58.241  statusMap: currentIndex=2 trackCount=8 duration=0.0        ← 新列表第一次可读
+     *   21:41:59.654  >>> track changed  tc=6 dur=835560 idx=5 -> tc=8 dur=1286040 idx=2
+     *                 | lastJson=6135ms ago -> SUSPEND … [973 previous-track cues quarantined]
+     * </pre>
+     * {@code trackCount == 0} ⇒ {@link #makeSelection} 只能返回 {@code 0}（未知），
+     * 选择键**根本没得记**；而新列表的身份键（{@code tc=8}）又与旧列表（{@code tc=6}）
+     * {@code trackCount} 不同 ⇒ {@link #selectionAheadOfIdentity} 也必然 false
+     * （那是防「跨作品冒充」的安全阀，不能拆）。
+     *
+     * <h3>── 判据：只在「重建窗口」内到达的 JSON 才认领 ──</h3>
+     * 「重建窗口」= <b>从观察到 {@code trackCount == 0} 起，到新的非零 {@code trackCount} 出现止</b>。
+     * 这段窗口里宿主的旧列表**已经不存在了**，此刻请求并返回的字幕 JSON 只可能属于
+     * <b>重建后的新列表</b> ⇒ 换轨通知到达时直接认领，不必等宿主重发（它也不会重发）。
+     *
+     * <p>再加两道保险，防止「陈旧印章」被后来的无关换轨错误兑现：
+     * <ol>
+     *   <li><b>换了列表</b>：换轨目标的 {@code trackCount} 必须与盖章时那份**不同**
+     *       （相同 ⇒ 只是同一列表内换序号，那该走 code 1004 的选择键，不是这条）；</li>
+     *   <li><b>时限</b>：从这份 cues 到达到换轨通知不得超过 {@code toleranceMs}
+     *       —— 真机实测是 6135ms。</li>
+     * </ol>
+     *
+     * @param arrivedDuringRebuild 这份 cues 是否在「列表重建窗口」内到达
+     * @param newIdentity          本次换轨目标轨的身份键（0 = 未知）
+     * @param cuesOwnerIdentity    这份 cues 盖的主人是哪份列表的身份键（0 = 盖章时未知）
+     * @param arrivedAtMs          这份 cues 的到达时刻（{@code uptimeMillis}）
+     * @param nowMs                本次换轨通知的时刻
+     * @param toleranceMs          认领时限（超过则放弃）
+     * @return true = 这是重建后新列表的字幕，直接恢复渲染
+     */
+    public static boolean cuesBelongToRebuiltPlaylist(boolean arrivedDuringRebuild,
+                                                      long newIdentity,
+                                                      long cuesOwnerIdentity,
+                                                      long arrivedAtMs,
+                                                      long nowMs,
+                                                      long toleranceMs) {
+        if (!arrivedDuringRebuild || newIdentity == 0L) {
+            return false;
+        }
+        int newTc = identityTrackCount(newIdentity);
+        if (newTc <= 0 || newTc == identityTrackCount(cuesOwnerIdentity)) {
+            return false;                       // 同一份列表 ⇒ 不是「重建」，交给 code 1004 判
+        }
+        if (arrivedAtMs <= 0L || nowMs < arrivedAtMs) {
+            return false;
+        }
+        return nowMs - arrivedAtMs <= toleranceMs;
     }
 }

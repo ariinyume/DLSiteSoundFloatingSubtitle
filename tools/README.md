@@ -2,6 +2,8 @@
 
 > 全部脚本**只读**，不改任何文件。
 > 汇总入口：`python tools/run_all_verify.py`（任一 FAIL ⇒ 退出码非 0）
+> 🔴 **脚本清单与项数的单点真源 = `python tools/run_all_verify.py --list`**；
+>   下面 §脚本明细 是人类可读的补充说明、可能滞后于最新几轮，**不要当清单副本引用**。
 
 ---
 
@@ -24,7 +26,7 @@ python tools/run_all_verify.py --list         # 只列清单不执行
 
 | 层 | 验什么 | 脚本 | 当前结果 |
 | --- | --- | --- | --- |
-| **① 单元测试** | 纯函数内核的黄金向量（纯 JVM，不碰 Android） | `app/src/test/` · `GoldenVectorTest` | **22/22** |
+| **① 单元测试** | 纯函数内核的黄金向量（纯 JVM，不碰 Android） | `app/src/test/` · `GoldenVectorTest` | **57/57** |
 | **② 源码层** | 单点真源、字面量归零、转发壳完好 | `verify_protocol_src.py` | **10/10** |
 | **③ dex 字节码层** | 改动**确实编进了 APK** | `verify_995.py` · `verify_994.py` | **28/28（锚 22）** · **18/18** |
 | **④ 资源层** | aapt2 读编译后资源（float 有精度损失 ⇒ 必须容差） | `verify_pathdata.py`（矢量图） | 按需 |
