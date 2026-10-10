@@ -405,10 +405,22 @@ def main():
                                    m_ban.group(1) if m_ban else '?'))
     check("appVersionCodeLabel = '1008.25'",
           re.search(r"def appVersionCodeLabel = '1008\.25'", gradle) is not None)
-    check("appVersionName = '2.3.0'",
-          re.search(r"def appVersionName = '2\.3\.0'", gradle) is not None)
-    check("appVersionTag = '2.3.0'",
-          re.search(r"def appVersionTag = '2\.3\.0'", gradle) is not None)
+    # 【随轮次推进】versionName 由 Ari 按需升（如 2.3.0 → 2.3.1），因此**不钉死字面量**，
+    #   改为守「三处同值」：gradle 的 name / tag + 常开横幅里的 versionName（拆两条，项数不变）。
+    m_name = re.search(r"def appVersionName = '([\d.]+)'", gradle)
+    m_tag = re.search(r"def appVersionTag = '([\d.]+)'", gradle)
+    m_bname = re.search(
+        r'XposedCompat\.log\("\[DLsiteSoundFloat\] ==== BUILD ([\d.]+) / code \d+"\);', mod)
+    check('版本自洽：appVersionName == appVersionTag（APK 文件名与 versionName 同源）',
+          m_name is not None and m_tag is not None
+          and m_name.group(1) == m_tag.group(1),
+          'name=%s tag=%s' % (m_name.group(1) if m_name else '?',
+                              m_tag.group(1) if m_tag else '?'))
+    check('版本自洽：常开横幅里的 versionName 与 appVersionName 一致',
+          m_name is not None and m_bname is not None
+          and m_name.group(1) == m_bname.group(1),
+          'name=%s banner=%s' % (m_name.group(1) if m_name else '?',
+                                 m_bname.group(1) if m_bname else '?'))
     check('常开横幅格式稳定：==== BUILD <versionName> / code <code>（装机核对的唯一锚）',
           re.search(r'XposedCompat\.log\("\[DLsiteSoundFloat\] '
                     r'==== BUILD \d+\.\d+\.\d+ / code \d+"\);', mod) is not None)

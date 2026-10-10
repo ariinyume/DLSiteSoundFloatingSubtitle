@@ -34,7 +34,7 @@ plugins {
 //                 如 9 月 20 日发版 → 0920；10 月 3 日 → 1003。
 //                 ⚠️ 不是 20000 这种「语义版本 ×1000」的老规则。
 //                 同日多次发版时后一位可用 0921/0922 递增（保持单调即可）。
-def appVersionTag = '2.3.0'
+def appVersionTag = '2.3.1'
 // ⚠️ 写成 int 字面量 925（不要写 0925 —— Groovy 可能按八进制/前导零解析）：
 //    versionCode 的**数值**是 925，管理器里显示 925，可读语义看 appVersionCodeLabel。
 // ── 版本履历（code 994 / label 1008.15）──
@@ -261,7 +261,7 @@ def appVersionTag = '2.3.0'
 //
 def appVersionCode = 1005
 def appVersionCodeLabel = '1008.25'
-def appVersionName = '2.3.0'
+def appVersionName = '2.3.1'
 
 android {
     namespace 'io.github.ariinyume.dlsitesoundfloat'

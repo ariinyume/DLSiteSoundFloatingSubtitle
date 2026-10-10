@@ -294,19 +294,28 @@ def main():
 
     # ══════════════ ⑧ 版本号四处 + 横幅纪律 ══════════════
     check('⑧ build.gradle: appVersionCode = 1005', 'def appVersionCode = 1005' in gra)
-    check('⑧ build.gradle: appVersionName = 2.3.0（本轮不升 versionName）',
-          "def appVersionName = '2.3.0'" in gra)
-    keep = 'XposedCompat.log("[DLsiteSoundFloat] ==== BUILD 2.3.0 / code 1005");'
-    check('⑧ 常开横幅那一行就是 code 1005（装机前核这一行）', keep in mod)
+    # 【随轮次推进】versionName 本轮按 Ari 指令由 2.3.0 升到 **2.3.1**，因此**不钉死**它，
+    #   改为守「三处同值」：gradle 的 name / tag + 常开横幅（横幅是装机核对的唯一锚）。
+    m_name = re.search(r"def appVersionName = '([\d.]+)'", gra)
+    m_tag = re.search(r"def appVersionTag = '([\d.]+)'", gra)
+    vname = m_name.group(1) if m_name else '?'
+    check('⑧ 版本自洽：appVersionName == appVersionTag（APK 文件名与 versionName 同源）',
+          m_name is not None and m_tag is not None and m_name.group(1) == m_tag.group(1),
+          'name=%s tag=%s' % (vname, m_tag.group(1) if m_tag else '?'))
+    keep = 'XposedCompat.log("[DLsiteSoundFloat] ==== BUILD %s / code 1005");' % vname
+    check('⑧ 常开横幅那一行是 code 1005、且 versionName 与 build.gradle 一致（装机前核这一行）',
+          keep in mod, 'expected: %s' % keep)
     check('⑧ 常开横幅只有一行：旧的 code 1004 常开行已被替换（不是两行并存）',
-          'XposedCompat.log("[DLsiteSoundFloat] ==== BUILD 2.3.0 / code 1004");' not in mod)
+          not re.search(r'XposedCompat\.log\("\[DLsiteSoundFloat\] '
+                        r'==== BUILD [\d.]+ / code 1004"\);', mod))
     check('⑧ 常开横幅里不写具体文件名/被删标识符（横幅纪律，防负向锚自伤）',
           all(ch not in keep for ch in
               ('AudioPlaylist', 'ExoPlayerImpl', 'Duration', 'cuesBelongToRebuiltPlaylist')))
-    seg = re.search(r'==== BUILD 2\.3\.0 / code 1005 （([\s\S]*?)"\);', mod)
-    check('⑧ 调试段里的 code 1005 履历含四段（现象/根因/修法/连带）',
-          seg is not None and all(k in seg.group(1) for k in ('①', '②', '③', '④')))
-    check('⑧ code 1004 的历史段仍在（版本履历是追加式，不覆盖）',
+    seg = re.search(r'==== BUILD %s / code 1005 （([\s\S]*?)"\);' % re.escape(vname), mod)
+    check('⑧ 调试段里的 code 1005 履历含四段（现象/根因/修法/连带）+ 尾部写明「版本号 2.3.0→2.3.1」',
+          seg is not None and all(k in seg.group(1) for k in ('①', '②', '③', '④'))
+          and '版本号 2.3.0→2.3.1' in seg.group(1))
+    check('⑧ code 1004 的历史段仍在（履历是追加式、不覆盖；它的横幅保持当时的 2.3.0）',
           '==== BUILD 2.3.0 / code 1004 （' in mod)
 
     # ══════════════ 报告 ══════════════

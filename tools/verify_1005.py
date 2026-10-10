@@ -273,8 +273,9 @@ def main():
            new('playlist destroyed (trackCount=0)'), old('playlist destroyed (trackCount=0)'))
     ck.add('12★ 认领日志串 so it belongs to the NEW playlist',
            new('so it belongs to the NEW playlist'), old('so it belongs to the NEW playlist'))
-    ck.add('13★ 版本横幅 ==== BUILD 2.3.0 / code 1005',
-           new('==== BUILD 2.3.0 / code 1005'), old('==== BUILD 2.3.0 / code 1005'))
+    # 本轮按 Ari 指令 versionName 由 2.3.0 升到 **2.3.1**（code 仍是 1005）
+    ck.add('13★ 版本横幅 ==== BUILD 2.3.1 / code 1005',
+           new('==== BUILD 2.3.1 / code 1005'), old('==== BUILD 2.3.1 / code 1005'))
 
     # ══════════════ B. 常量层（dexdump 字段 value = 数值真源）══════════════
     ck.add_const('14★ REBUILT_PLAYLIST_CLAIM_MS = 15000（真机早到 6135ms，留足余量）',
