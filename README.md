@@ -134,7 +134,8 @@
 
 ## 特别感谢
 
-- 状态栏字幕效果呈现参考：[ColorOS Mod](https://github.com/rikumi/coloros-mod)
+- 状态栏字幕效果参考：[ColorOS Mod](https://github.com/rikumi/coloros-mod)
 
+- UI 参考：[KernelSU](https://github.com/tiann/KernelSU)、[LSPosed](https://github.com/LSPosed/LSPosed)
 
 ---
