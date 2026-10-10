@@ -677,7 +677,7 @@ gradle 只留最近 3 条摘要 + 指针（690 → 202 行）。
 ⇒ 改为「纯内核 + 外壳」而非直搬。
 · 【补交入库】6 个长期未跟踪文件：`LiquidGlassDrawable`（965 行，液态玻璃
 系列核心绘制类）/ `BackdropBlur` / `BackdropBaseline` / `HostBackdrop` /
-`LogGate`（诊断日志统一闸门）/ `docs/日志类目梳理与调试分级-2.2.14-code992.md`。
+`LogGate`（诊断日志统一闸门）/ `docs/日志类目梳理与调试分级.md`。
 · 【版本口径】992 → 993（label 1008.13 → 1008.14），解决 `LogGate` 类头
 写「993 起」而 gradle 是 992 的口径打架。
 · 【验证】`rm -rf app/build` 后 `assembleDebug --offline` BUILD SUCCESSFUL，
@@ -831,7 +831,7 @@ sha256 `f2bf4948c7c97b6f7beb4e92bfb669733b75325a6a99f51ddd689105c07c0d14`。
   而 G2 页面跟随（跨 18 方法）/ G4 心跳 / G9宿主杂项（跨 17 方法）**不可整体搬** ——
   三轮重构已证明「**行数不是边界，共享字段才是**」。
   另标出 **3 个零引用字段**（死字段候选，未删）。
-· 📝 **`docs/日志类目梳理与调试分级-2.2.14-code992.md`** 加「⚠️ 部分作废」告示 + **§10 code 995 增量**。
+· 📝 **`docs/日志类目梳理与调试分级.md`** 加「⚠️ 部分作废」告示 + **§10 code 995 增量**。
   原§1 / §5-C-7 判定「`ConfigStore` / `SettingsActivity` 用 `android.util.Log`，**无需处理**」
   **方向是反的**（照做不生效，但确实该处理）；**原「无需处理」作废**。
   最关键的认知修正：**`LogGate` 的闸门只作用在 `XposedCompat.log` 一条通道**，

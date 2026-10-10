@@ -23,3 +23,13 @@ LICENSE text eol=lf
 
 # Windows 批处理必须保持 CRLF
 *.bat text eol=crlf
+
+# 文档类文本统一钉 LF：
+#   本机 core.autocrlf=true，不钉的话 checkout 会把 docs/*.md 与 README.md 换成 CRLF。
+#   docs/*.md 里多处是「代码块内的映射表 / 对照表」，CRLF 下 Markdown 渲染虽正常但diff
+#   会整段泛白；而 README 是 CRLF 文件（历史如此，Ari 校对过），一旦被 Git 在某些路径下
+#   规范化，两种规则互相打架，最容易出的问题是「同一文件 CRLF/LF 混排 ⇒ 差异无法二分」。
+#   ⇒ 显式声明，不依赖 autocrlf 的隐式行为。
+README.md text eol=crlf
+docs/*.md  text eol=lf
+
