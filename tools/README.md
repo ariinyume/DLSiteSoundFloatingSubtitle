@@ -34,6 +34,265 @@ python tools/run_all_verify.py --list         # 只列清单不执行
 
 ## 脚本明细
 
+### `verify_1002_src.py` — **源码层**（code 1002 背景亮度改为用户可设定）
+
+```
+用法:  python tools/verify_1002_src.py     （在仓库根执行，不接参数）
+```
+
+**27 项**，四类：
+
+| 类 | 验什么 | 为什么值钱 |
+| --- | --- | --- |
+| ① **配置项读写点齐全** | 一个键必须出现在 **9~10 个**地方：K 常量 / 字段 / copy / equals / clamp / json 写读 / prefs 写读 / summary | 少一处就是「某个通道上丢配置」（设置页改了、重启后变回去），而**编译全绿、日志也看不出** |
+| ② **映射口径** | `L = pct / 100` 的**除数**逐处断言必须是 `100f` | 写成 255 / 1000 会整体偏亮偏暗，代码照样编译、照样"看起来在工作" |
+| ③ **可达性** | 两个新键必须同时出现在 `refreshStyle()` 的重设判据与 `refreshStyleIfStale()` 的自愈判据里 | 铁律 51 —— 1001 就是这么漏的 |
+| ④ **两档行为** | 自动档仍走 `smoothedLum`（零回归）· 手动档在 `applyPanelBackground` 里**覆盖**继承来的采样亮度 | 不覆盖 ⇒ 重建一次玻璃就"变回自动" |
+
+---
+
+### `verify_1002.py` — dex 字节码层（code 1002 背景亮度改为用户可设定）
+
+```
+用法:  python tools/verify_1002.py <apk_1002> <apk_1001>
+```
+
+**21 项 / 13 个有区分力锚**（本轮是纯新增，锚全是「1002 有 / 1001 无」）。
+
+最有价值的四条是**指令层**的（字符串层验不出「挂在哪儿」）：
+
+| 判据 | 证据 |
+| --- | --- |
+| `applyPanelBackground` 体内读 `SubtitleStyle.liquidGlassBackdropAuto` | `iget-boolean v6, v0, L…/SubtitleStyle;.liquidGlassBackdropAuto:Z` |
+| 同体内读 `liquidGlassBackdropLum` **且随后** `setBackdropStats` | `iget …LiquidGlassBackdropLum:I` → `invoke-virtual …LiquidGlassDrawable;.setBackdropStats` |
+| `syncBackdropCapture` 体内读 `backdropAuto` | 手动档降采样频率 |
+| `refreshStyle` 判据体内读两个新字段 | 判据覆盖（铁律 51）|
+
+---
+
+### 🔴 两条「写验证脚本」的硬教训（code 1002 实测）
+
+**① 抽符号前必须剥注释**（`verify_1001_src.py` 栽过）
+
+`verify_1001_src.py` 从 `applyPanelBackground` 抽 `st.xxx` 组成"消费集"。
+我在这段代码旁边写了句说明：「这里刻意写成 `st.字段` 而不是调 helper」——
+**注释里的 `st.字段` 被正则当成了"消费的键"** ⇒ 报「缺 xxx / 字段 两个键」⇒ **假 FAIL**。
+
+⇒ 已加 `strip_comments()`：**凡"从源码抽符号/数字"的判据，都要先剥注释**。
+⚠️ 反直觉的地方在于：**这条注释写得越详细越容易自伤** —— 它本来是为了防止别人改错。
+
+**② 片段匹配不抗换行**（`verify_1002_src.py` 栽过）
+
+「配置项读写点齐全」用片段匹配，而 `optBoolean(K_…,` 被 IDE 换行成两行 ⇒
+一个**已经写好的**读写点被报成「缺 json 读 / prefs 读」⇒ 假 FAIL。
+⇒ 已加 `norm()`（连续空白折成单个空格）。凡"某片段是否存在"的判据都要过一遍它。
+
+⚠️ 两条共同的形状：**判据的"字符级形态"比"语义"脆弱** ——
+换行、注释、引号风格一变就可能假红/假绿。⇒ 涉及源码文本的判据，先归一化再匹配。
+
+---
+
+### `verify_1002_src.py` — **源码层**（code 1002 背景亮度改为用户可设定）
+
+```
+用法:  python tools/verify_1002_src.py     （在仓库根执行，不接参数）
+```
+
+**27 项**，四类：
+
+| 类 | 验什么 | 为什么值钱 |
+| --- | --- | --- |
+| ① **配置项读写点齐全** | 一个键必须出现在 **9~10 个**地方：K 常量 / 字段 / copy / equals / clamp / json 写读 / prefs 写读 / summary | 少一处就是「某个通道上丢配置」（设置页改了、重启后变回去），而**编译全绿、日志也看不出** |
+| ② **映射口径** | `L = pct / 100` 的**除数**逐处断言必须是 `100f` | 写成 255 / 1000 会整体偏亮偏暗，代码照样编译、照样"看起来在工作" |
+| ③ **可达性** | 两个新键必须同时出现在 `refreshStyle()` 的重设判据与 `refreshStyleIfStale()` 的自愈判据里 | 铁律 51 —— 1001 就是这么漏的 |
+| ④ **两档行为** | 自动档仍走 `smoothedLum`（零回归）· 手动档在 `applyPanelBackground` 里**覆盖**继承来的采样亮度 | 不覆盖 ⇒ 重建一次玻璃就"变回自动" |
+
+---
+
+### `verify_1002.py` — dex 字节码层（code 1002 背景亮度改为用户可设定）
+
+```
+用法:  python tools/verify_1002.py <apk_1002> <apk_1001>
+```
+
+**21 项 / 13 个有区分力锚**（本轮是纯新增，锚全是「1002 有 / 1001 无」）。
+
+最有价值的四条是**指令层**的（字符串层验不出「挂在哪儿」）：
+
+| 判据 | 证据 |
+| --- | --- |
+| `applyPanelBackground` 体内读 `SubtitleStyle.liquidGlassBackdropAuto` | `iget-boolean v6, v0, L…/SubtitleStyle;.liquidGlassBackdropAuto:Z` |
+| 同体内读 `liquidGlassBackdropLum` **且随后** `setBackdropStats` | `iget …LiquidGlassBackdropLum:I` → `invoke-virtual …LiquidGlassDrawable;.setBackdropStats` |
+| `syncBackdropCapture` 体内读 `backdropAuto` | 手动档降采样频率 |
+| `refreshStyle` 判据体内读两个新字段 | 判据覆盖（铁律 51）|
+
+---
+
+### 🔴 两条「写验证脚本」的硬教训（code 1002 实测）
+
+**① 抽符号前必须剥注释**（`verify_1001_src.py` 栽过）
+
+`verify_1001_src.py` 从 `applyPanelBackground` 抽 `st.xxx` 组成"消费集"。
+我在这段代码旁边写了句说明：「这里刻意写成 `st.字段` 而不是调 helper」——
+**注释里的 `st.字段` 被正则当成了"消费的键"** ⇒ 报「缺 xxx / 字段 两个键」⇒ **假 FAIL**。
+
+⇒ 已加 `strip_comments()`：**凡"从源码抽符号/数字"的判据，都要先剥注释**。
+⚠️ 反直觉的地方在于：**这条注释写得越详细越容易自伤** —— 它本来是为了防止别人改错。
+
+**② 片段匹配不抗换行**（`verify_1002_src.py` 栽过）
+
+「配置项读写点齐全」用片段匹配，而 `optBoolean(K_…,` 被 IDE 换行成两行 ⇒
+一个**已经写好的**读写点被报成「缺 json 读 / prefs 读」⇒ 假 FAIL。
+⇒ 已加 `norm()`（连续空白折成单个空格）。凡"某片段是否存在"的判据都要过一遍它。
+
+⚠️ 两条共同的形状：**判据的"字符级形态"比"语义"脆弱** ——
+换行、注释、引号风格一变就可能假红/假绿。⇒ 涉及源码文本的判据，先归一化再匹配。
+
+---
+
+### `verify_1001_src.py` — **源码层**（code 1001 调参链路可达性不变量）
+
+```
+用法:  python tools/verify_1001_src.py     （在仓库根执行，不接参数）
+```
+
+🔴 **这个脚本验的是一条通用不变量，不只针对某两个键**：
+
+> `applyPanelBackground()` **消费**的每一个配置键，
+> 都必须出现在 `refreshStyle()` 的「重建判据」或「重设判据」里。
+
+否则：用户拖那个键 ⇒ 判据全 false ⇒ **什么都不发生**，而编译全绿、
+`style refreshed` 日志照打（因为外层判据命中了）—— 这正是 code 1000 交付后的真实现象。
+
+做法：
+1. 从 `applyPanelBackground()` 抽 `st.xxx` ⇒ **消费集**
+2. 从判据块抽 `old.X != s.X` ⇒ **覆盖集**
+3. 断言 **消费 ⊆ 覆盖**（21 项），并对每个键做「只改这一个键」的**逐键模拟**
+
+⚠️ **反向对照已做**：把 `else-if` 那段删掉后，脚本正好报
+`missing=['liquidGlassPanelLum','liquidGlassTransparency']` ⇒ 判据有区分力。
+
+✅ 顺带一条经验：**「验运行时不变量」的脚本比「验代码存在」的脚本值钱得多** ——
+本轮这个 bug 里有方法、有调用、编译也过，唯独运行时判据漏了一个键。
+
+---
+
+### `verify_1001.py` — dex 字节码层（code 1001 滑条可达性修复）
+
+```
+用法:  python tools/verify_1001.py <apk_1001> <apk_1000>
+```
+
+**17 项 / 5 个有区分力锚**：
+
+| 类型 | 判据 |
+| --- | --- |
+| 正向 `add` | `retunePanelGlass` 方法已编进包 · **`refreshStyle` 里真的 invoke 了它**（本 bug 核心）· 暗端斜率 `#float 0.0055` · 暗端基准 `#float 0.2` |
+| 负向 `add_negative` | 旧单段基准 `#float 0.3` 已绝迹 |
+| 保持 `add_keep` | `applyPanelBackground` 仍被调用 · `retunePanelGlass` 内仍调 `setPanelTuningFromPct` + `instance-of` 守卫 · 亮端 `0.003` · 默认 `0.42` · 通透度段参数 · 两个键名 · `PokeThrottle` / `ScopeWatcher` / `sCtxWasMissing` |
+
+⚠️ 两条「只有某一层能验准」的口径：
+- **「某方法里调了谁」只有方法体指令层能验**
+  （`refreshStyle` 方法体里出现 `invoke-direct …retunePanelGlass`）；
+- **「某方法用了哪个浮点常量」只有指令层的 `const … #float x` 能验**
+  （`0.42` 在 1000 里位于**字段初始化区**、不在方法体，所以它在本脚本里表现为
+  「1001 有、1000 无」的正向形态）。
+
+---
+
+---
+
+### `verify_1000_src.py` — **源码层**（code 1000 默认值映射 + 接线完整性）
+
+```
+用法:  python tools/verify_1000_src.py     （在仓库根执行，不接参数）
+```
+
+🔴 **为什么需要这个脚本（它抓到了一个真事故）**：
+本轮把三个标定常量改成「实例字段 + 换算函数」，「**默认配置下换算出来的值
+是否等于改动前的历史值**」是**纯运行时行为** —— 字节码层只能验「东西编进去了」，
+公式里挪一个小数点（0.003 → 0.004）就会让所有用户的面板亮度整体跑偏，**看不出来**。
+
+做法：**从源码里提取公式的每个数字，在 Python 里独立复算**，再与历史值对比：
+
+```
+明暗 40      → 0.20 + 40×0.0055 = 0.420000  == 历史 TARGET_LUM 0.42   ✅（code 1001 起分段）
+明暗 0       → 0.200000        （暗端，−52%）
+明暗 100     → 0.600000        （亮端）
+分段点连续   → pct=40 两支同值  （不会出现跳变）
+通透度 50    → α = 0.55 + 1.0×(0.22−0.55) = 0.220000 == 历史 0.22       ✅
+             → 黑底 = round(0x60 + 1.0×(0x14−0x60)) = 0x14 == 历史 0x14  ✅
+```
+
+另外验 6 条**接线完整性**（悬浮窗 / 设置页预览 / SubtitleStyle 承载 /
+自愈判据 / 两个滑条创建与显隐）。
+
+⚠️ **实战价值**：就是这 6 条接线断言抓出了「闭包 `nonlocal` 导致改动静默丢失」的
+事故（4 个文件的改动全没落盘，脚本却报「✅ 已改」）—— 否则会交付一个
+「设置页有滑条但没接线」的包。⇒ **改完必须回读验证**，不能信「写成功」的打印。
+
+### `verify_1000.py` — dex 字节码层（code 1000 明暗可调）
+
+```
+用法:  python tools/verify_1000.py <apk_1000> <apk_999>
+```
+
+**16 项 / 9 个有区分力锚**：
+- 正向 9 个：两个新键名字符串 · `setPanelTuningFromPct` · 三个实例字段名 ·
+  `maxCompensableLum` · 两条设置页文案
+- 保持型 7 个：三个标定常量仍作为**默认值**存在 · `sCtxWasMissing` ·
+  `PokeThrottle` · `ScopeWatcher` · `liquid_glass_blur_pct`
+
+---
+
+### `verify_999.py` — dex 字节码层（code 999 启动竞态修复 + 样式回退）
+
+```
+用法:  python tools/verify_999.py <apk_999> <apk_997>
+主验 = code 999 包；对照 = **code 997** 包
+```
+
+⚠️ 对照刻意选 **997**（而不是 998）：本轮要同时验**两组**改动，
+997 是「锁定版 + 无竞态修复」⇒ 与本轮差异最全，一次覆盖两件事。
+
+**14 项 / 8 个有区分力锚**：
+
+| 组 | 判据 |
+| --- | --- |
+| **竞态修复**（正向） | `sCtxWasMissing` 字段 + 「`application context attached after a ctx-less read`」日志串 |
+| **样式回退**（值变化） | `ADAPTIVE_BASE_BLACK` / `ADAPTIVE_VEIL_ALPHA` |
+| 样式回退（负向） | `LOCKED_VEIL_LUM` 绝迹（字段层 + 字符串层双锚） |
+| 样式回退（正向恢复） | `hasStats()` / `lum(int)` 回归 |
+| 保持型 | `TARGET_LUM` · `PokeThrottle` · `POKE_WINDOW_MS` · `PokeThrottle.decide` 调用 · `ScopeWatcher` · `attachContext` |
+
+---
+
+### `verify_998.py` — dex 字节码层（code 998 液态玻璃样式回退）
+
+```
+用法:  python tools/verify_998.py <apk_998> <apk_997>
+主验 = code 998 包（回退版）；对照 = code 997 包（锁定版）
+```
+
+本轮改动是**撤销 997 对一个文件的全部改动** ⇒ 判据是 997 那套的**反向**。
+**11 项 / 6 个有区分力锚**：
+
+| 类型 | 判据 |
+| --- | --- |
+| 值变化 `add_diff` | `ADAPTIVE_BASE_BLACK` 0xBB → 0x14 · `ADAPTIVE_VEIL_ALPHA` 0.44 → 0.22 |
+| 负向 `add_negative` | `LOCKED_VEIL_LUM` 绝迹（**字段层 + 字符串层双锚**） |
+| 正向 `add` | `hasStats()` / `lum(int)` **恢复**（997 删过） |
+| 保持 `add_keep` | `TARGET_LUM` = 0.42 · `PokeThrottle` · `POKE_WINDOW_MS` · `pokeStructureChanged` 仍调 `PokeThrottle.decide` · `ScopeWatcher` |
+
+⚠️ **保持型那 4 条是本轮的重点**：它们证明「只回退了样式，G7 重构没被误伤」。
+没有它们，一个「把整个 commit 都 revert 掉」的错误做法也能骗过验证。
+
+⚠️ 恢复型判据（`hasStats` / `lum`）**必须用 `method_body()` 而非裸字符串匹配** ——
+`lum` 是短名，而 `backdropMeanLum` 等字段**包含** `lum` 子串，
+裸 `in` 匹配会让两版都命中 ⇒ 假「无区分力」。
+
+---
+
 ### `verify_997.py` — dex 字节码层（code 997 亮度锁定 + 第 5 批重构）
 
 ```
@@ -222,3 +481,37 @@ python tools/run_all_verify.py --list         # 只列清单不执行
 ---
 
 **本目录为纯工具集，代码零改动。**
+
+### `verify_1000_src.py` — **源码层**（默认值映射，常驻不变量）
+
+⚠️ code 1001 起明暗映射改为**分段线性**，本脚本已同步：
+
+```
+明暗 0 → 0.20（最暗，−52%）· 40 → 0.42（默认，零回归）· 100 → 0.60（最亮）
+```
+
+新增两条断言：**分段点连续**（pct=40 两支同值，不会跳变）、**暗端降幅 ≥ 40%**。
+
+🔴 **本脚本曾被自己写坏过一次，值得记住**：改公式时把 `def lum_of()` 插进了
+`main()` 体内 ⇒ 等于把 `main()` **从中间截断**，剩下的语句全变成不可达
+⇒ `main()` 返回 `None` ⇒ `sys.exit(None)` = **退出码 0**，而**一行都不打印**。
+一件"全绿"的假象。⇒ 已给 `run_all_verify.py` 加兜底网：
+**退出码 0 但零输出 ⇒ `SUSPECT`（计入失败）**。
+
+---
+
+---
+
+### ⚠️ `ENVBLOCK`：环境拦截 ≠ 判据失败
+
+`run_all_verify.py` 有个 `ENVBLOCK` 状态。触发条件：
+脚本输出里带 `SAFE_DELETE_BULK_CONFIRM_REQUIRED` **且** 没有自己的 `FAIL n/m` 汇总行。
+
+**背景**：本环境有「**单轮**删除 ≥ 50 个文件需确认」的保护。
+`verify_994.py` / `verify_995.py` 跑完会清临时 dump ⇒ **同一轮里把一键验证连跑两次**，
+第二次的清理就会被拦，命令被**从外部中断**（Python `try/except` 捕不到）
+⇒ 脚本在自己的判据汇总行**之前**就被掐断 ⇒ 看起来像 FAIL，其实什么都没验出来。
+
+⇒ **规矩**：同一轮里一键验证最多跑**两次**；真要连跑，先等下一轮。
+（两个脚本的清理也改成了**非致命**：`_rm()` 吞异常，且首块用 `'w'` 覆盖写 ——
+避免"删不掉时把上一轮的 dump 追加进来"这种更隐蔽的错。）

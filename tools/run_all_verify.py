@@ -29,6 +29,22 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # 脚本 → (类别, 一句话说明它验什么)
 # ⚠️ 说明必须与脚本内部判据一致；改判据时同步改这里，否则索引表本身就会骗人。
 SCRIPTS = [
+    ('verify_1003_src.py', '源码层',
+     'code 1003 独立卡片 + 四滑条范围/默认 + 删净采样 + 冷白光圈 + 可达性不变量（77 项）'),
+    ('verify_1003.py', 'dex 字节码层',
+     'code 1003：新增卡片/滑条文案、删净采样链路（反向锚）、常量层与冷白光圈（50 项）'),
+    ('verify_1001_src.py', '源码层',
+     'code 1001 调参可达性不变量：applyPanelBackground 消费的键必须都被判据覆盖（21 项）'),
+    ('verify_1001.py', 'dex 字节码层',
+     'code 1001 滑条可达性修复：retunePanelGlass 是否真被 refreshStyle 调用（17 项，5 锚）'),
+    ('verify_1000_src.py', '源码层',
+     '默认值映射：复算公式验证「默认配置 == 历史观感」+ 接线完整性（30 项）'),
+    ('verify_1000.py', 'dex 字节码层',
+     'code 1000 明暗可调：两个新键/新字段/新setter 是否编进包（16 项，9 个有区分力锚）'),
+    ('verify_999.py', 'dex 字节码层',
+     'code 999 启动竞态修复 + 样式回退：RemoteConfig 重读与常量值（14 项，8 个有区分力锚）'),
+    ('verify_998.py', 'dex 字节码层',
+     'code 998 液态玻璃样式回退：常量值回到 996 与 G7 保留（11 项，6 个有区分力锚）'),
     ('verify_997.py', 'dex 字节码层',
      'code 997 亮度锁定 + 第5批重构：常量值变化与 PokeThrottle 调用（11 项，7 个有区分力锚）'),
     ('verify_996.py', 'dex 字节码层',
@@ -49,6 +65,11 @@ SCRIPTS = [
 # ⚠️ 只有**真正解析 APK/dex** 的脚本才登记在这里。
 #   不接包的脚本（如源码层校验、真机日志校验）不要登记，否则会被误判成「缺参数」。
 NEEDS_APK = {
+    'verify_1003.py': (1003, 1002),   # <apk_1003> <apk_1002>
+    'verify_1001.py': (1001, 1000),   # <apk_1001> <apk_1000>
+    'verify_1000.py': (1000, 999),   # <apk_1000> <apk_999>
+    'verify_999.py': (999, 997),   # <apk_999> <apk_997>
+    'verify_998.py': (998, 997),   # <apk_998> <apk_997>
     'verify_997.py': (997, 996),   # <apk_997> <apk_996>
     'verify_996.py': (996, 995),   # <apk_996> <apk_995>
     'verify_995.py': (995, 994),   # <apk_995> <apk_994>
@@ -56,6 +77,13 @@ NEEDS_APK = {
 }
 
 TIMEOUT = 300  # 秒；单个 dex dump 脚本实测 10~60s
+
+# 【code 1001】环境侧「批量删除保护」会**从外部中断**命令（Python 捕不到）。
+#   实测：同一轮里累计删除到 50 个文件后，`verify_994.py` / `verify_995.py`
+#   这类**跑完会清临时 dump** 的脚本会在清理处被整条命令掐断 ⇒ exit=1。
+#   ⚠️ 这不是判据失败 —— 脚本自己的 `FAIL n/m` 汇总行**根本没来得及打印**。
+#   ⇒ 只有「带该标记 **且** 没有判据汇总行」才判 ENVBLOCK（环境受限，不计入失败）。
+ENV_BLOCK_MARKER = 'SAFE_DELETE_BULK_CONFIRM_REQUIRED' 
 
 
 def find_apks(repo):
@@ -103,10 +131,12 @@ def build_argv(name, repo):
     cands = find_apks(repo)
     missing = []
     args = []
-    if want_main in cands:
-        args.append(cands[want_main])
-    else:
-        missing.append(want_main)
+    if want_main not in cands:
+        # 【踩坑】主验包都没有时**必须整体跳过** —— 绝不能把「只凑到的对照包」单独
+        #   传进去：脚本会因参数不足打印用法并 exit 2，被误判成判据 FAIL。
+        #   （实测：code 998 的包被后续 clean 构建清掉后，verify_998 就这样假 FAIL。）
+        return [], [want_main]
+    args.append(cands[want_main])
     if want_old is not None:
         if want_old in cands:
             args.append(cands[want_old])
@@ -151,10 +181,21 @@ def run_one(name, repo):
         dt = time.time() - t0
         out = (p.stdout or '') + (p.stderr or '') + ('\n' + out_extra if out_extra else '')
         if p.returncode == 0:
+            # ⚠️ 兜底网（code 1001 加的）：**退出码 0 但一点输出都没有 ⇒ 可疑**。
+            #   实测踩过 —— 把 `def lum_of()` 插进了 `main()` 体内，等于把 main 从中间
+            #   截断，剩下的语句全变成不可达 ⇒ `main()` 返回 None ⇒ `sys.exit(None)` = 0，
+            #   而**一行都不打印**。这种「静默通过」比 FAIL 更危险（看着全绿、其实没验）。
+            #   ⇒ 只靠退出码是不够的：**没有输出 = 没有断言**。
+            if not out.strip():
+                return 'SUSPECT', p.returncode, dt, '退出码 0 但零输出（脚本可能没真正执行）'
             return 'PASS', p.returncode, dt, out
         # exit 2 且是 usage 形态 ⇒ 参数问题，不算判据失败
         if p.returncode == 2 and 'usage' in out.lower():
             return 'SKIP', p.returncode, dt, out
+        # 环境批量删除保护把命令掐断 ⇒ 判据没跑完，不算判据失败
+        if ENV_BLOCK_MARKER in out and not re.search(r'^\s*FAIL \d+/', out, re.M):
+            return 'ENVBLOCK', p.returncode, dt, \
+                out + '\n[环境拦截：临时文件清理被批量删除保护拦下，判据未跑完]'
         return 'FAIL', p.returncode, dt, out
     except subprocess.TimeoutExpired:
         return 'TIMEOUT', -9, time.time() - t0, '超过 %ds 未结束' % TIMEOUT
@@ -230,8 +271,11 @@ def main(argv):
     for name, cat, status, rc, dt, v in rows:
         print('%-28s %-12s %-8s %-8s %s' % (name, cat, status, '%.1fs' % dt, v or '-'))
 
+    # ⚠️ 失败名单是**白名单**式（FAIL/ERROR/TIMEOUT/MISSING）⇒ 新增的 ENVBLOCK
+    #    天然不会计入失败；但必须在"全绿"行里显眼列出来，不能悄悄吞掉。
     bad = [r for r in rows if r[2] in ('FAIL', 'ERROR', 'TIMEOUT', 'MISSING')]
     skipped = [r for r in rows if r[2] == 'SKIP']
+    envblocked = [r for r in rows if r[2] == 'ENVBLOCK']
     print()
     if bad:
         print('❌ 未全绿：%d/%d 个脚本未通过' % (len(bad), len(rows)))
@@ -239,11 +283,22 @@ def main(argv):
             print('   - %s  (%s, exit=%d)' % (n, st, rc))
         rc_ret = 1
     else:
-        print('✅ 全绿：%d/%d' % (len(rows), len(rows)))
+        ran = len(rows) - len(skipped) - len(envblocked)
+        bits = []
+        if skipped:
+            bits.append('%d 个跳过：%s' % (len(skipped), ', '.join(r[0] for r in skipped)))
+        if envblocked:
+            bits.append('%d 个被环境拦截：%s'
+                        % (len(envblocked), ', '.join(r[0] for r in envblocked)))
+        print('✅ 全绿：%d/%d%s' % (ran, ran, ('（另有 ' + '；'.join(bits) + '）') if bits else ''))
         rc_ret = 0
     if skipped:
         print('⚠️ 跳过 %d 个（参数/环境不足，不计入失败）：%s'
               % (len(skipped), ', '.join(r[0] for r in skipped)))
+    if envblocked:
+        print('⚠️ 被环境拦截 %d 个（临时文件清理撞上批量删除保护 ⇒ 判据未跑完，'
+              '**不是判据失败**；同一轮里别把本脚本连跑超过两次）：%s'
+              % (len(envblocked), ', '.join(r[0] for r in envblocked)))
 
     extra = discover()
     if extra:

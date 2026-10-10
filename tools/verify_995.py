@@ -64,22 +64,37 @@ ALL_ACTIONS = [
 ]
 
 
+def _rm(p):
+    """删临时文件；⚠️ 失败**绝不能**影响判据。
+
+    本环境有「单轮删除 >= 50 个文件需确认」的保护
+    （`[safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED]`）：一轮里把一键验证连跑两次，
+    第二次的清理就会被拦 ⇒ `os.remove` 抛错 ⇒ 脚本崩、被误报成**判据 FAIL**。
+    清理只是卫生问题，吞掉即可。
+    """
+    try:
+        os.remove(p)
+        return True
+    except OSError:
+        return False
+
+
 def dexdump_all(apk, out):
     """把 APK 里所有 dex 的 dexdump 落盘（大 dex 内存吃不消，分开转再拼）。"""
-    if os.path.exists(out):
-        os.remove(out)
+    # 【code 1001】同上：删不掉就覆盖写，避免把上一轮的 dump 追加进来。
+    _rm(out)
     with zipfile.ZipFile(apk) as z:
         dexs = [n for n in z.namelist() if re.match(r'.*\.dex$', n)]
-        for n in dexs:
+        for i, n in enumerate(dexs):
             tmp = out + '.' + os.path.basename(n)
             with open(tmp, 'wb') as f:
                 f.write(z.read(n))
             r = subprocess.run([DEXDUMP, '-d', tmp],
                                capture_output=True, text=True,
                                errors='replace', encoding='utf-8')
-            with open(out, 'a', encoding='utf-8') as f:
+            with open(out, 'a' if i else 'w', encoding='utf-8') as f:
                 f.write(r.stdout)
-            os.remove(tmp)
+            _rm(tmp)
     return out
 
 
