@@ -319,12 +319,15 @@ public class SettingsActivity extends AppCompatActivity {
     private LinearLayout mGroupMain;
     private LinearLayout mGroupInactive;
     private LinearLayout mGroupTypo;
+    /** 【code 1003】「液态玻璃效果调整」卡片（独立成卡，摆在「其他」之前）。 */
+    private LinearLayout mGroupLiquidGlass;
     private LinearLayout mGroupMisc;
     /** 节标题（在卡片外，参考稿口径）—— 语言切换时随文案重刷。 */
     private TextView mTitlePreview;
     private TextView mTitleMain;
     private TextView mTitleInactive;
     private TextView mTitleTypo;
+    private TextView mTitleLiquidGlass;
     private TextView mTitleMisc;
 
     // ── 行控件（重建行后重新赋值；用于 syncWidgets 回灌）────────────────
@@ -341,12 +344,27 @@ public class SettingsActivity extends AppCompatActivity {
     private SwitchRow mRowStatusbar;
     /** 【2.2.7 / code 979】「其他」卡片里的「调试日志」开关行。 */
     private SwitchRow mRowDebugLog;
-    /** 【2.2.9】「液态玻璃」开关行（「其他」卡片）。 */
+    /** 【2.2.9 / code 1003】「液态玻璃」开关行（液态玻璃卡首行）。 */
     private SwitchRow mRowLiquidGlass;
     /** 【2.2.11b】「模糊强度」滑条行（只在液态玻璃开启时显示）。 */
     private SliderRow mRowLiquidGlassBlur;
-    /** 「模糊强度」滑条下方的常驻说明小字（与滑条同显隐）。 */
-    private TextView mHintLiquidGlassBlur;
+    /**
+     * 【code 1003】本卡「恢复默认」整行容器（建好后回填定位用）。
+     *
+     * ⚠️【code 1003 修】显隐已改为「遍历整卡子视图」统一收口，本字段**不再参与显隐**，
+     *只作为「哪一行是恢复默认行」的定位信息留着。
+     */
+    private View mResetRowRoot;
+    /** 【code 1000 / 1003】「明暗度」滑条行（只在液态玻璃开启时显示）。 */
+    private SliderRow mRowPanelLum;
+    /** 【code 1000】「通透度」滑条行 + 小字（只在液态玻璃开启时显示）。 */
+    private SliderRow mRowTransparency;
+    private TextView mHintTransparency;
+    /** 【code 1002 / 1003】「环境背景亮度」滑条行 + 小字。 */
+    private SliderRow mRowBackdropLum;
+    private TextView mHintBackdropLum;
+    /** 【code 1003】本卡「恢复默认」行下方的小字（只在液态玻璃开启时显示）。 */
+    private TextView mHintLiquidGlassReset;
     private SegmentedRow mRowAlign;
     private ColorSwatchRow mSwatchSubtitle;
     private ColorSwatchRow mSwatchShadow;
@@ -607,6 +625,7 @@ public class SettingsActivity extends AppCompatActivity {
         setTitleSafe(mTitleMain, Strings.GROUP_MAIN.get(mLang));
         setTitleSafe(mTitleInactive, Strings.GROUP_INACTIVE.get(mLang));
         setTitleSafe(mTitleTypo, Strings.GROUP_TYPO.get(mLang));
+        setTitleSafe(mTitleLiquidGlass, Strings.GROUP_LIQUID_GLASS.get(mLang));
         setTitleSafe(mTitleMisc, Strings.GROUP_MISC.get(mLang));
 
         renderStatusCard();
@@ -640,6 +659,7 @@ public class SettingsActivity extends AppCompatActivity {
         tintCard(findViewById(R.id.card_main), cardBg);
         tintCard(findViewById(R.id.card_inactive), cardBg);
         tintCard(findViewById(R.id.card_typo), cardBg);
+        tintCard(findViewById(R.id.card_liquidglass), cardBg);
         tintCard(findViewById(R.id.card_misc), cardBg);
         // 状态卡底色由 renderStatusCard() 按状态设，这里不动它（否则会盖掉状态色）
         applyPreviewPanel();
@@ -916,12 +936,14 @@ public class SettingsActivity extends AppCompatActivity {
         mGroupMain = findViewById(R.id.group_main);
         mGroupInactive = findViewById(R.id.group_inactive);
         mGroupTypo = findViewById(R.id.group_typo);
+        mGroupLiquidGlass = findViewById(R.id.group_liquidglass);
         mGroupMisc = findViewById(R.id.group_misc);
         // 节标题在**卡片外**（参考稿口径），由 applyStaticTexts 刷文案
         mTitlePreview = findViewById(R.id.title_preview);
         mTitleMain = findViewById(R.id.title_main);
         mTitleInactive = findViewById(R.id.title_inactive);
         mTitleTypo = findViewById(R.id.title_typo);
+        mTitleLiquidGlass = findViewById(R.id.title_liquidglass);
         mTitleMisc = findViewById(R.id.title_misc);
 
         mLanguageButton.setOnClickListener(v -> showLanguageDialog());
@@ -1134,6 +1156,7 @@ public class SettingsActivity extends AppCompatActivity {
         setGroupEnabled(mGroupMain, enabled);
         setGroupEnabled(mGroupInactive, enabled);
         setGroupEnabled(mGroupTypo, enabled);
+        setGroupEnabled(mGroupLiquidGlass, enabled);
         setGroupEnabled(mGroupMisc, enabled);
         if (mSaveButton != null) {
             mSaveButton.setEnabled(enabled);
@@ -1247,6 +1270,12 @@ public class SettingsActivity extends AppCompatActivity {
 
         mGroupTypo.removeAllViews();
         buildTypoGroup(mGroupTypo);
+
+        // 【code 1003】「液态玻璃效果调整」独立成卡，摆在「其他」之前。
+        if (mGroupLiquidGlass != null) {
+            mGroupLiquidGlass.removeAllViews();
+            buildLiquidGlassGroup(mGroupLiquidGlass);
+        }
 
         if (mGroupMisc != null) {
             mGroupMisc.removeAllViews();
@@ -1459,9 +1488,6 @@ public class SettingsActivity extends AppCompatActivity {
         // 摆在「状态栏字幕功能」下方、「备份与恢复」上方（备份那排按钮仍由
         // pinCardLastBottom 钉为卡片最后一行，见本方法末尾）。
         buildDebugLogRow(parent);
-        // 【2.2.9】「液态玻璃」开关：悬浮窗面板 + 播放页两个字幕胶囊改用自渲染玻璃。
-        // 摆在「调试日志」下方、「备份与恢复」上方（同为「显示类」开关，成组相邻）。
-        buildLiquidGlassRow(parent);
 
         // 【2.3.2 §1.1.3】备份与恢复：导出 / 导入两枚 **MD3 Tonal** 按钮，各自带方向小图标
         // （导出 = 向上箭头 + 托盘，导入 = 向下箭头 + 托盘）。
@@ -1637,44 +1663,91 @@ public class SettingsActivity extends AppCompatActivity {
      *   ③ 本页「悬浮窗颜色」行**置灰不可调**（{@link #applyPanelColorLock()}）。
      * ─────────────────────────────────────────────────────────────────────
      */
-    private void buildLiquidGlassRow(LinearLayout parent) {
-        beginRow(parent);
-        // 整行容器：开关 + 下方常驻说明小字（与「调试日志」/「状态栏字幕」两行同一排布）
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
+    /**
+     * 【code 1003】「液态玻璃效果调整」卡片（独立成卡，摆在「其他」卡片之前）。
+     *
+     * 分布（照 Ari 的参考图与《液态玻璃调整项.xlsx》）：
+     *   ① 液态玻璃（总开关）
+     *   ② 环境背景亮度  ← 自适应霜面的**唯一**亮度输入（原先的「自动采样」已整体删除）
+     *   ③ 通透度
+     *   ④ 明暗度
+     *   ⑤ 模糊强度
+     *   ⑥ 恢复液态玻璃默认设置（全部设置为 50%）
+     * 总开关关闭时 ②~⑥ 全部隐藏（见 {@link #applyLiquidGlassBlurVisibility()}）。
+     */
+    private void buildLiquidGlassGroup(LinearLayout parent) {
+        // ① 「液态玻璃」总开关（本卡首行）
+        mRowLiquidGlass = addSwitchRow(parent, Strings.LIQUID_GLASS, this::onLiquidGlassToggled);
 
-        mRowLiquidGlass = addSwitchRow(root, Strings.LIQUID_GLASS, this::onLiquidGlassToggled);
+        // ② 环境背景亮度（0–100，步长 5，默认 50）—— 映射 L = pct / 100
+        mRowBackdropLum = addSliderRow(parent, Strings.LIQUID_GLASS_BACKDROP_LUM,
+                SubtitleConfig.LIQUID_GLASS_BACKDROP_LUM_MIN,
+                SubtitleConfig.LIQUID_GLASS_BACKDROP_LUM_MAX,
+                SubtitleConfig.LIQUID_GLASS_BACKDROP_LUM_STEP,
+                v -> Strings.VALUE_PCT.format(mLang, v), v -> {
+                    mDraft.liquidGlassBackdropLum = v;
+                    markDirty();
+                    updatePreview();
+                });
+        mHintBackdropLum = makeHintView(Strings.LIQUID_GLASS_BACKDROP_LUM_HINT);
+        parent.addView(mHintBackdropLum);
 
-        TextView hint = new TextView(this);
-        hint.setText(Strings.LIQUID_GLASS_HINT.get(mLang));
-        hint.setTextAppearance(R.style.TextAppearance_DLsiteFloat_Hint);
-        hint.setTextColor(attr(com.google.android.material.R.attr.colorOnSurfaceVariant, Color.GRAY));
-        hint.setPadding(0, 0, 0, dp(6));
-        root.addView(hint);
+        // ③ 通透度（0–100，步长 5，默认 50）
+        mRowTransparency = addSliderRow(parent, Strings.LIQUID_GLASS_TRANSPARENCY,
+                SubtitleConfig.LIQUID_GLASS_TRANSPARENCY_MIN,
+                SubtitleConfig.LIQUID_GLASS_TRANSPARENCY_MAX,
+                SubtitleConfig.LIQUID_GLASS_TRANSPARENCY_STEP,
+                v -> Strings.VALUE_PCT.format(mLang, v), v -> {
+                    mDraft.liquidGlassTransparency = v;
+                    markDirty();
+                    updatePreview();
+                });
+        mHintTransparency = makeHintView(Strings.LIQUID_GLASS_TRANSPARENCY_HINT);
+        parent.addView(mHintTransparency);
 
-        // 【2.2.11b】「模糊强度」（0–100%，步长 1，默认 60%）：**只在液态玻璃开启时显示**。
-        //   显隐走 root 的 VISIBLE/GONE（与「非活动行模糊半径」那一行同一做法，
-        //   见 syncWidgets 里对 mRowBlurRadius 的处理）。
-        mRowLiquidGlassBlur = addSliderRow(root, Strings.LIQUID_GLASS_BLUR,
+        // ④ 明暗度（0–100，步长 5，默认 50）
+        mRowPanelLum = addSliderRow(parent, Strings.LIQUID_GLASS_PANEL_LUM,
+                SubtitleConfig.LIQUID_GLASS_PANEL_LUM_MIN,
+                SubtitleConfig.LIQUID_GLASS_PANEL_LUM_MAX,
+                SubtitleConfig.LIQUID_GLASS_PANEL_LUM_STEP,
+                v -> Strings.VALUE_PCT.format(mLang, v), v -> {
+                    mDraft.liquidGlassPanelLum = v;
+                    markDirty();
+                    updatePreview();
+                });
+
+        // ⑤ 模糊强度（0–100，步长 5，默认 50）
+        mRowLiquidGlassBlur = addSliderRow(parent, Strings.LIQUID_GLASS_BLUR,
                 SubtitleConfig.LIQUID_GLASS_BLUR_PCT_MIN,
                 SubtitleConfig.LIQUID_GLASS_BLUR_PCT_MAX,
                 SubtitleConfig.LIQUID_GLASS_BLUR_PCT_STEP,
                 v -> Strings.VALUE_PCT.format(mLang, v), v -> {
                     mDraft.liquidGlassBlurPct = v;
                     markDirty();
-                    updatePreview();      // 预览要立刻反映强度
+                    updatePreview();
                 });
 
-        mHintLiquidGlassBlur = new TextView(this);
-        mHintLiquidGlassBlur.setText(Strings.LIQUID_GLASS_BLUR_HINT.get(mLang));
-        mHintLiquidGlassBlur.setTextAppearance(R.style.TextAppearance_DLsiteFloat_Hint);
-        mHintLiquidGlassBlur.setTextColor(attr(com.google.android.material.R.attr.colorOnSurfaceVariant, Color.GRAY));
-        mHintLiquidGlassBlur.setPadding(0, 0, 0, dp(6));
-        root.addView(mHintLiquidGlassBlur);
-
-        parent.addView(root);
+        // ⑥ 恢复默认（末行；小字「全部设置为 50%」由 addResetRow 建好后回填）
+        final int before = parent.getChildCount();
+        mHintLiquidGlassReset = addResetRow(parent, Strings.RESET_LIQUID_GLASS,
+                this::resetLiquidGlassGroup);
+        mHintLiquidGlassReset.setText(Strings.HINT_LIQUID_GLASS.get(mLang));
+        // addResetRow 会追加「按钮行 + 小字」两个子视图 ⇒ 按钮行就是倒数第二个。
+        if (parent.getChildCount() >= before + 2) {
+            mResetRowRoot = parent.getChildAt(parent.getChildCount() - 2);
+        }
 
         applyLiquidGlassBlurVisibility();
+    }
+
+    /** 【code 1003】一行常驻说明小字（随语言切换重刷）。 */
+    private TextView makeHintView(Strings label) {
+        TextView t = new TextView(this);
+        t.setText(label.get(mLang));
+        t.setTextAppearance(R.style.TextAppearance_DLsiteFloat_Hint);
+        t.setTextColor(attr(com.google.android.material.R.attr.colorOnSurfaceVariant, Color.GRAY));
+        t.setPadding(0, 0, 0, dp(6));
+        return t;
     }
 
     private void onLiquidGlassToggled(boolean enabled) {
@@ -1682,23 +1755,37 @@ public class SettingsActivity extends AppCompatActivity {
         markDirty();
         // 【需求】开启后「悬浮窗颜色」不可调整 —— 立即生效，不等保存。
         applyPanelColorLock();
-        // 【2.2.11b】「模糊强度」滑条跟随显隐。
+        // 【code 1003】本卡「总开关以下」的所有行跟随显隐。
         applyLiquidGlassBlurVisibility();
         // 预览区也要跟着换渲染后端（液态玻璃下不再吃 floatWindowColor）。
         updatePreview();
     }
 
-    /** 【2.2.11b】把「模糊强度」滑条与它的小字按「液态玻璃是否开启」对齐显隐（幂等）。 */
+    /**
+     * 【code 1003】把本卡「总开关以下」的所有行按「液态玻璃是否开启」对齐显隐（幂等）。
+     *
+     * ⚠️【code 1003 修】改成**遍历整卡子视图**、只把第 0 个（总开关行）之外的
+     * 一律按开关显隐，不再逐个点名。原写法漏掉了 {@link #makeRowSpacer()} 插的
+     * 5 个 9dp 行间留白占位 —— 它们不是「行」而是裸 View，关闭液态玻璃后全部留在
+     * 开关行下面 ⇒ 卡底凭空多出 45dp 空位（Ari 2026-10-10 截图实证）。
+     * 遍历式写法同时满足铁律「新键必须加进所有门控判据」：以后往本卡新增行，
+     * 不会再出现「新行忘了 gate / 占位漏 gate」这类漏网。
+     * ⚠️ 依赖「总开关是本卡第一个孩子」——{@link #buildLiquidGlassGroup} 里
+     * ① 先建开关行、{@link #beginRow} 对首行不插占位，故 index 0 恒为开关行。
+     */
     private void applyLiquidGlassBlurVisibility() {
         final int vis = (mDraft != null && mDraft.liquidGlass) ? View.VISIBLE : View.GONE;
-        if (mRowLiquidGlassBlur != null && mRowLiquidGlassBlur.root != null) {
-            mRowLiquidGlassBlur.root.setVisibility(vis);
+        final LinearLayout parent = mGroupLiquidGlass;
+        if (parent == null) {
+            return;
         }
-        if (mHintLiquidGlassBlur != null) {
-            mHintLiquidGlassBlur.setVisibility(vis);
+        for (int i = 1; i < parent.getChildCount(); i++) {
+            final View child = parent.getChildAt(i);
+            if (child != null) {
+                child.setVisibility(vis);
+            }
         }
     }
-
     /**
      * 【2.2.9】把「悬浮窗颜色」整行置灰 / 恢复（液态玻璃开启时必须不可调）。
      *
@@ -1976,9 +2063,12 @@ public class SettingsActivity extends AppCompatActivity {
                 // 预览的"背后"= 预览卡自己那层壁纸：先按模糊强度把它软化（连续），
                 // 再把均值亮度与上下缘颜色喂进去 —— 走的是**真窗同一套**自适应霜面与光圈染色。
                 mPreviewGlass.setPreviewBackdrop(previewBackdropFor(mDraft.liquidGlassBlurPct));
-                mPreviewGlass.setBackdropStats(mPreviewBackdropLum,
-                        0xFF000000 | (wallA & 0x00FFFFFF),
-                        0xFF000000 | (wallD & 0x00FFFFFF));
+                // 【code 1000】预览同步用户的两个旋钮（明暗 / 通透度）—— 与真窗同源
+                mPreviewGlass.setPanelTuningFromPct(mDraft.liquidGlassPanelLum,
+                        mDraft.liquidGlassTransparency);
+                // 【code 1003】亮度输入与真窗**同口径**：用户设定的「环境背景亮度」（唯一来源）。
+                mPreviewGlass.setBackdropLum(
+                        Math.max(0f, Math.min(1f, mDraft.liquidGlassBackdropLum / 100f)));
             } else {
                 int base = mDraft.floatWindowColor;
                 int topAlpha = PANEL_PREVIEW_TOP_ALPHA;
@@ -2478,6 +2568,9 @@ public class SettingsActivity extends AppCompatActivity {
             setSwitch(mRowLiquidGlass, mDraft.liquidGlass);
             // 【2.2.11b】模糊强度（0–100）
             setSlider(mRowLiquidGlassBlur, mDraft.liquidGlassBlurPct);
+            setSlider(mRowPanelLum, mDraft.liquidGlassPanelLum);
+            setSlider(mRowTransparency, mDraft.liquidGlassTransparency);
+            setSlider(mRowBackdropLum, mDraft.liquidGlassBackdropLum);
         } finally {
             mSyncing = false;
         }
@@ -2516,6 +2609,16 @@ public class SettingsActivity extends AppCompatActivity {
     // ==================================================================
     // 恢复默认（PRD §9.1：属于**草稿**改动，仍需保存）
     // ==================================================================
+
+    /** 【code 1003】液态玻璃卡「恢复默认」：四项滑条全部回到 50%（总开关不动）。 */
+    private void resetLiquidGlassGroup() {
+        mDraft.liquidGlassPanelLum = SubtitleConfig.LIQUID_GLASS_PANEL_LUM_DEF;
+        mDraft.liquidGlassTransparency = SubtitleConfig.LIQUID_GLASS_TRANSPARENCY_DEF;
+        mDraft.liquidGlassBackdropLum = SubtitleConfig.LIQUID_GLASS_BACKDROP_LUM_DEF;
+        mDraft.liquidGlassBlurPct = SubtitleConfig.LIQUID_GLASS_BLUR_PCT_DEF;
+        syncWidgets();
+        toast(Strings.RESET_DONE.get(mLang));
+    }
 
     private void resetMainGroup() {
         mDraft.subtitleColor = SubtitleConfig.SUBTITLE_COLOR_DEF;

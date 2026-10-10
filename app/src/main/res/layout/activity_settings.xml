@@ -415,6 +415,33 @@
                     android:paddingBottom="6dp" />
             </com.google.android.material.card.MaterialCardView>
 
+            <!-- 【code 1003】「液态玻璃效果调整」节标题（在卡片外；独立成卡，摆在「其他」之前） -->
+            <TextView
+                android:id="@+id/title_liquidglass"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="30dp"
+                android:layout_marginStart="4dp"
+                android:textAppearance="?attr/textAppearanceTitleSmall"
+                android:textColor="?attr/colorPrimary"
+                android:textStyle="bold" />
+
+            <!-- 【code 1003】⑧ 液态玻璃效果调整：开关 + 环境背景亮度 / 通透度 / 明暗度 / 模糊强度 + 恢复默认 -->
+            <com.google.android.material.card.MaterialCardView
+                android:id="@+id/card_liquidglass"
+                style="@style/Widget.DLsiteFloat.SettingsCard">
+
+                <LinearLayout
+                    android:id="@+id/group_liquidglass"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingStart="16dp"
+                    android:paddingTop="6dp"
+                    android:paddingEnd="16dp"
+                    android:paddingBottom="6dp" />
+            </com.google.android.material.card.MaterialCardView>
+
             <!-- 「其他」节标题（在卡片外） -->
             <TextView
                 android:id="@+id/title_misc"

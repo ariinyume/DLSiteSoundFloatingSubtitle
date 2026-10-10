@@ -116,6 +116,8 @@ public enum Strings {
     GROUP_INACTIVE("非活动行字幕调整", "非活動行字幕調整", "Inactive lines"),
     GROUP_TYPO("字幕排版", "字幕排版", "Typography"),
     GROUP_MISC("其他", "其他", "More"),
+    /** 【code 1003】「液态玻璃效果调整」卡片标题（独立成卡，摆在「其他」卡片之前）。 */
+    GROUP_LIQUID_GLASS("液态玻璃效果调整", "液態玻璃效果調整", "Liquid glass tuning"),
 
     // ── 其他（PRD §FR-07 / 备份恢复 / 常亮）────────────────────────────
     /**
@@ -157,14 +159,49 @@ public enum Strings {
      */
     LIQUID_GLASS("液态玻璃", "液態玻璃", "Liquid glass"),
     /**
-     * 【2.2.11b】「模糊强度」滑条标签（只在液态玻璃开启时出现）。
-     * 【2.2.14】范围 50–100%、步长 5%、默认 60%（见 {@code SubtitleConfig} 的四个常量）。
+     * 【2.2.11b / code 1003】「模糊强度」滑条标签（只在液态玻璃开启时出现）。
+     * 范围 0–100%、步长 5%、默认 50%。
      */
     LIQUID_GLASS_BLUR("模糊强度", "模糊強度", "Blur strength"),
-    /** 「模糊强度」滑条下方的常驻说明小字（三语）。 */
-    LIQUID_GLASS_BLUR_HINT("数值越高越模糊：能取到背后画面时作用于画面本身，取不到时作用于玻璃自身",
-            "數值越高越模糊：能取得背後畫面時作用於畫面本身，取不到時作用於玻璃自身",
-            "Higher = blurrier: blurs the backdrop when available, otherwise softens the glass itself"),
+    /**
+     * 【code 1000 / 1003】「明暗度」滑条标签（只在液态玻璃开启时出现）。
+     * 映射（分段点 = 默认值 50）：{@code ≤50 ⇒ 0.20 + pct×0.0044}；
+     * {@code >50 ⇒ 0.42 + (pct−50)×0.0036}。0 → 0.20 最暗、50 → 0.42（历史标定）、100 → 0.60 最亮。
+     */
+    LIQUID_GLASS_PANEL_LUM("明暗度", "明暗度", "Brightness"),
+    /** 「明暗度」滑条下方的说明小字（三语）。 */
+    LIQUID_GLASS_PANEL_LUM_HINT("数值越高面板越亮；越低越暗、更「烟熏」。想偏暗的透明：把它调低，"
+            + "同时把「通透度」放在中间档",
+            "數值越高面板越亮；越低越暗、更「煙燻」。想偏暗的透明：把它調低，"
+            + "同時把「通透度」放在中間檔",
+            "Higher = brighter panel; lower = darker and smokier. For a dark see-through look: "
+            + "lower this AND keep Transparency mid-range"),
+    /**
+     * 【code 1000】「通透度」滑条标签（只在液态玻璃开启时出现）。
+     * 0 = 最实（背景透出约 28%）、50 = 默认（约 72%）、100 = 最透（约 91%）。
+     */
+    LIQUID_GLASS_TRANSPARENCY("通透度", "通透度", "Transparency"),
+    /** 「通透度」滑条下方的常驻说明小字（三语）—— 必须点明它同时影响明暗稳定性。 */
+    LIQUID_GLASS_TRANSPARENCY_HINT("注意：拉满时「明暗度」会几乎不起作用",
+            "注意：拉滿時「明暗度」會幾乎不起作用",
+            "Note: at max, the brightness slider has almost no effect"),
+    /**
+     * 【code 1002 / 1003】「环境背景亮度」滑条标签 —— 自适应霜面的**唯一**亮度输入。
+     * 映射：L = pct / 100（0 → 纯黑页 · 40 → 0.40 · 50 → 0.50 · 100 → 纯白页）。
+     */
+    LIQUID_GLASS_BACKDROP_LUM("环境背景亮度", "環境背景亮度", "Backdrop brightness"),
+    /** 「环境背景亮度」滑条下方的常驻说明小字（三语）。 */
+    LIQUID_GLASS_BACKDROP_LUM_HINT("告诉插件「背景页有多亮」。0=纯黑页，40≈常见页面，100=纯白页",
+            "告訴插件「背景頁有多亮」。0=純黑頁，40≈常見頁面，100=純白頁",
+            "How bright the page behind is: 0 = pure black, 40 = typical, 100 = pure white"),
+    /** 「模糊强度」滑条下方的说明小字（三语）。 */
+    LIQUID_GLASS_BLUR_HINT("数值越高越模糊；拉到 0 时面板完全透明",
+            "數值越高越模糊；拉到 0 時面板完全透明",
+            "Higher = blurrier; at 0 the panel becomes fully transparent"),
+    /** 【code 1003】液态玻璃卡「恢复默认」行下方的小字（三语）。 */
+    HINT_LIQUID_GLASS("全部设置为 50%", "全部設定為 50%", "All set to 50%"),
+    /** 【code 1003】液态玻璃卡「恢复默认」按钮标签（三语）。 */
+    RESET_LIQUID_GLASS("恢复液态玻璃默认设置", "恢復液態玻璃預設設定", "Reset liquid glass defaults"),
     /** 「液态玻璃」开关下方的常驻说明小字（三语）：同时说明「面板颜色会被锁定」。 */
     LIQUID_GLASS_HINT("悬浮窗面板与播放页字幕按钮改为玻璃质感；开启后「悬浮窗颜色」不可调整",
             "懸浮窗面板與播放頁字幕按鈕改為玻璃質感；開啟後「懸浮窗顏色」無法調整",
