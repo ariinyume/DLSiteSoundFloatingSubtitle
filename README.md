@@ -1,10 +1,9 @@
-# DLsiteFloat —— DLsiteSound 悬浮窗/状态栏字幕模块
+# DLsiteFloat - DLsiteSound 悬浮窗/状态栏字幕模块
 
 > 一个 LSPosed / Xposed 模块，在 DLsiteSound（DLsite 音频 App）的**播放页**上挂一个与播放进度同步的**悬浮字幕窗**；同时支持将字幕镜像到**系统状态栏**（在 SystemUI 进程内注入）。
 
 - 当前版本：**2.3.0**（`DLsiteFloat-2.3.0-code1003-debug.apk`，包名 `io.github.ariinyume.dlsitesoundfloat`）
 - 📦 下载 APK：[Releases · v2.3.0](https://github.com/ariinyume/DLSiteSoundFloatingSubtitle/releases/tag/v2.3.0)
-- 🕘 历史版本：[Releases · v2.1.0](https://github.com/ariinyume/DLSiteSoundFloatingSubtitle/releases/tag/v2.1.0)
 - 📝 开发进度：[DLsiteFloat插件开发进度管理](https://my.feishu.cn/wiki/CQoMwY4nFilzLkkrzG4cy44fnoh)
 - ⭐ Xposed 仓库：[DLsiteFloat - DLSiteSound悬浮窗/状态栏字幕模块](https://github.com/Xposed-Modules-Repo/io.github.ariinyume.dlsitesoundfloat)
 
