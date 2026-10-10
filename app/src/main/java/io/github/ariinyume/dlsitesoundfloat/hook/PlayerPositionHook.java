@@ -253,6 +253,7 @@ public class PlayerPositionHook {
         boolean hasCurrentTime = m.get("currentTime") instanceof Number;
 
         boolean authoritative;
+        boolean halted = false;
         if (isPlaylistMap) {
             sSawPlaylistMap = true;
             // 活跃 = 有曲目、有时长、且不是"已作废"的列表。幽灵列表是 trackCount=0（/其它 halt 原因）。
@@ -267,12 +268,29 @@ public class PlayerPositionHook {
             // ⇒ 只有"非用户请求"的 halt 才算作废；user_request 是正常的暂停态，必须上报。
             String haltReason = m.get("haltReason") instanceof String
                     ? (String) m.get("haltReason") : null;
-            boolean halted = haltReason != null && !"user_request".equals(haltReason);
+            halted = haltReason != null && !"user_request".equals(haltReason);
             authoritative = trackCount > 0 && durSec > 0.0 && !halted;
         } else {
             // 非列表实例（闲置 AudioPlayer）：只有在本进程**从未见过**列表时才有权更新（老宿主兼容）。
             authoritative = !sSawPlaylistMap && hasCurrentTime;
         }
+
+        // ④-前【code 1004】把「宿主当前选择」推给数据层 —— **必须在下面的权威门之前**。
+        //
+        // 🔴 为什么不能等权威门（= 现在这条早退）：宿主切音轨时 `currentIndex` 立刻翻，
+        //    而带 `duration` 的身份键要等新音源装载完才更新（真机实测 18:40:58.391 翻序号，
+        //    18:41:04.430 才拿到 duration=944.784）—— 装载期那几秒的读数是
+        //    `trackCount>0 && duration==0.0`，会被权威门整条丢弃。
+        //    而**新轨的字幕 JSON 恰恰落在中间**（18:40:58.556，比换轨通知早 5.9s）：
+        //    没有这条选择键，数据层就给这份新轨的 JSON 盖上上一轨的印章，
+        //    5.9s 后的换轨通知再把它当「旧数据」隔离 ⇒ 永久「无字幕」（用户报的 bug）。
+        // 只写一个 volatile 字段，不触发任何状态变更（与 noteObservedPlaylistIdentity 同理）。
+        Object idxObj = m.get("currentIndex");
+        int curIdx = idxObj instanceof Number ? ((Number) idxObj).intValue() : -1;
+        if (isPlaylistMap && trackCount > 0 && !halted && curIdx >= 0) {
+            PlayerSourceHook.onPlaylistSelectionFromStatusMap(trackCount, curIdx, where);
+        }
+
         if (!authoritative) {
             // 幽灵 / 闲置实例：只贡献诊断，不污染仓库状态。
             return;
@@ -312,10 +330,12 @@ public class PlayerPositionHook {
         //      （作品 A 的 6 轨列表 idx=0，作品 B 的 1 轨列表 idx=0），
         //      所以 977 及以前那条「序号变了没」的判据**永远不成立**。
         //   ⇒ 交给 PlayerSourceHook 统一判（它持有全部历史教训）。
-        Object idx = m.get("currentIndex");
-        if (idx instanceof Number) {
-            int cur = ((Number) idx).intValue();
-            PlayerSourceHook.onPlaylistStateFromStatusMap(cur, trackCount, durSec, where);
+        //   ⚠️ 【code 1004】序号在权威门之前就已读出（见 ④-前），这里直接复用，不要重读。
+        //   🔴 判据**刻意仍按旧写法**（`idxObj instanceof Number`，含序号为负的情形也照旧转发）——
+        //      本轮对**换轨判据零行为改动**这句话必须是字面事实，不靠「宿主不会报负序号」这个前提。
+        //      （已取证：23 个会话、240,183 条 currentIndex 读数里负序号 **0 例**，但仍不据此改动它。）
+        if (idxObj instanceof Number) {
+            PlayerSourceHook.onPlaylistStateFromStatusMap(curIdx, trackCount, durSec, where);
         }
     }
 

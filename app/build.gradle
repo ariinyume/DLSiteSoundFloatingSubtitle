@@ -259,8 +259,8 @@ def appVersionTag = '2.3.0'
 //        ⑥ **诊断日志接LogGate**：7 个文件里只有 5 条 Log.i 是真诊断级（已迁）；
 //        21 条 Log.w 告警按 LogGate 类头铁律 3 **保持常开不动**。
 //
-def appVersionCode = 1003
-def appVersionCodeLabel = '1008.24'
+def appVersionCode = 1004
+def appVersionCodeLabel = '1008.25'
 def appVersionName = '2.3.0'
 
 android {

@@ -251,6 +251,41 @@ public class SubtitleRepository {
      * 换轨时**不动它** —— cues 没变，主人就没变。
      */
     private volatile long cuesOwnerIdentity = 0L;
+    /**
+     * 【code 1004】宿主**当前选择**的「选择键」{@code (trackCount, currentIndex)}（0 = 未知）。
+     *
+     * <p>── 为什么比 {@link #observedPlaylistIdentity} 更早可读（本轮 bug 的根修）──
+     * 身份键 {@code (trackCount, durationMs, currentIndex)} 里的**时长**要等新音源装载完才有值；
+     * 而宿主在切音轨那一瞬间就把 {@code currentIndex} 翻了。真机日志（{@code LSPosed_20261010_184115}）：
+     * <pre>
+     *   18:40:58.391  currentIndex=1→3  duration=0.0   ← 选择已翻，时长还未知
+     *   18:40:58.556  Loaded 84 cues    （= 新轨 idx=3 的字幕，比换轨通知早 5.9s）
+     *   18:41:04.430  duration=944.784  ← 时长这才就绪，身份键第一次变化 ⇒ 通知才发出去
+     * </pre>
+     * ⇒ 时间差里的这份 JSON 盖的是**上一轨**的印章，随后被当成「上一轨的旧数据」隔离
+     * ⇒ 永久「无字幕」（宿主不会重发）。选择键补上这段空档：它在 18:40:58.391 就有值了。
+     *
+     * <p>由 {@code PlayerPositionHook#consume} 在**每一条**活跃列表读数上推送
+     * （**含** {@code duration == 0} 的装载期读数 —— 那正是本键存在的意义），
+     * 与 {@link #observedPlaylistIdentity} 一样<b>只写一个 volatile 字段、不触发任何状态变更</b>。
+     */
+    private volatile long observedPlaylistSelection = 0L;
+    /**
+     * 【code 1004】手上这份 cues 在**加载那一刻**宿主选择的是哪条轨（选择键；0 = 未知）。
+     *
+     * <p>与 {@link #cuesOwnerIdentity} 同生共死（同一次加载盖章、硬裁决一起清），
+     * 但**取值时机不同**：身份键在时长就绪前拿到的是旧值，选择键不会。
+     */
+    private volatile long cuesOwnerSelection = 0L;
+    /**
+     * 【code 1004】这份 cues 加载时「宿主的选择已跑在身份前面」——见
+     * {@link PlaylistKey#selectionAheadOfIdentity}。
+     *
+     * <p>为 true 且换轨目标的选择键与 {@link #cuesOwnerSelection} 相同 ⇒ 这份 cues **就是新轨的**
+     * （宿主早已为新轨取回字幕），直接恢复渲染，不必等它重发（见 {@link PlaylistKey#cuesBelongToTarget}）。
+     * 只在**同一列表内换序号**时为 true；跨作品（序号相同）一律 false，避免拿上一部作品的字幕冒充。
+     */
+    private volatile boolean cuesLoadedAheadOfIdentity = false;
 
     // ---- 播放结束 → 自动关窗（v29）----
     /** Media3 {@code Player} 的播放状态取值（与 App 内部常量对齐）。 */
@@ -472,6 +507,15 @@ public class SubtitleRepository {
             //   宿主对同一轨的响应有缓存（切走再切回不会重发 JSON），
             //   有了印章才能在切回时直接恢复渲染，见 tryResumeFromCache。
             cuesOwnerIdentity = observedPlaylistIdentity;
+            // 【code 1004】同一时刻再盖一枚**选择键**印章，并记下「盖印时选择是否已跑在身份前面」。
+            //   宿主切音轨时 currentIndex 立刻翻，而带时长的身份键要等新音源装载完才更新
+            //   （真机实测 18:40:58.391 翻序号 → 18:41:04.430 才有 duration），
+            //   而新轨的字幕 JSON 恰恰落在中间（18:40:58.556 到达）。
+            //   ⇒ 只看身份键会把这份 JSON 误认成上一轨的旧数据（永久「无字幕」）；
+            //     选择键在装载期就有值，能把归属判对（见 PlaylistKey 的说明）。
+            cuesOwnerSelection = observedPlaylistSelection;
+            cuesLoadedAheadOfIdentity = PlaylistKey.selectionAheadOfIdentity(
+                    observedPlaylistSelection, observedPlaylistIdentity);
             // v18：重建「字幕行精确匹配集」，供 isKnownSubtitleText() 做 O(1) 精确判定
             subtitleLineSet.clear();
             for (SubtitleCue c : newCues) {
@@ -622,8 +666,25 @@ public class SubtitleRepository {
      *                    0 = 老信号路径给不出身份，此时行为与本版之前完全一致。
      */
     public void onTrackChanged(String where, boolean indexVerified, long newIdentity) {
-        // 【980】先看是不是「切回手上已有字幕的那条轨」——是就直接恢复，不进挂起/软裁决。
-        if (tryResumeFromCache(where, newIdentity)) {
+        onTrackChanged(where, indexVerified, newIdentity, 0L);
+    }
+
+    /**
+     * 【code 1004】再带上「目标选择键」的入口 —— 「宿主早已为新轨取回字幕」修复的落点。
+     *
+     * <p>为什么单靠 {@code newIdentity} 不够（本轮 bug 的根因）：宿主切音轨时
+     * {@code currentIndex} 立刻翻，而身份键里的**时长**要等新音源装载完才有值 ——
+     * 新轨的字幕 JSON 恰恰落在中间（真机实测 165ms 之后就到了），于是盖印时身份还是旧的。
+     * 5.9s 后换轨通知才到，模块就把这份**新轨**的 JSON 当「上一轨的旧数据」隔离掉 ⇒ 永久「无字幕」。
+     *
+     * @param newSelection 本次换轨<b>目标</b>的选择键
+     *                     （{@code PlayerSourceHook#makeSelection}；0 = 老信号路径给不出）。
+     */
+    public void onTrackChanged(String where, boolean indexVerified, long newIdentity,
+                               long newSelection) {
+        // 【980 / code 1004】先看这份 cues 是不是「切回的原轨」或「宿主早已为新轨取回的」
+        // —— 是就直接恢复渲染，不进挂起/软裁决。
+        if (tryResumeFromCache(where, newIdentity, newSelection)) {
             return;
         }
         long now = SystemClock.uptimeMillis();
@@ -767,6 +828,36 @@ public class SubtitleRepository {
     }
 
     /**
+     * 【code 1004】由 {@code PlayerPositionHook} 推送「宿主当前选择」的选择键
+     * （{@code PlayerSourceHook#makeSelection}；0 = 未知）。
+     *
+     * <p>与 {@link #noteObservedPlaylistIdentity} 一样<b>只写一个 volatile 字段</b>，
+     * 不触发任何状态变更 —— 它只是给「加载那一刻」留个证据，真正的判定在
+     * {@link #loadFromJsonArrayInternal} 与 {@link #tryResumeFromCache} 里。
+     *
+     * <p>⚠️ 必须在 {@code duration == 0} 的装载期读数上也调用（这正是它的价值所在）：
+     * 宿主切音轨时 {@code currentIndex} 先翻、时长后到，新轨字幕 JSON 就落在中间。
+     */
+    public void noteObservedPlaylistSelection(long selection) {
+        observedPlaylistSelection = selection;
+    }
+
+    /**
+     * 【code 1004】该选择键是不是「手上这份 cues 的主人」—— 且盖章时宿主的选择**确实已经
+     * 跑在身份前面**（= 这份 cues 是宿主为新轨提前取回的，不是上一轨的残留）。
+     *
+     * <p>无锁读（两个字段都是 volatile）：本方法会被 {@code PlayerSourceHook} 的去抖闸门
+     * 高频调用，不能有任何锁竞争。
+     *
+     * <p>⚠️ 与 {@link #ownsCuesFor} 的分工：那个认「切回**同一条**轨」，本方法认
+     * 「cues 其实**已经是新轨**的了」——两者互不替代（见 code 980 / code 1004 两段注释）。
+     */
+    public boolean ownsCuesForSelection(long selection) {
+        return PlaylistKey.cuesBelongToTarget(
+                cuesLoadedAheadOfIdentity, cuesOwnerSelection, selection);
+    }
+
+    /**
      * 【980】**反向切轨残留的根修**：切回的正是「手上 cues 的主人」时，直接恢复渲染。
      *
      * <p>── 旧实现错在哪 ──
@@ -789,10 +880,23 @@ public class SubtitleRepository {
      *
      * @return true = 已按缓存恢复（调用方不必再走挂起 / 裁决流程）
      */
-    private boolean tryResumeFromCache(String where, long newIdentity) {
-        if (newIdentity == 0L || newIdentity != cuesOwnerIdentity) {
+    private boolean tryResumeFromCache(String where, long newIdentity, long newSelection) {
+        boolean byIdentity = newIdentity != 0L && newIdentity == cuesOwnerIdentity;
+        // 【code 1004】第二条认领路径：这份 cues 加载时宿主的选择**已经跑在身份前面**，
+        //   而本次换轨的目标恰好就是那个选择 ⇒ 它是**新轨**的字幕（宿主早已取回，不会重发）。
+        //   真机 2026-10-10 18:41:04.429 就是这条：84 cues 在 18:40:58.556 到手（身份印章还是 idx=1），
+        //   换轨通知 5.9s 后才到（idx=3）——旧判据只会把它隔离成「上一轨的旧数据」⇒ 永久「无字幕」。
+        boolean bySelection = ownsCuesForSelection(newSelection);
+        if (!byIdentity && !bySelection) {
             return false;
         }
+        final String code = byIdentity ? "[code 980]" : "[code 1004]";
+        final String why = byIdentity
+                ? " -> BACK to the playlist these cues belong to"
+                : " -> cues were already the NEW track's (selection ran ahead of identity)";
+        final String how = byIdentity
+                ? "host reuses its own json, no need to wait"
+                : "json arrived before the switch was reported, no need to wait";
         int cueCount;
         long posNow;
         boolean reopened = false;
@@ -833,14 +937,14 @@ public class SubtitleRepository {
                 reopened = true;
             }
         }
-        XposedCompat.log("[DLsiteSoundFloat] [code 980] track changed via " + where
-                + " -> BACK to the playlist these cues belong to"
+        XposedCompat.log("[DLsiteSoundFloat] " + code + " track changed via " + where
+                + why
                 + " | cues=" + cueCount
                 + " | pos=" + (posNow < 0 ? "?" : posNow + "ms")
-                + " -> RESUME from cache (host reuses its own json, no need to wait)"
+                + " -> RESUME from cache (" + how + ")"
                 + (wasBlocked ? " [suspend/soft-verdict/quarantine revoked]" : ""));
         if (reopened) {
-            XposedCompat.log("[DLsiteSoundFloat] [code 980] return to cached track"
+            XposedCompat.log("[DLsiteSoundFloat] " + code + " return to cached track"
                     + " -> reopen floating window (auto-closed earlier)");
         }
         notifyObservers();
@@ -976,6 +1080,9 @@ public class SubtitleRepository {
                         subtitleLineSet.clear();
                         // 【980】数据真被销毁了 ⇒ 撤销「主人」印章（否则会拿空 cues 去「恢复」）
                         cuesOwnerIdentity = 0L;
+                        // 【code 1004】选择键印章与「选择跑在身份前面」同生共死：数据没了就没有归属可谈。
+                        cuesOwnerSelection = 0L;
+                        cuesLoadedAheadOfIdentity = false;
                         currentSubtitles = new ArrayList<>();
                         currentCueIndex = -1;
                         lastScannedSecond = Integer.MIN_VALUE;

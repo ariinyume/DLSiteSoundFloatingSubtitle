@@ -1485,3 +1485,102 @@ versionName 保持 **2.3.0**
 `DLsiteFloat-2.3.0-code1003-debug.apk`，5,571,660 B
 sha256 `a2013a6a6ee4783f3de1c9ba838447853e49e9ef184d5c0cc556c1fdb1e2abf8`
 versionName 保持 **2.3.0** ✅ **Ari 已真机确认（关闭态卡底间距 + 开启态各滑条）**
+
+---
+
+## [2.3.0 / code 1004] — 点击未缓存音频：App 有字幕而插件显示「无字幕」（2026-10-10）
+
+### 【现象】Ari，附录屏 `Record_2026-10-10-18-40-26` + 日志 `LSPosed_20261010_184115`
+
+点选一条**本次会话还没播过**（未缓存）的音轨后，宿主 App 正常显示字幕，
+插件却一直显示「无字幕」，并在约 5 秒后自动关掉悬浮窗。
+
+### 【根因】两个键的**可见时机**不同 —— 字幕 JSON 落在中间那条 165ms 的缝里
+
+换轨判据用的是三元组身份 `(trackCount, durationMs, currentIndex)`。真机日志把时间线钉死：
+
+```
+18:40:57.862  statusMap  currentIndex=1  duration=372.624  ← 旧轨
+18:40:58.391  statusMap  currentIndex=3  duration=0.0      ← 序号已翻！时长还没到
+18:40:58.556  Loaded 84 cues from JSON                     ← 新轨字幕到了（早 165ms）
+18:41:00.391  statusMap  currentIndex=3  duration=0.0
+18:41:03.419  statusMap  currentIndex=3  duration=0.0
+18:41:04.430  statusMap  currentIndex=3  duration=944.784  ← 5.9s 后时长才就绪
+18:41:04.429  >>> track changed: tc=7 dur=372624ms idx=1 -> tc=7 dur=944784ms idx=3 [index-gate]
+18:41:04.429  lastJson=5873ms ago | cues=84 -> SUSPEND subtitles, wait 15000ms
+18:41:09.429  no subtitle json yet -> auto-closed floating window early
+18:41:19.429  [code 960] soft verdict -> display stays cleared (cues=84 kept)
+```
+
+- `currentIndex` 在切轨那一瞬就翻了，而 `duration` 要等新音源装载完才有值。
+  装载期那几秒的读数是 `trackCount > 0 && duration == 0.0` ⇒ 被**权威门**（`duration > 0.0`）
+  整条丢弃 ⇒ `sLastIdentity` 一直停在旧轨 `(7, 372624ms, 1)`。
+- 新轨的 JSON 恰恰落在这条缝里（早 165ms）⇒ 盖印时盖上的是**上一轨**的身份。
+- 5.9s 后换轨通知才到，`ago = 5873ms > PRELOAD_TOLERANCE_MS(3500)`
+  ⇒ 这份**新轨**的字幕被当成「上一轨的旧数据」隔离（code 973），显示层清空、
+  `softNoSubtitles = true`、5s 后自动收窗、15s 后软裁决定案。
+- 宿主**不会重发**它已经发过的 JSON ⇒ 状态永不撤销 ⇒ **永久「无字幕」**。
+
+### 【修法】多一个「早就能读到」的**选择键**，只用于归属判定
+
+新增零状态纯判定层 `data/PlaylistKey.java`：把 `(trackCount, currentIndex)` 打包成选择键。
+它在宿主切选择的那一刻就可读，**不依赖时长**。
+
+| 键 | 组成 | 何时可读 | 用途 |
+| --- | --- | --- | --- |
+| 身份键（原样不动） | `trackCount + durationMs + currentIndex` | 新音源装载完 | **换轨判据** |
+| 🆕 选择键 | `trackCount + currentIndex` | 切轨瞬间 | **只管「这份 cues 是谁的」** |
+
+- `PlayerPositionHook` 在**权威门之前**推选择键 —— 装载期那些 `duration == 0` 的读数也照推
+  （这正是它的全部价值）；只写一个 volatile 字段，不触发任何状态变更。
+- 加载 JSON 时同步盖第二枚印章 `cuesOwnerSelection`，并记下
+  `cuesLoadedAheadOfIdentity = selectionAheadOfIdentity(选择键, 身份键)`
+  （同一列表、序号不同 ⇒ 宿主的选择已跑在身份前面）。
+- 换轨通知到达时 `tryResumeFromCache` 多一条认领路径：目标选择键 == 盖章时的选择键
+  **且**旗标为真 ⇒ 直接恢复渲染，不必等宿主重发
+  （`[code 1004] … -> RESUME from cache (json arrived before the switch was reported)`）。
+
+**为什么不能直接用选择键当换轨判据**：宿主切**作品**时 `currentIndex` 恒为 0
+（6 轨列表与 1 轨列表都是 0，见 code 978 段），单看选择键一次都发现不了。
+⇒ 换轨判据一字未改；`selectionAheadOfIdentity` 在 `trackCount` 不同、或任一侧未知时
+一律返回 false ⇒ 跨作品同序号**永不**认领，不会拿上一部作品的字幕冒充新作品。
+
+### 【连带】换轨通知的 20s 静默例外扩展到这条认领路径
+
+`settleChange` 里 `ownsCuesFor(to) || ownsCuesForSelection(toSelection)` ——
+两代认领都放行，否则认领会先被 20s 静默挡住（与 code 980 用同一处例外）。
+⚠️ **起草时的一处自我纠正（值得记下）**：搬「④-前 读出序号」时，我顺手把 ④ 段进判据的门
+从 `idxObj instanceof Number` 收紧成了 `curIdx >= 0`（看着更整洁）。这是**本轮没被要求的行为改动** ——
+负序号会被旧写法当成 `idx = 0` 参与换轨判据、进而可能触发一次换轨通知，而本轮要修的恰恰是
+「别拿脏读数当换轨」。已取证：23 个会话 / **240,183** 条 `currentIndex` 读数里负序号 **0 例**，
+但**不靠这个前提**保安全 —— 已还原为与旧写法**逐字等价**，让「换轨判据零行为改动」成为字面事实；
+并在源码层验证里加了**负向锚**（`curIdx >= 0` 在 `consume` 里只许出现 **1** 次）。
+（副作用：包从 5,573,864 B 变成 5,573,872 B，sha 随之更新。）
+
+
+### 【验证】
+
+| 层 | 结果 |
+| --- | --- |
+| JUnit | **46/46**（34 → 46，+12 条 `PlaylistKey` 黄金向量，取值全部来自本轮真机日志） |
+| 🆕 源码层（`tools/verify_1004_src.py`）| **70/70** |
+| dex 字节码层（`tools/verify_1004.py`，对照 1003 包）| **49/49，20 个有区分力锚** |
+| 一键全链 | **全绿 15/15 + 1 SKIP**（998 缺对照包） |
+
+`verify_1004.py` 用 **dex 指令偏移**（不是字符串位置）证明推送早于权威门：
+`新入口 |008f: < 权威门 |00fe:`。
+
+### 🔴 本轮脚本自身踩的两个坑（都已修，记在这里别再踩）
+
+1. **判据的返回类型写错**：`onPlaylistStateFromStatusMap` 在 dex 里是 `(IIDLjava/lang/String;)Z`
+   （返回 **Z**），我按 `)V` 搜 ⇒ 命中 0 处 ⇒ `find()` 返回 -1 ⇒ 「新入口在权威门前」
+   这条**假 FAIL**（实现本来就是对的）。⇒ 判据必须回 dump 原文确认，不能凭签名印象写。
+2. **「两个符号间隔 ≤N 字符」是脆断言**：`settleChange` 里 `ownsCuesFor` 与
+   `ownsCuesForSelection` 的指令行相距 631 字符，我设的上限是 600 ⇒ 又一次假 FAIL。
+   ⇒ 改用**方法体切片**（`method_body`，切到下一个方法头为止），与字符数彻底解耦。
+
+### 产物
+
+`DLsiteFloat-2.3.0-code1004-debug.apk`，5,573,872 B
+sha256 `aee7b0989f30976b4312ae83b1f0c77ee91c138222b4c2e0048fcd4146fe78d4`
+versionName 保持 **2.3.0**、code 1003 → 1004

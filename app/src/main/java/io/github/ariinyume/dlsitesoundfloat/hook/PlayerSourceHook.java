@@ -20,6 +20,7 @@ package io.github.ariinyume.dlsitesoundfloat.hook;
 
 import android.os.SystemClock;
 
+import io.github.ariinyume.dlsitesoundfloat.data.PlaylistKey;
 import io.github.ariinyume.dlsitesoundfloat.data.SubtitleRepository;
 import io.github.ariinyume.dlsitesoundfloat.util.Shape;
 import io.github.ariinyume.dlsitesoundfloat.util.XposedCompat;
@@ -298,6 +299,10 @@ public class PlayerSourceHook {
         sLastIndexSeenMs = now;
         long identity = makeIdentity(trackCount, durationSec, idx);
         String desc = describeIdentity(trackCount, durationSec, idx);
+        // 【code 1004】本次换轨**目标**的选择键（只吃 trackCount + currentIndex，与时长无关）。
+        //   数据层用它来判断「手上这份 cues 是不是就是新轨的」——宿主切音轨时
+        //   currentIndex 先翻、duration 后到，新轨的字幕 JSON 就落在两者之间。详见 PlaylistKey。
+        long selection = PlaylistKey.makeSelection(trackCount, idx);
         // 【980】把「当前活跃列表身份」推给数据层 —— 只为给新加载的 cues 盖主人印章
         //   （宿主对同一轨的响应有缓存，切走再切回不会重发 JSON；有了印章才能在切回时
         //   直接恢复渲染，见 SubtitleRepository#tryResumeFromCache）。
@@ -335,7 +340,7 @@ public class PlayerSourceHook {
         // 【code 976】身份变了 ≠ 立刻就是换轨：可能只是宿主横跳的第一拍。
         //   闸门只做两件事：同一候选**再次出现**的确认 + 上报后的**长静默**
         //   （不删候选计时、不按「连续稳定」判，见 settleChange 的注释）。
-        if (!settleChange(sLastIdentity, identity, now)) {
+        if (!settleChange(sLastIdentity, identity, selection, now)) {
             return false;
         }
         String from = sLastIdentityDesc;
@@ -350,8 +355,21 @@ public class PlayerSourceHook {
         //   被吞掉的后果：数据层收不到换轨通知 ⇒ 旧 cue 列表继续渲染 ⇒ 新轨走到几秒时
         //   按旧列表匹配出上一轨的字幕。
         //   ⚠️ 带上 indexVerified=true：身份门是权威信号，数据层据此跳过「疑似假换轨」的旧兜底。
-        notifyTrackChanged(null, where + " playlist " + from + " -> " + desc, true, identity);
+        notifyTrackChanged(null, where + " playlist " + from + " -> " + desc, true, identity, selection);
         return true;
+    }
+
+    /**
+     * 【code 1004】由 {@link PlayerPositionHook} 在**每一条**活跃列表读数上推送「宿主当前选择」。
+     *
+     * <p>与 {@link #onPlaylistStateFromStatusMap} 的区别：本方法**不判变化、不发通知**，
+     * 只把选择键写进数据层的一个 volatile 字段；而且调用点在权威门（{@code duration > 0}）
+     * **之前** —— 装载期那些 {@code duration == 0} 的读数也照样推。
+     * 那正是新轨字幕 JSON 到达的时刻（真机实测早了 165ms），没有它数据层就认不出这份 JSON 的归属。
+     */
+    public static void onPlaylistSelectionFromStatusMap(int trackCount, int idx, String where) {
+        SubtitleRepository.getInstance().noteObservedPlaylistSelection(
+                PlaylistKey.makeSelection(trackCount, idx));
     }
 
     /**
@@ -401,7 +419,7 @@ public class PlayerSourceHook {
      *
      * @return true = 本次可以认定为真正的变化
      */
-    private static boolean settleChange(long from, long to, long now) {
+    private static boolean settleChange(long from, long to, long toSelection, long now) {
         if (to != sPendingIdx) {
             // 换了一个候选 ⇒ 重新起计（不写基线、不上报）
             sPendingIdx = to;
@@ -424,9 +442,14 @@ public class PlayerSourceHook {
             //   硬静默 20s 只会让「无字幕」白挂十几秒。
             //   真机铁证（LSPosed_20261007_222354）：22:23:38.481 通知 7→1（正确变「无字幕」）后，
             //   用户约 22:23:45 就已切回 7，本条静默却一路挡到 22:23:58.746 才放行。
-            if (SubtitleRepository.getInstance().ownsCuesFor(to)) {
+            // 【code 1004】同一个例外也适用于「本次换轨的目标正是宿主刚为新轨取回的那份 cues」
+            //   （选择键认领）—— 同样没有裁决窗要保护，硬静默只会把「无字幕」白挂 20s。
+            boolean ours = SubtitleRepository.getInstance().ownsCuesFor(to)
+                    || SubtitleRepository.getInstance().ownsCuesForSelection(toSelection);
+            if (ours) {
                 dbg("change " + from + "->" + to
-                        + " back to the playlist our cues belong to -> pass through"
+                        + " back to the playlist our cues belong to (or cues already the new"
+                        + " track's) -> pass through"
                         + " (no " + INDEX_SUPPRESS_MS + "ms silence)");
                 // 放行后**让静默窗失效**：否则紧接着的「7→1」会被当成反向同对再静默 20s，
                 // 那 20s 里模块会一直渲染**上一份** cues（错内容）。失效后任何一次真换轨都能立刻上报。
@@ -472,7 +495,8 @@ public class PlayerSourceHook {
         }
         if (idx != last) {
             // 【code 976→978】与状态 Map 门共用同一条闸门（同一候选再次出现 + 上报后长静默）。
-            if (!settleChange(last, idx, now)) {
+            // 【code 1004】老信号路径拿不到 trackCount ⇒ 选择键传 0（= 未知），只走身份/序号判据。
+            if (!settleChange(last, idx, 0L, now)) {
                 return;
             }
             sLastTrackIndex = idx;
@@ -542,7 +566,7 @@ public class PlayerSourceHook {
      * 所以 {@code indexVerified = false}，数据层保留「疑似假换轨」的兜底。
      */
     private static void notifyTrackChanged(SubtitleRepository repo, String where) {
-        notifyTrackChanged(repo, where, false, 0L);
+        notifyTrackChanged(repo, where, false, 0L, 0L);
     }
 
     /**
@@ -555,9 +579,12 @@ public class PlayerSourceHook {
      *                      日志会带上 {@code [index-gate]} 标记，便于真机核对走的是哪条路。
      * @param identity      【980】本次换轨<b>目标</b>的播放列表身份（{@code makeIdentity}；
      *                      0 = 老信号路径，数据层不认识）。
+     * @param selection     【code 1004】本次换轨<b>目标</b>的选择键（{@code PlaylistKey#makeSelection}；
+     *                      0 = 拿不到 trackCount 的老信号路径）。数据层用它认领「宿主早已为新轨
+     *                      取回的字幕」——见 {@code SubtitleRepository#onTrackChanged} 的四参版。
      */
     private static void notifyTrackChanged(SubtitleRepository repo, String where,
-                                           boolean indexVerified, long identity) {
+                                           boolean indexVerified, long identity, long selection) {
         long now = SystemClock.uptimeMillis();
         if (now - sLastNotifyMs < DEDUP_MS) {
             return; // 同一次切换的多个 hook 点，只处理一次
@@ -566,6 +593,6 @@ public class PlayerSourceHook {
         XposedCompat.log(TAG + " >>> track changed: " + where
                 + (indexVerified ? " [index-gate]" : ""));
         SubtitleRepository target = repo != null ? repo : SubtitleRepository.getInstance();
-        target.onTrackChanged(where, indexVerified, identity);
+        target.onTrackChanged(where, indexVerified, identity, selection);
     }
 }

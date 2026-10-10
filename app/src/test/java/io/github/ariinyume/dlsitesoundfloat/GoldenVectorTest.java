@@ -25,6 +25,7 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import io.github.ariinyume.dlsitesoundfloat.config.Protocol;
+import io.github.ariinyume.dlsitesoundfloat.data.PlaylistKey;
 import io.github.ariinyume.dlsitesoundfloat.hook.TestAccessBridge;
 
 import org.junit.Test;
@@ -657,5 +658,143 @@ public class GoldenVectorTest {
         TestAccessBridge.Poke d = poke(40_000L, 39_000L, 39_000L, 39_000L, 0L, 0);
         assertTrue(d.allow);
         assertEquals(40_000L, d.lastPokeMs);
+    }
+
+    // ==================================================================
+    // PlaylistKey（code 1004：点击未缓存音频 → 插件「无字幕」的根修）
+    // ------------------------------------------------------------------
+    // 全部向量取自真机日志 LSPosed_20261010_184115（录屏 Record_2026-10-10-18-40-26）
+    // 的实测数值，下面的注释逐条标了出处时刻。
+    // ==================================================================
+
+    /** 日志里出现过的四个身份键（tc=7 的同一份 7 轨列表，时长各不相同）。 */
+    private static final long ID_IDX0 = 7000235992000L;   // dur=235992ms
+    private static final long ID_IDX1 = 7000372624001L;   // dur=372624ms
+    private static final long ID_IDX2 = 7001582440002L;   // dur=1582440ms
+    private static final long ID_IDX3 = 7000944784003L;   // dur=944784ms
+    /** 18:40:58.391 装载期的身份（idx 已翻到 3，但 duration 仍是 0.0）。 */
+    private static final long ID_IDX3_DUR0 = 7000000000003L;
+
+    @Test
+    public void selectionKey_roundTrips() {
+        assertEquals(700000L, PlaylistKey.makeSelection(7, 0));
+        assertEquals(700003L, PlaylistKey.makeSelection(7, 3));
+        assertEquals(100000L, PlaylistKey.makeSelection(1, 0));
+        assertEquals(7, PlaylistKey.selectionTrackCount(700003L));
+        assertEquals(3, PlaylistKey.selectionIndex(700003L));
+    }
+
+    /** 读不到列表 / 序号非法 ⇒ 0 = 未知，绝不能与真实列表相撞（真实 tc≥1 ⇒ ≥100000）。 */
+    @Test
+    public void selectionKey_unknownIsZeroAndUnreachable() {
+        assertEquals(0L, PlaylistKey.makeSelection(0, 3));
+        assertEquals(0L, PlaylistKey.makeSelection(-1, 3));
+        assertEquals(0L, PlaylistKey.makeSelection(7, -1));
+        assertEquals(-1, PlaylistKey.selectionTrackCount(0L));
+        assertEquals(-1, PlaylistKey.selectionIndex(0L));
+    }
+
+    @Test
+    public void identityKey_splitMatchesRealDeviceValues() {
+        assertEquals(7, PlaylistKey.identityTrackCount(ID_IDX1));
+        assertEquals(1, PlaylistKey.identityIndex(ID_IDX1));
+        assertEquals(0, PlaylistKey.identityIndex(ID_IDX0));
+        assertEquals(2, PlaylistKey.identityIndex(ID_IDX2));
+        assertEquals(3, PlaylistKey.identityIndex(ID_IDX3));
+        assertEquals(7, PlaylistKey.identityTrackCount(ID_IDX3_DUR0));
+        assertEquals(3, PlaylistKey.identityIndex(ID_IDX3_DUR0));
+        assertEquals(-1, PlaylistKey.identityIndex(0L));
+        assertEquals(-1, PlaylistKey.identityTrackCount(0L));
+    }
+
+    /**
+     * ★ 本轮 bug 的向量：18:40:58.556 加载 84 cues 时，
+     * 选择键已跑到 idx=3，而身份键还停在 idx=1（时长没就绪）⇒ 必须判「选择跑在前面」。
+     */
+    @Test
+    public void selectionAhead_yesWhenIndexFlippedBeforeDurationArrived() {
+        assertTrue("选择 idx=3 vs 身份 idx=1 ⇒ 跑在前面",
+                PlaylistKey.selectionAheadOfIdentity(PlaylistKey.makeSelection(7, 3), ID_IDX1));
+        // ⚠️ 反直觉但正确：装载期那份 duration=0 的读数**序号已经是 3**（序号先翻、时长后到），
+        //    单看它本来就与选择一致、读不出「跑在前面」。正因如此，权威门（duration > 0）
+        //    把这类读数整条丢弃之后，数据层手里留下的仍然是**上一轨**的身份（ID_IDX1）
+        //    —— 这才是上面那条断言成立的真正原因，也是「选择键」必须单独存在的原因。
+        assertFalse("duration=0 的那份身份序号已跟随选择，单看它读不出「跑在前面」",
+                PlaylistKey.selectionAheadOfIdentity(PlaylistKey.makeSelection(7, 3),
+                        ID_IDX3_DUR0));
+    }
+
+    /**
+     * 反例一：18:40:38.955 那一份 38 cues（同一次会话里**成功**的案例）——
+     * 加载时身份键已经跟到 idx=0（音源先装载完、字幕后到）⇒ 不算「跑在前面」，
+     * 于是仍走旧的 code 980/预载容差路径，新判据不会去抢它的活。
+     */
+    @Test
+    public void selectionAhead_noWhenIdentityAlreadyCaughtUp() {
+        assertFalse(PlaylistKey.selectionAheadOfIdentity(PlaylistKey.makeSelection(7, 0), ID_IDX0));
+        assertFalse(PlaylistKey.selectionAheadOfIdentity(PlaylistKey.makeSelection(7, 1), ID_IDX1));
+    }
+
+    /**
+     * 反例二（安全边界）：**跨作品、同序号**。宿主切作品时 currentIndex 恒为 0
+     * （6 轨列表与 1 轨列表都是 idx=0）—— 此时两侧序号相同 ⇒ 不算「跑在前面」。
+     * 这条保证了本判据绝不会拿上一部作品的字幕冒充新作品。
+     */
+    @Test
+    public void selectionAhead_noOnCrossWorkSameIndex() {
+        assertFalse("同序号的跨作品切换不算「选择跑在前面」",
+                PlaylistKey.selectionAheadOfIdentity(PlaylistKey.makeSelection(7, 0), ID_IDX0));
+        assertFalse("trackCount 不同 = 换了列表，不是「选择跑到前面」",
+                PlaylistKey.selectionAheadOfIdentity(PlaylistKey.makeSelection(6, 3), ID_IDX1));
+    }
+
+    /** 两侧任一未知 ⇒ 一律 false（退回旧判据，绝不在信息不足时擅自认领）。 */
+    @Test
+    public void selectionAhead_falseWhenEitherSideUnknown() {
+        assertFalse(PlaylistKey.selectionAheadOfIdentity(0L, ID_IDX1));
+        assertFalse(PlaylistKey.selectionAheadOfIdentity(PlaylistKey.makeSelection(7, 3), 0L));
+        assertFalse(PlaylistKey.selectionAheadOfIdentity(0L, 0L));
+    }
+
+    /** ★ 认领判据：18:41:04.429 换轨通知的目标选择键 == 盖章时的选择键 ⇒ 认领（RESUME）。 */
+    @Test
+    public void cuesBelong_yesOnTargetSelectionMatch() {
+        assertTrue(PlaylistKey.cuesBelongToTarget(true, PlaylistKey.makeSelection(7, 3),
+                PlaylistKey.makeSelection(7, 3)));
+    }
+
+    /** 目标不是盖印时那条轨 ⇒ 不认领（切到**真正无字幕**的轨时，旧 cues 必须被隔离）。 */
+    @Test
+    public void cuesBelong_noOnDifferentTarget() {
+        assertFalse(PlaylistKey.cuesBelongToTarget(true, PlaylistKey.makeSelection(7, 3),
+                PlaylistKey.makeSelection(7, 4)));
+        assertFalse(PlaylistKey.cuesBelongToTarget(true, PlaylistKey.makeSelection(7, 3),
+                PlaylistKey.makeSelection(6, 3)));
+    }
+
+    /** 「加载时选择没跑在身份前面」⇒ 无论目标怎么匹配都不认领（这是跨作品同序号的安全闸）。 */
+    @Test
+    public void cuesBelong_noWhenNotLoadedAhead() {
+        assertFalse(PlaylistKey.cuesBelongToTarget(false, PlaylistKey.makeSelection(7, 3),
+                PlaylistKey.makeSelection(7, 3)));
+    }
+
+    /** 目标选择键未知（老信号路径）⇒ 不认领。 */
+    @Test
+    public void cuesBelong_noWhenTargetUnknown() {
+        assertFalse(PlaylistKey.cuesBelongToTarget(true, PlaylistKey.makeSelection(7, 3), 0L));
+        assertFalse(PlaylistKey.cuesBelongToTarget(true, 0L, PlaylistKey.makeSelection(7, 3)));
+    }
+
+    /** 端到端复演真机那 5.9 秒：盖章 → 通知 → 认领。 */
+    @Test
+    public void realDevice1004Chain_claimsTheJsonBeforeTheSwitchWasReported() {
+        long selectionAtLoad = PlaylistKey.makeSelection(7, 3);          // 18:40:58.391 选择已翻
+        long identityAtLoad = ID_IDX1;                                   // 身份仍停在 idx=1
+        boolean ahead = PlaylistKey.selectionAheadOfIdentity(selectionAtLoad, identityAtLoad);
+        assertTrue("加载那一刻选择跑在身份前面", ahead);
+        long targetSelection = PlaylistKey.makeSelection(7, 3);          // 18:41:04.429 通知的目标
+        assertTrue("换轨通知到达 ⇒ 认领这份 cues（不再变「无字幕」）",
+                PlaylistKey.cuesBelongToTarget(ahead, selectionAtLoad, targetSelection));
     }
 }
